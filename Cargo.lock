@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "vsr"
+name = "viewstamped-replication"
 version = "0.1.0"
