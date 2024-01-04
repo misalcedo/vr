@@ -1,8 +1,19 @@
 [package]
 name = "vsr"
+description = "A Rust-based implementation of the viewstamped replication consensus protocol."
 version = "0.1.0"
+authors = ["Miguel D. Salcedo <miguel@salcedo.cc>"]
 edition = "2021"
+license = "Apache-2.0"
+homepage = "https://github.com/misalcedo/vsr"
+repository = "https://github.com/misalcedo/vsr"
+documentation = "https://docs.rs/vsr"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[profile.release]
+lto = true
+debug = true
+
+[features]
+default = []
 
 [dependencies]
