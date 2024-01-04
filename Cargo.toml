@@ -1,13 +1,13 @@
 [package]
-name = "vsr"
-description = "A Rust-based implementation of the viewstamped replication consensus protocol."
+name = "viewstamped-replication"
+description = "A Rust-based implementation of the Viewstamped Replication consensus protocol."
 version = "0.1.0"
 authors = ["Miguel D. Salcedo <miguel@salcedo.cc>"]
 edition = "2021"
 license = "Apache-2.0"
-homepage = "https://github.com/misalcedo/vsr"
-repository = "https://github.com/misalcedo/vsr"
-documentation = "https://docs.rs/vsr"
+homepage = "https://github.com/misalcedo/vr"
+repository = "https://github.com/misalcedo/vr"
+documentation = "https://docs.rs/viewstamped-replication"
 
 [profile.release]
 lto = true

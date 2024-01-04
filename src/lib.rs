@@ -1,3 +1,10 @@
+//! A Primary Copy Method to Support Highly-Available Distributed Systems
+
+///
+pub struct Node {
+
+}
+
 pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
