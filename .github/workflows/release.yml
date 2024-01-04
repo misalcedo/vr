@@ -33,4 +33,4 @@ jobs:
             git push --tags
           fi
 
-          gh release view $TAG &> /dev/null || gh release create $TAG -F CHANGELOG.md
+          gh release view $TAG &> /dev/null || gh release create $TAG --generate-notes

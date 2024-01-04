@@ -12,4 +12,5 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Basic CI setup for automatic tagging and releases.
 - Mostly-empty library crate.
 
+[unreleased]: https://github.com/misalcedo/vr/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/misalcedo/vr/releases/tag/v0.1.0
