@@ -27,7 +27,18 @@ pub struct Event {
     kind: EventKind,
 }
 
-pub enum EventKind {}
+pub enum EventKind {
+    Aborted {
+        aid: TransactionIdentifier
+    },
+    Committing {
+        participants: HashSet<ModuleIdentifier>,
+        aid: TransactionIdentifier
+    },
+    Done {
+        aid: TransactionIdentifier
+    }
+}
 
 pub enum Status {
     Active,
@@ -90,4 +101,44 @@ pub struct View {
     id: ViewIdentifier,
     primary: ModuleIdentifier,
     backups: HashSet<ModuleIdentifier>
+}
+
+pub struct Call {
+    group: GroupIdentifier,
+    view_stamp: ViewStamp
+}
+
+pub struct PSet {
+    calls: HashSet<Call>
+}
+
+pub struct TransactionIdentifier {
+    identifier: u128,
+    group: GroupIdentifier,
+    view_id: ViewIdentifier
+}
+
+pub struct Transaction {
+    identifier: TransactionIdentifier,
+}
+
+pub struct CallIdentifier(u128);
+
+pub enum Procedure {
+    Prepare(PSet),
+    Abort,
+    Commit
+}
+
+pub struct Message {
+    view_id: ViewIdentifier,
+    call_id: CallIdentifier,
+    procedure: Procedure
+}
+
+pub struct Reply {
+    p_set: PSet
+}
+
+pub struct Client {
 }
