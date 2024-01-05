@@ -1,12 +1,12 @@
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default)]
 pub struct ViewStamp {
-    view: View,
+    view_id: ViewIdentifier,
     timestamp: Timestamp
 }
 
 impl ViewStamp {
-    pub fn new(view: View, timestamp: Timestamp) -> Self {
-        Self { view, timestamp }
+    pub fn new(view: ViewIdentifier, timestamp: Timestamp) -> Self {
+        Self { view_id: view, timestamp }
     }
 }
 
@@ -16,25 +16,25 @@ impl Iterator for ViewStamp {
     fn next(&mut self) -> Option<Self::Item> {
         match self.timestamp.next()  {
             None => {
-                let view = self.view.next()?;
-                Some(Self { view, timestamp: Timestamp::default() })
+                let view = self.view_id.next()?;
+                Some(Self { view_id: view, timestamp: Timestamp::default() })
             }
-            Some(timestamp) => Some(Self { view: self.view, timestamp }),
+            Some(timestamp) => Some(Self { view_id: self.view_id, timestamp }),
         }
     }
 }
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default)]
 #[repr(transparent)]
-pub struct View(u128);
+pub struct ViewIdentifier(u128);
 
-impl From<u128> for View {
+impl From<u128> for ViewIdentifier {
     fn from(value: u128) -> Self {
         Self(value)
     }
 }
 
-impl Iterator for View {
+impl Iterator for ViewIdentifier {
     type Item = Self;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -66,14 +66,14 @@ mod tests {
 
     #[test]
     fn next_view() {
-        let mut view = View::default();
+        let mut view = ViewIdentifier::default();
 
-        assert_eq!(view.next(), Some(View::from(1)));
+        assert_eq!(view.next(), Some(ViewIdentifier::from(1)));
     }
 
     #[test]
     fn max_view() {
-        let mut view = View::from(u128::MAX);
+        let mut view = ViewIdentifier::from(u128::MAX);
 
         assert_eq!(view.next(), None);
     }
@@ -95,8 +95,8 @@ mod tests {
     #[test]
     fn view_stamp() {
         let a = ViewStamp::default();
-        let b = ViewStamp::new(View::from(1), Timestamp::default());
-        let c = ViewStamp::new(View::from(1), Timestamp::from(1));
+        let b = ViewStamp::new(ViewIdentifier::from(1), Timestamp::default());
+        let c = ViewStamp::new(ViewIdentifier::from(1), Timestamp::from(1));
 
         assert!(a < b);
         assert!(b < c);
@@ -107,19 +107,19 @@ mod tests {
     fn next_view_stamp() {
         let mut view_stamp = ViewStamp::default();
 
-        assert_eq!(view_stamp.next(), Some(ViewStamp::new(View::default(), Timestamp::from(1))));
+        assert_eq!(view_stamp.next(), Some(ViewStamp::new(ViewIdentifier::default(), Timestamp::from(1))));
     }
 
     #[test]
     fn carry_over_view_stamp() {
-        let mut view_stamp = ViewStamp::new(View::default(), Timestamp::from(u128::MAX));
+        let mut view_stamp = ViewStamp::new(ViewIdentifier::default(), Timestamp::from(u128::MAX));
 
-        assert_eq!(view_stamp.next(), Some(ViewStamp::new(View::from(1), Timestamp::default())));
+        assert_eq!(view_stamp.next(), Some(ViewStamp::new(ViewIdentifier::from(1), Timestamp::default())));
     }
 
     #[test]
     fn max_view_stamp() {
-        let mut view_stamp = ViewStamp::new(View::from(u128::MAX), Timestamp::from(u128::MAX));
+        let mut view_stamp = ViewStamp::new(ViewIdentifier::from(u128::MAX), Timestamp::from(u128::MAX));
 
         assert_eq!(view_stamp.next(), None);
     }
