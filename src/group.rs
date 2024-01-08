@@ -125,8 +125,18 @@ pub struct ParticipantSet {
 }
 
 impl ParticipantSet {
-    pub fn iter(&self) -> impl Iterator<Item=&Call> {
+
+    pub fn view_stamp_max(&self, group: &GroupIdentifier) -> Option<ViewStamp> {
         self.calls.iter()
+            .filter(|p| &p.group == group)
+            .map(|p| p.view_stamp)
+            .max()
+    }
+
+    pub fn compatible(&self, group: &GroupIdentifier, history: &ViewHistory) -> bool {
+        self.calls.iter()
+            .filter(|p| &p.group == group)
+            .all(|p| history.iter().all(|v| p.view_stamp.id() != v.id() || p.view_stamp.timestamp() <= v.timestamp()))
     }
 }
 
@@ -171,13 +181,3 @@ pub enum Role {
 }
 
 pub struct Primary(Cohort);
-
-impl Primary {
-    pub fn compatible(&self, ps: ParticipantSet, group: GroupIdentifier, history: ViewHistory) -> bool {
-        ps.iter().all(|p| p.group != group || history.iter().all(|v| p.view_stamp.id() != v.id() || p.view_stamp.timestamp() <= v.timestamp()))
-    }
-
-    pub fn max_view_stamp(&self, ps: ParticipantSet, group: GroupIdentifier) -> Option<ViewStamp> {
-        ps.iter().filter(|p| p.group == group).max_by_key(|p|  p.view_stamp).map(|p| p.view_stamp)
-    }
-}
