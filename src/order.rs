@@ -8,6 +8,14 @@ impl ViewStamp {
     pub fn new(view: ViewIdentifier, timestamp: Timestamp) -> Self {
         Self { view_id: view, timestamp }
     }
+
+    pub fn id(&self) -> &ViewIdentifier {
+        &self.view_id
+    }
+
+    pub fn timestamp(&self) -> &Timestamp {
+        &self.timestamp
+    }
 }
 
 impl Iterator for ViewStamp {

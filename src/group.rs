@@ -33,47 +33,59 @@ pub enum EventKind {
     },
     Committing {
         participants: HashSet<ModuleIdentifier>,
-        aid: TransactionIdentifier
+        aid: TransactionIdentifier,
     },
     Done {
         aid: TransactionIdentifier
-    }
+    },
 }
 
 pub enum Status {
     Active,
     ViewManager,
-    Underling
+    Underling,
 }
 
 pub enum Info<State> {
     Read,
-    Write
-}
-pub struct LockInfo<State> {
-    locker: u128,
-    info: Info<State>
+    Write,
 }
 
-pub struct Object<State> {
+pub struct LockInfo<State> {
+    locker: u128,
+    info: Info<State>,
+}
+
+pub type State = usize;
+
+pub struct Object {
     uid: u128,
     base: State,
-    lockers: HashSet<LockInfo<State>>
+    lockers: HashSet<LockInfo<State>>,
+}
+
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default)]
+pub struct ViewHistory(Vec<ViewStamp>);
+
+impl ViewHistory {
+    pub fn iter(&self) -> impl Iterator<Item=&ViewStamp> {
+        self.0.iter()
+    }
 }
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-pub struct Cohort<State> {
+pub struct Cohort {
     status: Status,
-    group_state: HashSet<Object<State>>,
+    group_state: HashSet<Object>,
     group_id: GroupIdentifier,
     module_id: ModuleIdentifier,
     communication_buffer: BinaryHeap<Reverse<Event>>,
     view_id: ViewIdentifier,
     view: View,
-    history: Vec<ViewStamp>,
+    history: ViewHistory,
 }
 
-impl<State> Cohort<State> {
+impl Cohort {
     pub fn new(group_id: GroupIdentifier, module_id: ModuleIdentifier) -> Self {
         Self {
             status: Status::Active,
@@ -83,39 +95,45 @@ impl<State> Cohort<State> {
             communication_buffer: BinaryHeap::new(),
             view_id: Default::default(),
             view: Default::default(),
-            history: Vec::new()
+            history: ViewHistory::default(),
         }
     }
 }
 
-pub struct Configuration<State> {
-    cohorts: HashSet<Cohort<State>>,
+pub struct Configuration {
+    cohorts: HashSet<Cohort>,
 }
 
-pub struct Group<State> {
+pub struct Group {
     id: GroupIdentifier,
-    configuration: Configuration<State>,
+    configuration: Configuration,
 }
 
 pub struct View {
     id: ViewIdentifier,
     primary: ModuleIdentifier,
-    backups: HashSet<ModuleIdentifier>
+    backups: HashSet<ModuleIdentifier>,
 }
 
 pub struct Call {
     group: GroupIdentifier,
-    view_stamp: ViewStamp
+    view_stamp: ViewStamp,
 }
 
-pub struct PSet {
-    calls: HashSet<Call>
+pub struct ParticipantSet {
+    calls: HashSet<Call>,
+}
+
+impl ParticipantSet {
+    pub fn iter(&self) -> impl Iterator<Item=&Call> {
+        self.calls.iter()
+    }
 }
 
 pub struct TransactionIdentifier {
     identifier: u128,
     group: GroupIdentifier,
-    view_id: ViewIdentifier
+    view_id: ViewIdentifier,
 }
 
 pub struct Transaction {
@@ -125,20 +143,41 @@ pub struct Transaction {
 pub struct CallIdentifier(u128);
 
 pub enum Procedure {
-    Prepare(PSet),
+    Prepare(ParticipantSet),
     Abort,
-    Commit
+    Commit,
 }
 
 pub struct Message {
     view_id: ViewIdentifier,
     call_id: CallIdentifier,
-    procedure: Procedure
+    procedure: Procedure,
 }
 
 pub struct Reply {
-    p_set: PSet
+    p_set: ParticipantSet,
 }
 
-pub struct Client {
+pub struct Client {}
+
+pub trait CommunicationBuffer {
+    fn add(&mut self, event: Event);
+
+    fn force_to(new_vs: ViewStamp);
+}
+
+pub enum Role {
+    Primary(Primary)
+}
+
+pub struct Primary(Cohort);
+
+impl Primary {
+    pub fn compatible(&self, ps: ParticipantSet, group: GroupIdentifier, history: ViewHistory) -> bool {
+        ps.iter().all(|p| p.group != group || history.iter().all(|v| p.view_stamp.id() != v.id() || p.view_stamp.timestamp() <= v.timestamp()))
+    }
+
+    pub fn max_view_stamp(&self, ps: ParticipantSet, group: GroupIdentifier) -> Option<ViewStamp> {
+        ps.iter().filter(|p| p.group == group).max_by_key(|p|  p.view_stamp).map(|p| p.view_stamp)
+    }
 }
