@@ -1,0 +1,87 @@
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::io;
+use std::sync::{Arc, mpsc, RwLock};
+use crate::group::{Event, Message, ModuleIdentifier};
+use crate::order::ViewStamp;
+
+#[derive(Clone, Default)]
+pub struct Network {
+    outbound: Arc<RwLock<HashMap<ModuleIdentifier, mpsc::Sender<Message>>>>,
+}
+
+impl Network {
+    pub fn bind(&mut self, interface: ModuleIdentifier) -> io::Result<CommunicationBuffer> {
+        let mut guard = self.outbound.write().unwrap_or_else(|e| {
+            let mut guard = e.into_inner();
+            *guard = HashMap::new();
+            guard
+        });
+
+        match guard.entry(interface) {
+            Entry::Occupied(_) => {
+                Err(io::Error::new(io::ErrorKind::AddrInUse, "module identifier is already in use"))
+            }
+            Entry::Vacant(entry) => {
+                let (outbound, inbound) = mpsc::channel();
+                let network = self.clone();
+
+                entry.insert(outbound);
+
+                Ok(CommunicationBuffer { inbound, network })
+            }
+        }
+    }
+
+    fn connect(&mut self, to: ModuleIdentifier) -> io::Result<mpsc::Sender<Message>> {
+        let guard = self.outbound.read().map_err(|_| io::Error::new(io::ErrorKind::ConnectionRefused, "unable to connect"))?;
+
+        guard.get(&to).cloned().ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "module identifier is not bound on this network"))
+    }
+}
+
+pub struct CommunicationBuffer {
+    inbound: mpsc::Receiver<Message>,
+    network: Network,
+}
+
+impl CommunicationBuffer {
+    pub fn add(&mut self, _event: Event) -> ViewStamp {
+        ViewStamp::default()
+    }
+
+    pub fn force_to(&mut self, _view_stamp: ViewStamp) {}
+
+    pub fn next(&mut self) -> Option<Message> {
+        None
+    }
+
+    fn send(&mut self, to: ModuleIdentifier, message: Message) -> io::Result<()> {
+        let outbound = self.network.connect(to)?;
+
+        outbound.send(message).map_err(|_| io::Error::new(io::ErrorKind::ConnectionReset, "the receiving end is already closed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::group::{CallIdentifier, Procedure};
+    use crate::order::ViewIdentifier;
+    use super::*;
+
+    #[test]
+    fn connect() {
+        let mut network = Network::default();
+        let a = ModuleIdentifier::from(0);
+        let b = ModuleIdentifier::from(1);
+
+        let mut a_buffer = network.bind(a).unwrap();
+        let mut b_buffer = network.bind(b).unwrap();
+
+        let message = Message::new(ViewIdentifier::from(1), CallIdentifier::from(0), Procedure::Abort);
+
+        a_buffer.send(b, message.clone()).unwrap();
+
+        assert_eq!(b_buffer.next(), Some(message));
+    }
+}

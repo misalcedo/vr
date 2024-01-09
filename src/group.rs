@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 use crate::order::{Timestamp, ViewIdentifier, ViewStamp};
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default)]
 #[repr(transparent)]
 pub struct ModuleIdentifier(u128);
 
@@ -22,17 +22,19 @@ impl From<u128> for GroupIdentifier {
     }
 }
 
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Event {
     timestamp: Timestamp,
     kind: EventKind,
 }
 
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum EventKind {
     Aborted {
         aid: TransactionIdentifier
     },
     Committing {
-        participants: HashSet<ModuleIdentifier>,
+        participants: Vec<ModuleIdentifier>,
         aid: TransactionIdentifier,
     },
     Done {
@@ -40,31 +42,35 @@ pub enum EventKind {
     },
 }
 
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
     Active,
     ViewManager,
     Underling,
 }
 
-pub enum Info<State> {
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum Info {
     Read,
     Write,
 }
 
-pub struct LockInfo<State> {
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct LockInfo {
     locker: u128,
-    info: Info<State>,
+    info: Info,
 }
 
 pub type State = usize;
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct Object {
     uid: u128,
     base: State,
-    lockers: HashSet<LockInfo<State>>,
+    lockers: HashSet<LockInfo>,
 }
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default)]
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default)]
 pub struct ViewHistory(Vec<ViewStamp>);
 
 impl ViewHistory {
@@ -73,7 +79,7 @@ impl ViewHistory {
     }
 }
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Debug)]
 pub struct Cohort {
     status: Status,
     group_state: HashSet<Object>,
@@ -109,17 +115,20 @@ pub struct Group {
     configuration: Configuration,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct View {
     id: ViewIdentifier,
     primary: ModuleIdentifier,
     backups: HashSet<ModuleIdentifier>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Call {
     group: GroupIdentifier,
     view_stamp: ViewStamp,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParticipantSet {
     calls: HashSet<Call>,
 }
@@ -140,6 +149,7 @@ impl ParticipantSet {
     }
 }
 
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct TransactionIdentifier {
     identifier: u128,
     group: GroupIdentifier,
@@ -150,18 +160,37 @@ pub struct Transaction {
     identifier: TransactionIdentifier,
 }
 
+#[derive(Copy, Clone, Default, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct CallIdentifier(u128);
 
+impl From<u128> for CallIdentifier {
+    fn from(value: u128) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Procedure {
     Prepare(ParticipantSet),
     Abort,
     Commit,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Message {
     view_id: ViewIdentifier,
     call_id: CallIdentifier,
     procedure: Procedure,
+}
+
+impl Message {
+    pub fn new(view: ViewIdentifier, call: CallIdentifier, procedure: Procedure) -> Self {
+        Self {
+            view_id: view,
+            call_id: call,
+            procedure
+        }
+    }
 }
 
 pub struct Reply {
@@ -170,14 +199,10 @@ pub struct Reply {
 
 pub struct Client {}
 
-pub trait CommunicationBuffer {
-    fn add(&mut self, event: Event);
-
-    fn force_to(new_vs: ViewStamp);
-}
-
 pub enum Role {
-    Primary(Primary)
+    Primary(Primary),
+    Backup(Backup),
 }
 
 pub struct Primary(Cohort);
+pub struct Backup(Cohort);
