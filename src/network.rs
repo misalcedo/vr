@@ -1,14 +1,16 @@
+use std::cmp::Reverse;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::io;
 use std::sync::{Arc, mpsc, RwLock};
 use std::sync::mpsc::TryRecvError;
 use crate::group::{Event, Message, ModuleIdentifier};
 use crate::order::ViewStamp;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Network {
     outbound: Arc<RwLock<HashMap<ModuleIdentifier, mpsc::Sender<Message>>>>,
+    registry: Arc<RwLock<HashSet<ModuleIdentifier>>>
 }
 
 impl Network {
@@ -29,19 +31,22 @@ impl Network {
 
                 entry.insert(outbound);
 
-                Ok(CommunicationBuffer { inbound, network })
+                Ok(CommunicationBuffer { last: ViewStamp::default(), buffer: BinaryHeap::new(), inbound, network })
             }
         }
     }
 
-    fn connect(&mut self, to: ModuleIdentifier) -> io::Result<mpsc::Sender<Message>> {
+    fn connect(&self, to: ModuleIdentifier) -> io::Result<mpsc::Sender<Message>> {
         let guard = self.outbound.read().map_err(|_| io::Error::new(io::ErrorKind::ConnectionRefused, "unable to connect"))?;
 
         guard.get(&to).cloned().ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "module identifier is not bound on this network"))
     }
 }
 
+#[derive(Debug)]
 pub struct CommunicationBuffer {
+    last: ViewStamp,
+    buffer: BinaryHeap<Reverse<Message>>,
     inbound: mpsc::Receiver<Message>,
     network: Network,
 }
@@ -74,10 +79,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connect() {
+    fn basic() {
         let mut network = Network::default();
-        let a = ModuleIdentifier::from(0);
-        let b = ModuleIdentifier::from(1);
+        let a = ModuleIdentifier::default();
+        let b = ModuleIdentifier::default();
 
         let mut a_buffer = network.bind(a).unwrap();
         let mut b_buffer = network.bind(b).unwrap();

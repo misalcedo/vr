@@ -1,10 +1,18 @@
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::cmp::Ordering;
+use std::collections::HashSet;
+use std::hash::Hash;
+use crate::network::CommunicationBuffer;
 use crate::order::{Timestamp, ViewIdentifier, ViewStamp};
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Default)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 #[repr(transparent)]
 pub struct ModuleIdentifier(u128);
+
+impl Default for ModuleIdentifier {
+    fn default() -> Self {
+        Self(uuid::Uuid::now_v7().as_u128())
+    }
+}
 
 impl From<u128> for ModuleIdentifier {
     fn from(value: u128) -> Self {
@@ -15,6 +23,12 @@ impl From<u128> for ModuleIdentifier {
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 #[repr(transparent)]
 pub struct GroupIdentifier(u128);
+
+impl Default for GroupIdentifier {
+    fn default() -> Self {
+        Self(uuid::Uuid::now_v7().as_u128())
+    }
+}
 
 impl From<u128> for GroupIdentifier {
     fn from(value: u128) -> Self {
@@ -79,40 +93,83 @@ impl ViewHistory {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Cohort {
     status: Status,
     group_state: HashSet<Object>,
     group_id: GroupIdentifier,
     module_id: ModuleIdentifier,
-    communication_buffer: BinaryHeap<Reverse<Event>>,
+    communication_buffer: CommunicationBuffer,
     view_id: ViewIdentifier,
     view: View,
     history: ViewHistory,
 }
 
 impl Cohort {
-    pub fn new(group_id: GroupIdentifier, module_id: ModuleIdentifier) -> Self {
+    pub fn new(group_id: GroupIdentifier, module_id: ModuleIdentifier, communication_buffer: CommunicationBuffer) -> Self {
         Self {
             status: Status::Active,
             group_state: HashSet::new(),
             group_id,
             module_id,
-            communication_buffer: BinaryHeap::new(),
+            communication_buffer,
             view_id: Default::default(),
             view: Default::default(),
             history: ViewHistory::default(),
         }
     }
+
+    pub fn id(&self) -> ModuleIdentifier {
+        self.module_id
+    }
 }
 
 pub struct Configuration {
-    cohorts: HashSet<Cohort>,
+    cohorts: HashSet<ModuleIdentifier>,
+}
+
+impl Configuration {
+    pub fn with_cohorts(cohorts: usize) -> Self {
+        let mut set = HashSet::with_capacity(cohorts);
+
+        while set.len() < cohorts {
+            set.insert(ModuleIdentifier::default());
+        }
+
+        Self { cohorts: set }
+    }
+
+    pub fn cohorts(&self) -> impl Iterator<Item=ModuleIdentifier> {
+        self.cohorts.clone().into_iter()
+    }
+}
+
+impl FromIterator<ModuleIdentifier> for Configuration
+{
+    fn from_iter<I: IntoIterator<Item = ModuleIdentifier>>(iter: I) -> Configuration {
+        Self {
+            cohorts: HashSet::from_iter(iter),
+        }
+    }
 }
 
 pub struct Group {
     id: GroupIdentifier,
     configuration: Configuration,
+}
+
+impl Group {
+    pub fn new(configuration: Configuration) -> Self {
+        Self { id: GroupIdentifier::default(), configuration }
+    }
+
+    pub fn id(&self) -> GroupIdentifier {
+        self.id
+    }
+
+    pub fn cohorts(&self) -> impl Iterator<Item=ModuleIdentifier> {
+        self.configuration.cohorts()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -160,8 +217,14 @@ pub struct Transaction {
     identifier: TransactionIdentifier,
 }
 
-#[derive(Copy, Clone, Default, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct CallIdentifier(u128);
+
+impl Default for CallIdentifier {
+    fn default() -> Self {
+        Self(uuid::Uuid::now_v7().as_u128())
+    }
+}
 
 impl From<u128> for CallIdentifier {
     fn from(value: u128) -> Self {
@@ -181,6 +244,18 @@ pub struct Message {
     view_id: ViewIdentifier,
     call_id: CallIdentifier,
     procedure: Procedure,
+}
+
+impl PartialOrd<Self> for Message {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (self.view_id, self.call_id).partial_cmp(&(other.view_id, other.call_id))
+    }
+}
+
+impl Ord for Message {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.view_id, self.call_id).cmp(&(other.view_id, other.call_id))
+    }
 }
 
 impl Message {

@@ -17,3 +17,4 @@ debug = true
 default = []
 
 [dependencies]
+uuid = { version = "1.6.1", features = ["v7" ] }
