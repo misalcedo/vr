@@ -2,6 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, mpsc, RwLock};
+use std::sync::mpsc::TryRecvError;
 use crate::group::{Event, Message, ModuleIdentifier};
 use crate::order::ViewStamp;
 
@@ -52,8 +53,11 @@ impl CommunicationBuffer {
 
     pub fn force_to(&mut self, _view_stamp: ViewStamp) {}
 
-    pub fn next(&mut self) -> Option<Message> {
-        None
+    pub fn receive(&mut self) -> io::Result<Message> {
+        self.inbound.try_recv().map_err(|e| match e {
+            TryRecvError::Empty => io::Error::from(io::ErrorKind::WouldBlock),
+            TryRecvError::Disconnected => io::Error::from(io::ErrorKind::ConnectionAborted),
+        })
     }
 
     fn send(&mut self, to: ModuleIdentifier, message: Message) -> io::Result<()> {
@@ -82,6 +86,6 @@ mod tests {
 
         a_buffer.send(b, message.clone()).unwrap();
 
-        assert_eq!(b_buffer.next(), Some(message));
+        assert_eq!(b_buffer.receive().unwrap(), message);
     }
 }
