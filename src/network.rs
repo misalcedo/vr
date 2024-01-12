@@ -9,7 +9,7 @@ use crate::model::Message;
 
 #[derive(Clone, Debug, Default)]
 pub struct Network {
-    outbound: Arc<RwLock<HashMap<SocketAddr, mpsc::Sender<Message>>>>,
+    outbound: Arc<RwLock<HashMap<SocketAddr, mpsc::Sender<(SocketAddr, Message)>>>>,
 }
 
 impl Network {
@@ -30,12 +30,12 @@ impl Network {
 
                 entry.insert(outbound);
 
-                Ok(CommunicationStream { inbound, network })
+                Ok(CommunicationStream { address, inbound, network })
             }
         }
     }
 
-    pub fn connect(&self, to: SocketAddr) -> io::Result<mpsc::Sender<Message>> {
+    pub fn connect(&self, to: SocketAddr) -> io::Result<mpsc::Sender<(SocketAddr, Message)>> {
         let guard = self.outbound.read().map_err(|_| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
 
         guard.get(&to).cloned().ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))
@@ -44,12 +44,13 @@ impl Network {
 
 #[derive(Debug)]
 pub struct CommunicationStream {
-    inbound: mpsc::Receiver<Message>,
+    address: SocketAddr,
+    inbound: mpsc::Receiver<(SocketAddr, Message)>,
     network: Network,
 }
 
 impl CommunicationStream {
-    pub fn receive(&mut self) -> io::Result<Message> {
+    pub fn receive(&mut self) -> io::Result<(SocketAddr, Message)> {
         self.inbound.try_recv().map_err(|e| match e {
             TryRecvError::Empty => io::Error::from(io::ErrorKind::WouldBlock),
             TryRecvError::Disconnected => io::Error::from(io::ErrorKind::ConnectionAborted),
@@ -59,7 +60,7 @@ impl CommunicationStream {
     pub fn send(&mut self, to: SocketAddr, message: Message) -> io::Result<()> {
         let outbound = self.network.connect(to)?;
 
-        outbound.send(message).map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
+        outbound.send((self.address, message)).map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
     }
 }
 
@@ -91,7 +92,7 @@ mod tests {
 
         a_stream.send(b, message.clone()).unwrap();
 
-        assert_eq!(b_stream.receive().unwrap(), message);
+        assert_eq!(b_stream.receive().unwrap(), (a, message));
     }
 }
 

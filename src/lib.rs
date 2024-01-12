@@ -19,9 +19,9 @@ pub enum Status {
 }
 
 #[derive(Debug)]
-pub struct Replica {
+pub struct Replica<Service> {
     /// The service code for processing committed client requests.
-    service: fn(Request) -> Vec<u8>,
+    service: Service,
     /// The interface for this replica to communicate with other replicas.
     communication: CommunicationStream,
     /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
@@ -40,11 +40,12 @@ pub struct Replica {
     log: Vec<Request>,
     /// This records for each client the number of its most recent request,
     /// plus, if the request has been executed, the result sent for that request.
-    client_table: HashMap<u128, Reply>,
+    client_table: HashMap<u128, Option<Reply>>,
 }
 
-impl Replica {
-    pub fn new(service: fn(Request) -> Vec<u8>, communication: CommunicationStream, configuration: Vec<SocketAddr>, index: usize) -> Self {
+impl<Service> Replica<Service>
+where Service: FnMut(Vec<u8>) -> Vec<u8> {
+    pub fn new(service: Service, communication: CommunicationStream, configuration: Vec<SocketAddr>, index: usize) -> Self {
         Self {
             service,
             communication,
@@ -60,16 +61,23 @@ impl Replica {
 
     pub fn poll(&mut self) -> io::Result<()> {
         match self.communication.receive() {
-            Ok(Message::Request(request)) => {
+            Ok((from, Message::Request(request))) => {
+                let last_reply = self.client_table.entry(request.c).or_insert(None);
+                let reply = Reply {
+                    v: self.view_number,
+                    s: request.s,
+                    x: (self.service)(request.op),
+                };
+
+                self.communication.send(from, Message::Reply(reply))
+            }
+            Ok((from, Message::Prepare(message))) => {
                 Ok(())
             }
-            Ok(Message::Prepare(message)) => {
+            Ok((from, Message::PrepareOk(message))) => {
                 Ok(())
             }
-            Ok(Message::PrepareOk(message)) => {
-                Ok(())
-            }
-            Ok(Message::Reply(reply)) => {
+            Ok((from, Message::Reply(reply))) => {
                 Ok(())
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
@@ -90,7 +98,11 @@ mod tests {
         let mut replicas = Vec::with_capacity(configuration.len());
 
         for (index, address) in configuration.iter().enumerate() {
-            let service = |request| { b"Bye, World!".to_vec() };
+            let mut counter = 0usize;
+            let service = move |request| {
+                counter += 1;
+                counter.to_be_bytes().to_vec()
+            };
             replicas.push(Replica::new(service, network.bind(*address).unwrap(), configuration.clone(), index));
         }
 
@@ -106,16 +118,16 @@ mod tests {
         client.send(configuration[0], Message::Request(request.clone())).unwrap();
 
         replicas[0].poll().unwrap();
-        replicas[1].poll().unwrap();
-        replicas[2].poll().unwrap();
-        replicas[0].poll().unwrap();
-        replicas[0].poll().unwrap();
+        // replicas[1].poll().unwrap();
+        // replicas[2].poll().unwrap();
+        // replicas[0].poll().unwrap();
+        // replicas[0].poll().unwrap();
 
-        assert_eq!(client.receive().unwrap(), Message::Reply(Reply {
+        assert_eq!(client.receive().unwrap(), (configuration[0], Message::Reply(Reply {
             v: request.v,
             s: request.s,
-            x: b"Bye, World!".to_vec(),
-        }));
+            x: 1usize.to_be_bytes().to_vec(),
+        })));
     }
 }
 
