@@ -4,7 +4,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::{Arc, mpsc, RwLock};
 use std::sync::mpsc::TryRecvError;
-use crate::Message;
+use crate::model::Message;
 
 
 #[derive(Clone, Debug, Default)]
@@ -13,7 +13,7 @@ pub struct Network {
 }
 
 impl Network {
-    pub fn bind(&mut self, address: SocketAddr) -> io::Result<Stream> {
+    pub fn bind(&mut self, address: SocketAddr) -> io::Result<CommunicationStream> {
         let mut guard = self.outbound.write().unwrap_or_else(|e| {
             let mut guard = e.into_inner();
             *guard = HashMap::new();
@@ -30,7 +30,7 @@ impl Network {
 
                 entry.insert(outbound);
 
-                Ok(Stream { inbound, network })
+                Ok(CommunicationStream { inbound, network })
             }
         }
     }
@@ -43,12 +43,12 @@ impl Network {
 }
 
 #[derive(Debug)]
-pub struct Stream {
+pub struct CommunicationStream {
     inbound: mpsc::Receiver<Message>,
     network: Network,
 }
 
-impl Stream {
+impl CommunicationStream {
     pub fn receive(&mut self) -> io::Result<Message> {
         self.inbound.try_recv().map_err(|e| match e {
             TryRecvError::Empty => io::Error::from(io::ErrorKind::WouldBlock),
@@ -66,7 +66,7 @@ impl Stream {
 
 #[cfg(test)]
 mod tests {
-    use crate::Request;
+    use crate::model::Request;
     use super::*;
 
     #[test]

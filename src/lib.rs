@@ -3,9 +3,11 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
+mod model;
 mod network;
 
-pub use network::{Network, Stream};
+pub use network::{Network, CommunicationStream};
+use crate::model::{Reply, Request};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -15,30 +17,12 @@ pub enum Status {
     Recovering
 }
 
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Request {
-    /// The operation (with its arguments) the client wants to run).
-    op: Vec<u8>,
-    /// Client id
-    c: u128,
-    /// Client-assigned number for the request.
-    s: u128,
-    /// View number known to the client.
-    v: usize,
-}
-
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Reply {
-    /// View number.
-    v: usize,
-    /// The number the client provided in the request.
-    s: u128,
-    /// The result of the up-call to the service.
-    x: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct Replica {
+    /// The service code for processing committed client requests.
+    service: fn(Request) -> Vec<u8>,
+    /// The interface for this replica to communicate with other replicas.
+    communication: CommunicationStream,
     /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
     /// The replicas are numbered 0 to 2f.
     configuration: Vec<SocketAddr>,
@@ -55,12 +39,14 @@ pub struct Replica {
     log: Vec<Request>,
     /// This records for each client the number of its most recent request,
     /// plus, if the request has been executed, the result sent for that request.
-    client_table: HashMap<u128, Reply>
+    client_table: HashMap<u128, Reply>,
 }
 
 impl Replica {
-    pub fn new(configuration: Vec<SocketAddr>, index: usize) -> Self {
+    pub fn new(service: fn(Request) -> Vec<u8>, communication: CommunicationStream, configuration: Vec<SocketAddr>, index: usize) -> Self {
         Self {
+            service,
+            communication,
             configuration,
             index,
             view_number: 0,
@@ -72,42 +58,38 @@ impl Replica {
     }
 }
 
-#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
-pub enum Message {
-    Prepare {
-        /// The current view-number.
-        v: usize,
-        /// The op-number assigned to the request.
-        n: usize,
-        /// The message received from the client.
-        m: Request,
-    },
-    PrepareOk {
-        /// The current view-number known to the replica.
-        v: usize,
-        /// The op-number assigned to the accepted prepare message.
-        n: usize,
-        /// The index of the replica accepting the prepare message.
-        i: usize
-    }
-}
-
-
-
-
 #[cfg(test)]
 mod tests {
+    use crate::model::Message;
     use super::*;
 
     #[test]
     fn simulate() {
         let configuration = vec!["127.0.0.1:3001".parse().unwrap(), "127.0.0.1:3002".parse().unwrap(), "127.0.0.1:3003".parse().unwrap()];
-        let network = Network::default();
+        let mut network = Network::default();
         let mut replicas = Vec::with_capacity(configuration.len());
 
         for (index, address) in configuration.iter().enumerate() {
-            replicas.push(Replica::new(configuration.clone(), index));
+            let service = |request| { b"Bye, World!".to_vec() };
+            replicas.push(Replica::new(service, network.bind(*address).unwrap(), configuration.clone(), index));
         }
+
+        let mut client = network.bind("127.0.0.1:4001".parse().unwrap()).unwrap();
+
+        let request = Request {
+            op: b"Hello, World!".to_vec(),
+            c: 1,
+            s: 1,
+            v: 0,
+        };
+
+        client.send(configuration[0], Message::Request(request.clone())).unwrap();
+
+        assert_eq!(client.receive().unwrap(), Message::Reply(Reply {
+            v: request.v,
+            s: request.s,
+            x: b"Bye, World!".to_vec(),
+        }));
     }
 }
 
