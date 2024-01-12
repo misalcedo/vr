@@ -66,7 +66,7 @@ impl CommunicationStream {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::Request;
+    use crate::model::{Prepare, Request};
     use super::*;
 
     #[test]
@@ -78,7 +78,7 @@ mod tests {
         let mut a_stream = network.bind(a).unwrap();
         let mut b_stream = network.bind(b).unwrap();
 
-        let message = Message::Prepare {
+        let message = Message::Prepare(Prepare {
             v: 1,
             n: 1,
             m: Request {
@@ -87,7 +87,7 @@ mod tests {
                 s: 1,
                 v: 0,
             },
-        };
+        });
 
         a_stream.send(b, message.clone()).unwrap();
 

@@ -1,13 +1,14 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
 
 use std::collections::HashMap;
+use std::io;
 use std::net::SocketAddr;
 
 mod model;
 mod network;
 
 pub use network::{Network, CommunicationStream};
-use crate::model::{Reply, Request};
+use crate::model::{Message, Reply, Request};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -56,6 +57,25 @@ impl Replica {
             client_table: Default::default(),
         }
     }
+
+    pub fn poll(&mut self) -> io::Result<()> {
+        match self.communication.receive() {
+            Ok(Message::Request(request)) => {
+                Ok(())
+            }
+            Ok(Message::Prepare(message)) => {
+                Ok(())
+            }
+            Ok(Message::PrepareOk(message)) => {
+                Ok(())
+            }
+            Ok(Message::Reply(reply)) => {
+                Ok(())
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            Err(e) => Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -84,6 +104,12 @@ mod tests {
         };
 
         client.send(configuration[0], Message::Request(request.clone())).unwrap();
+
+        replicas[0].poll().unwrap();
+        replicas[1].poll().unwrap();
+        replicas[2].poll().unwrap();
+        replicas[0].poll().unwrap();
+        replicas[0].poll().unwrap();
 
         assert_eq!(client.receive().unwrap(), Message::Reply(Reply {
             v: request.v,

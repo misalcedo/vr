@@ -20,24 +20,30 @@ pub struct Reply {
     pub x: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+pub struct Prepare {
+    /// The current view-number.
+    pub v: usize,
+    /// The op-number assigned to the request.
+    pub n: usize,
+    /// The message received from the client.
+    pub m: Request,
+}
+
+#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+pub struct PrepareOk {
+    /// The current view-number known to the replica.
+    pub v: usize,
+    /// The op-number assigned to the accepted prepare message.
+    pub n: usize,
+    /// The index of the replica accepting the prepare message.
+    pub i: usize
+}
+
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Message {
     Request(Request),
-    Prepare {
-        /// The current view-number.
-        v: usize,
-        /// The op-number assigned to the request.
-        n: usize,
-        /// The message received from the client.
-        m: Request,
-    },
-    PrepareOk {
-        /// The current view-number known to the replica.
-        v: usize,
-        /// The op-number assigned to the accepted prepare message.
-        n: usize,
-        /// The index of the replica accepting the prepare message.
-        i: usize
-    },
+    Prepare(Prepare),
+    PrepareOk(PrepareOk),
     Reply(Reply),
 }
