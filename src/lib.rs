@@ -2,8 +2,6 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use crate::group::{Event, Message};
-use crate::order::ViewStamp;
 
 mod network;
 mod group;
@@ -50,13 +48,33 @@ pub struct Replica {
     view_number: usize,
     /// The current status, either normal, view-change, or recovering.
     status: Status,
-    /// The op-number assigned to the most recently received request, initially 0. Derived from the length of the log.
+    /// The op-number assigned to the most recently received request, initially 0.
+    op_number: usize,
     /// This is an array containing op-number entries.
     /// The entries contain the requests that have been received so far in their assigned order.
     log: Vec<Request>,
     /// This records for each client the number of its most recent request,
     /// plus, if the request has been executed, the result sent for that request.
     client_table: HashMap<u128, Reply>
+}
+
+pub enum Message {
+    Prepare {
+        /// The message received from the client.
+        m: Request,
+        /// The current view-number.
+        v: usize,
+        /// The op-number assigned to the request.
+        n: usize
+    },
+    PrepareOk {
+        /// The current view-number known to the replica.
+        v: usize,
+        /// The op-number assigned to the accepted prepare message.
+        n: usize,
+        /// The index of the replica accepting the prepare message.
+        i: usize
+    }
 }
 
 #[cfg(test)]
