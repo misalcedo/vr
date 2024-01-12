@@ -8,7 +8,7 @@ mod model;
 mod network;
 
 pub use network::{Network, CommunicationStream};
-use crate::model::{Message, Reply, Request};
+use crate::model::{Message, Prepare, Reply, Request};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -16,6 +16,23 @@ pub enum Status {
     Normal,
     ViewChange,
     Recovering
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RequestState {
+    request: u128,
+    accepted: usize,
+    reply: Option<Reply>
+}
+
+impl RequestState {
+    pub fn new(request: u128, ) -> Self {
+        RequestState {
+            request,
+            accepted: 0,
+            reply: None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -40,7 +57,7 @@ pub struct Replica<Service> {
     log: Vec<Request>,
     /// This records for each client the number of its most recent request,
     /// plus, if the request has been executed, the result sent for that request.
-    client_table: HashMap<u128, Option<Reply>>,
+    client_table: HashMap<u128, RequestState>,
 }
 
 impl<Service> Replica<Service>
@@ -62,14 +79,21 @@ where Service: FnMut(Vec<u8>) -> Vec<u8> {
     pub fn poll(&mut self) -> io::Result<()> {
         match self.communication.receive() {
             Ok((from, Message::Request(request))) => {
-                let last_reply = self.client_table.entry(request.c).or_insert(None);
-                let reply = Reply {
-                    v: self.view_number,
-                    s: request.s,
-                    x: (self.service)(request.op),
-                };
+                self.op_number += 1;
 
-                self.communication.send(from, Message::Reply(reply))
+                let last_reply = self.client_table.entry(request.c).or_insert_with(|| { RequestState::new(request.s) });
+
+                for (i, replica) in self.configuration.iter().enumerate() {
+                    if i != self.index {
+                        self.communication.send(*replica, Message::Prepare(Prepare {
+                            v: self.view_number,
+                            n: self.op_number,
+                            m: request.clone(),
+                        })).unwrap();
+                    }
+                }
+
+                Ok(())
             }
             Ok((from, Message::Prepare(message))) => {
                 Ok(())
