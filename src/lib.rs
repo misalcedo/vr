@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 mod network;
-mod group;
-mod order;
+
+pub use network::{Network, Stream};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -37,7 +37,7 @@ pub struct Reply {
     x: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Replica {
     /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
     /// The replicas are numbered 0 to 2f.
@@ -58,14 +58,29 @@ pub struct Replica {
     client_table: HashMap<u128, Reply>
 }
 
+impl Replica {
+    pub fn new(configuration: Vec<SocketAddr>, index: usize) -> Self {
+        Self {
+            configuration,
+            index,
+            view_number: 0,
+            status: Default::default(),
+            op_number: 0,
+            log: vec![],
+            client_table: Default::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Message {
     Prepare {
-        /// The message received from the client.
-        m: Request,
         /// The current view-number.
         v: usize,
         /// The op-number assigned to the request.
-        n: usize
+        n: usize,
+        /// The message received from the client.
+        m: Request,
     },
     PrepareOk {
         /// The current view-number known to the replica.
@@ -77,21 +92,21 @@ pub enum Message {
     }
 }
 
+
+
+
 #[cfg(test)]
 mod tests {
-    use crate::group::{Cohort, Configuration, Group, GroupIdentifier, ModuleIdentifier};
-    use crate::network::Network;
     use super::*;
 
     #[test]
     fn simulate() {
-        let size = 3;
-        let group = Group::new(Configuration::with_cohorts(size));
-        let mut network = Network::default();
-        let mut cohorts = Vec::with_capacity(size);
+        let configuration = vec!["127.0.0.1:3001".parse().unwrap(), "127.0.0.1:3002".parse().unwrap(), "127.0.0.1:3003".parse().unwrap()];
+        let network = Network::default();
+        let mut replicas = Vec::with_capacity(configuration.len());
 
-        for cohort in group.cohorts() {
-            cohorts.push(Cohort::new(group.id(), cohort, network.bind(cohort).unwrap()));
+        for (index, address) in configuration.iter().enumerate() {
+            replicas.push(Replica::new(configuration.clone(), index));
         }
     }
 }
