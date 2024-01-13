@@ -1,29 +1,28 @@
-use std::cmp::Reverse;
 use std::collections::hash_map::Entry;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::{Arc, mpsc, RwLock};
 use std::sync::mpsc::TryRecvError;
-use crate::group::{Event, Message, ModuleIdentifier};
-use crate::order::ViewStamp;
+use crate::model::Message;
+
 
 #[derive(Clone, Debug, Default)]
 pub struct Network {
-    outbound: Arc<RwLock<HashMap<ModuleIdentifier, mpsc::Sender<Message>>>>,
-    registry: Arc<RwLock<HashSet<ModuleIdentifier>>>
+    outbound: Arc<RwLock<HashMap<SocketAddr, mpsc::Sender<(SocketAddr, Message)>>>>,
 }
 
 impl Network {
-    pub fn bind(&mut self, interface: ModuleIdentifier) -> io::Result<CommunicationBuffer> {
+    pub fn bind(&mut self, address: SocketAddr) -> io::Result<CommunicationStream> {
         let mut guard = self.outbound.write().unwrap_or_else(|e| {
             let mut guard = e.into_inner();
             *guard = HashMap::new();
             guard
         });
 
-        match guard.entry(interface) {
+        match guard.entry(address) {
             Entry::Occupied(_) => {
-                Err(io::Error::new(io::ErrorKind::AddrInUse, "module identifier is already in use"))
+                Err(io::Error::from(io::ErrorKind::AddrInUse))
             }
             Entry::Vacant(entry) => {
                 let (outbound, inbound) = mpsc::channel();
@@ -31,66 +30,69 @@ impl Network {
 
                 entry.insert(outbound);
 
-                Ok(CommunicationBuffer { last: ViewStamp::default(), buffer: BinaryHeap::new(), inbound, network })
+                Ok(CommunicationStream { address, inbound, network })
             }
         }
     }
 
-    fn connect(&self, to: ModuleIdentifier) -> io::Result<mpsc::Sender<Message>> {
-        let guard = self.outbound.read().map_err(|_| io::Error::new(io::ErrorKind::ConnectionRefused, "unable to connect"))?;
+    pub fn connect(&self, to: SocketAddr) -> io::Result<mpsc::Sender<(SocketAddr, Message)>> {
+        let guard = self.outbound.read().map_err(|_| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
 
-        guard.get(&to).cloned().ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "module identifier is not bound on this network"))
+        guard.get(&to).cloned().ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))
     }
 }
 
 #[derive(Debug)]
-pub struct CommunicationBuffer {
-    last: ViewStamp,
-    buffer: BinaryHeap<Reverse<Message>>,
-    inbound: mpsc::Receiver<Message>,
+pub struct CommunicationStream {
+    address: SocketAddr,
+    inbound: mpsc::Receiver<(SocketAddr, Message)>,
     network: Network,
 }
 
-impl CommunicationBuffer {
-    pub fn add(&mut self, _event: Event) -> ViewStamp {
-        ViewStamp::default()
-    }
-
-    pub fn force_to(&mut self, _view_stamp: ViewStamp) {}
-
-    pub fn receive(&mut self) -> io::Result<Message> {
+impl CommunicationStream {
+    pub fn receive(&mut self) -> io::Result<(SocketAddr, Message)> {
         self.inbound.try_recv().map_err(|e| match e {
             TryRecvError::Empty => io::Error::from(io::ErrorKind::WouldBlock),
             TryRecvError::Disconnected => io::Error::from(io::ErrorKind::ConnectionAborted),
         })
     }
 
-    fn send(&mut self, to: ModuleIdentifier, message: Message) -> io::Result<()> {
+    pub fn send(&mut self, to: SocketAddr, message: Message) -> io::Result<()> {
         let outbound = self.network.connect(to)?;
 
-        outbound.send(message).map_err(|_| io::Error::new(io::ErrorKind::ConnectionReset, "the receiving end is already closed"))
+        outbound.send((self.address, message)).map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
     }
 }
 
+
 #[cfg(test)]
 mod tests {
-    use crate::group::{CallIdentifier, Procedure};
-    use crate::order::ViewIdentifier;
+    use crate::model::{Prepare, Request};
     use super::*;
 
     #[test]
     fn basic() {
         let mut network = Network::default();
-        let a = ModuleIdentifier::default();
-        let b = ModuleIdentifier::default();
+        let a = "127.0.0.1:3001".parse().unwrap();
+        let b = "127.0.0.1:3002".parse().unwrap();
 
-        let mut a_buffer = network.bind(a).unwrap();
-        let mut b_buffer = network.bind(b).unwrap();
+        let mut a_stream = network.bind(a).unwrap();
+        let mut b_stream = network.bind(b).unwrap();
 
-        let message = Message::new(ViewIdentifier::from(1), CallIdentifier::from(0), Procedure::Abort);
+        let message = Message::Prepare(Prepare {
+            v: 1,
+            n: 1,
+            m: Request {
+                op: b"Hello, World!".to_vec(),
+                c: 1,
+                s: 1,
+                v: 0,
+            },
+        });
 
-        a_buffer.send(b, message.clone()).unwrap();
+        a_stream.send(b, message.clone()).unwrap();
 
-        assert_eq!(b_buffer.receive().unwrap(), message);
+        assert_eq!(b_stream.receive().unwrap(), (a, message));
     }
 }
+
