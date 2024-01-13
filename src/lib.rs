@@ -1,6 +1,6 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::SocketAddr;
 
@@ -8,7 +8,7 @@ mod model;
 mod network;
 
 pub use network::{Network, CommunicationStream};
-use crate::model::{Message, Prepare, Reply, Request};
+use crate::model::{Message, Prepare, PrepareOk, Reply, Request};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -18,18 +18,20 @@ pub enum Status {
     Recovering
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestState {
+    address: SocketAddr,
     request: u128,
-    accepted: usize,
-    reply: Option<Reply>
+    accepted: HashSet<usize>,
+    reply: Option<Reply>,
 }
 
 impl RequestState {
-    pub fn new(request: u128, ) -> Self {
+    pub fn new(address: SocketAddr, request: u128, ) -> Self {
         RequestState {
+            address,
             request,
-            accepted: 0,
+            accepted: HashSet::new(),
             reply: None
         }
     }
@@ -50,14 +52,14 @@ pub struct Replica<Service> {
     view_number: usize,
     /// The current status, either normal, view-change, or recovering.
     status: Status,
-    /// The op-number assigned to the most recently received request, initially 0.
-    op_number: usize,
     /// This is an array containing op-number entries.
     /// The entries contain the requests that have been received so far in their assigned order.
     log: Vec<Request>,
     /// This records for each client the number of its most recent request,
     /// plus, if the request has been executed, the result sent for that request.
     client_table: HashMap<u128, RequestState>,
+    /// The last committed log entry.
+    committed: usize
 }
 
 impl<Service> Replica<Service>
@@ -70,43 +72,97 @@ where Service: FnMut(Vec<u8>) -> Vec<u8> {
             index,
             view_number: 0,
             status: Default::default(),
-            op_number: 0,
             log: vec![],
             client_table: Default::default(),
+            committed: 0,
         }
     }
 
     pub fn poll(&mut self) -> io::Result<()> {
+        let is_primary = (self.view_number % self.configuration.len()) == self.index;
+
         match self.communication.receive() {
-            Ok((from, Message::Request(request))) => {
-                self.op_number += 1;
+            Ok((from, Message::Request(request))) if is_primary => {
+                let state = self.client_table.entry(request.c)
+                    .or_insert_with(|| { RequestState::new(from, request.s) });
 
-                let last_reply = self.client_table.entry(request.c).or_insert_with(|| { RequestState::new(request.s) });
+                match state.reply.as_ref().map(Reply::clone) {
+                    Some(reply) => {
+                        self.communication.send(from, Message::Reply(reply))
+                    },
+                    None => {
+                        self.log.push(request.clone());
 
-                for (i, replica) in self.configuration.iter().enumerate() {
-                    if i != self.index {
-                        self.communication.send(*replica, Message::Prepare(Prepare {
+                        let message = Message::Prepare(Prepare {
                             v: self.view_number,
-                            n: self.op_number,
+                            n: self.log.len(),
                             m: request.clone(),
-                        })).unwrap();
+                        });
+
+                        self.broadcast(message)
                     }
                 }
+            }
+            Ok((from, Message::Prepare(message))) if !is_primary => {
+                // TODO: ensure the prepare is from the current view's primary.
 
+                let next = self.log.len() + 1;
+
+                if message.v == self.view_number && message.n > next {
+                    // TODO: wait until it has entries in its log for all earlier requests
+                    // (doing state transfer if necessary to get the missing information)
+                    Err(io::Error::new(io::ErrorKind::Unsupported, "state transfer and buffering not yet supported"))
+                } else if message.v == self.view_number && next == message.n {
+                    self.log.push(message.m);
+
+                    let message = Message::PrepareOk(PrepareOk {
+                        v: self.view_number,
+                        n: self.log.len(),
+                        i: self.index,
+                    });
+
+                    self.communication.send(from, message.clone())
+                } else {
+                    Ok(())
+                }
+            }
+            Ok((from, Message::PrepareOk(message))) if is_primary => {
+                match self.log.get(message.n) {
+                    None => Ok(()),
+                    Some(request) => {
+                        let state = self.client_table.entry(request.c)
+                            .or_insert_with(|| { RequestState::new(from, request.s) });
+
+                        if state.request == request.s {
+                            state.accepted.insert(message.i);
+
+                            // TODO: Update committed.
+                            let sub_majority = (self.configuration.len() - 1) / 2;
+
+                            (self.service)(request.op.clone())
+                        } else {
+                            Ok(())
+                        }
+                    }
+                }
+            }
+            Ok((from, Message::Commit(message))) => {
                 Ok(())
             }
-            Ok((from, Message::Prepare(message))) => {
-                Ok(())
-            }
-            Ok((from, Message::PrepareOk(message))) => {
-                Ok(())
-            }
-            Ok((from, Message::Reply(reply))) => {
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
             Err(e) => Err(e)
         }
+    }
+
+    fn broadcast(&mut self, message: Message) -> io::Result<()> {
+        for (i, replica) in self.configuration.iter().enumerate() {
+            if i != self.index {
+                self.communication.send(*replica, message.clone())?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -142,10 +198,10 @@ mod tests {
         client.send(configuration[0], Message::Request(request.clone())).unwrap();
 
         replicas[0].poll().unwrap();
-        // replicas[1].poll().unwrap();
-        // replicas[2].poll().unwrap();
-        // replicas[0].poll().unwrap();
-        // replicas[0].poll().unwrap();
+        replicas[1].poll().unwrap();
+        replicas[2].poll().unwrap();
+        replicas[0].poll().unwrap();
+        replicas[0].poll().unwrap();
 
         assert_eq!(client.receive().unwrap(), (configuration[0], Message::Reply(Reply {
             v: request.v,

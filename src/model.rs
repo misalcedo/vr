@@ -40,10 +40,20 @@ pub struct PrepareOk {
     pub i: usize
 }
 
+
+#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+pub struct Commit {
+    /// The current view-number.
+    pub v: usize,
+    /// The op-number of the last committed log entry.
+    pub n: usize,
+}
+
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Message {
     Request(Request),
     Prepare(Prepare),
     PrepareOk(PrepareOk),
     Reply(Reply),
+    Commit(Commit)
 }
