@@ -1,21 +1,21 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
-use std::collections::{BTreeMap, HashMap, HashSet};
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::net::SocketAddr;
 
 mod model;
 mod network;
 
-pub use network::{Network, CommunicationStream};
 use crate::model::{Commit, Inform, Message, Prepare, PrepareOk, Reply, Request};
+pub use network::{CommunicationStream, Network};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
     #[default]
     Normal,
     ViewChange,
-    Recovering
+    Recovering,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,7 +26,7 @@ pub struct RequestState {
 }
 
 impl RequestState {
-    pub fn new(address: SocketAddr, request: u128, ) -> Self {
+    pub fn new(address: SocketAddr, request: u128) -> Self {
         RequestState {
             address,
             request,
@@ -37,7 +37,7 @@ impl RequestState {
     pub fn is_committed(&self, group_size: usize) -> bool {
         let sub_majority = (group_size - 1) / 2;
 
-        return self.accepted.len() >= sub_majority;
+        self.accepted.len() >= sub_majority
     }
 }
 
@@ -67,12 +67,19 @@ pub struct Replica<Service> {
     /// The count of operations executed in the current view.
     executed: usize,
     /// Log entries yet to be committed log entry.
-    queue: BTreeMap<usize, RequestState>
+    queue: BTreeMap<usize, RequestState>,
 }
 
 impl<Service> Replica<Service>
-where Service: FnMut(&[u8]) -> Vec<u8> {
-    pub fn new(service: Service, communication: CommunicationStream, configuration: Vec<SocketAddr>, index: usize) -> Self {
+where
+    Service: FnMut(&[u8]) -> Vec<u8>,
+{
+    pub fn new(
+        service: Service,
+        communication: CommunicationStream,
+        configuration: Vec<SocketAddr>,
+        index: usize,
+    ) -> Self {
         Self {
             service,
             communication,
@@ -93,19 +100,19 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
         let is_primary = primary == self.index;
 
         let result = match self.communication.receive() {
-            Ok((from, message)) => {
-                match self.status {
-                    Status::Normal if message.view_number() < self.view_number => self.inform(from),
-                    Status::Normal if message.view_number() > self.view_number => todo!("Perform state transfer"),
-                    Status::Normal if is_primary => self.process_primary(from, message),
-                    Status::Normal if from != self.configuration[primary] => self.inform(from),
-                    Status::Normal => self.process_replica(from, message),
-                    Status::ViewChange => todo!("Support view change status"),
-                    Status::Recovering => todo!("Support recovering status")
+            Ok((from, message)) => match self.status {
+                Status::Normal if message.view_number() < self.view_number => self.inform(from),
+                Status::Normal if message.view_number() > self.view_number => {
+                    todo!("Perform state transfer")
                 }
+                Status::Normal if is_primary => self.process_primary(from, message),
+                Status::Normal if from != self.configuration[primary] => self.inform(from),
+                Status::Normal => self.process_replica(from, message),
+                Status::ViewChange => todo!("Support view change status"),
+                Status::Recovering => todo!("Support recovering status"),
             },
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
-            Err(e) => Err(e)
+            Err(e) => Err(e),
         };
 
         // Perform up-call for committed operations in order.
@@ -120,7 +127,12 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
     }
 
     fn inform(&mut self, to: SocketAddr) -> io::Result<()> {
-        self.communication.send(to, Inform { v: self.view_number })
+        self.communication.send(
+            to,
+            Inform {
+                v: self.view_number,
+            },
+        )
     }
 
     fn update_primary(&mut self) -> io::Result<()> {
@@ -147,7 +159,10 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
         }
 
         // TODO: piggy-back committed messages with prepare messages
-        self.broadcast(Commit { v: self.view_number, n: self.committed})
+        self.broadcast(Commit {
+            v: self.view_number,
+            n: self.committed,
+        })
     }
 
     fn update_replica(&mut self) -> io::Result<()> {
@@ -163,8 +178,7 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
     fn process_primary(&mut self, from: SocketAddr, message: Message) -> io::Result<()> {
         match message {
             Message::Request(request) => {
-                let cache = self.client_table.entry(request.c)
-                    .or_default();
+                let cache = self.client_table.entry(request.c).or_default();
 
                 if let Some((&key, value)) = cache.last_key_value() {
                     if key > request.s {
@@ -212,7 +226,8 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
 
     fn prepare(&mut self, from: SocketAddr, request: Request) -> io::Result<()> {
         self.log.push(request.clone());
-        self.queue.insert(self.log.len(), RequestState::new(from, request.s));
+        self.queue
+            .insert(self.log.len(), RequestState::new(from, request.s));
 
         self.broadcast(Prepare {
             v: self.view_number,
@@ -256,10 +271,8 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
         let message = message.into();
 
         for (i, replica) in self.configuration.iter().enumerate() {
-            if i != self.index {
-                if self.communication.send(*replica, message.clone()).is_err() {
-                    errors += 1;
-                }
+            if i != self.index && self.communication.send(*replica, message.clone()).is_err() {
+                errors += 1;
             }
         }
 
@@ -304,14 +317,14 @@ impl Client {
     }
 
     pub fn update(&mut self, message: &Message) {
-         self.view_number = message.view_number();
+        self.view_number = message.view_number();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::model::Message;
     use super::*;
+    use crate::model::Message;
 
     #[test]
     fn queue() {
@@ -326,7 +339,11 @@ mod tests {
 
     #[test]
     fn simulate() {
-        let configuration = vec!["127.0.0.1:3001".parse().unwrap(), "127.0.0.1:3002".parse().unwrap(), "127.0.0.1:3003".parse().unwrap()];
+        let configuration = vec![
+            "127.0.0.1:3001".parse().unwrap(),
+            "127.0.0.1:3002".parse().unwrap(),
+            "127.0.0.1:3003".parse().unwrap(),
+        ];
         let mut network = Network::default();
         let mut replicas = Vec::with_capacity(configuration.len());
 
@@ -336,7 +353,12 @@ mod tests {
                 counter += request.len();
                 counter.to_be_bytes().to_vec()
             };
-            replicas.push(Replica::new(service, network.bind(*address).unwrap(), configuration.clone(), index));
+            replicas.push(Replica::new(
+                service,
+                network.bind(*address).unwrap(),
+                configuration.clone(),
+                index,
+            ));
         }
 
         let mut client_stream = network.bind("127.0.0.1:4001".parse().unwrap()).unwrap();
@@ -345,7 +367,9 @@ mod tests {
         let payload = b"Hello, World!".to_vec();
         let (primary, request) = client.new_request(payload.clone());
 
-        client_stream.send(primary, Message::Request(request.clone())).unwrap();
+        client_stream
+            .send(primary, Message::Request(request.clone()))
+            .unwrap();
 
         replicas[0].poll().unwrap();
         replicas[1].poll().unwrap();
@@ -359,11 +383,13 @@ mod tests {
 
         assert_eq!(client.view_number, replicas[0].view_number);
         assert_eq!(sender, configuration[0]);
-        assert_eq!(message, Message::Reply(Reply {
-            v: request.v,
-            s: request.s,
-            x: payload.len().to_be_bytes().to_vec(),
-        }));
+        assert_eq!(
+            message,
+            Message::Reply(Reply {
+                v: request.v,
+                s: request.s,
+                x: payload.len().to_be_bytes().to_vec(),
+            })
+        );
     }
 }
-

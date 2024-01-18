@@ -49,7 +49,7 @@ pub struct PrepareOk {
     /// The op-number assigned to the accepted prepare message.
     pub n: usize,
     /// The index of the replica accepting the prepare message.
-    pub i: usize
+    pub i: usize,
 }
 
 impl From<PrepareOk> for Message {
