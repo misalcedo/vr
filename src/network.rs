@@ -1,15 +1,16 @@
+use crate::model::Message;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, mpsc, RwLock};
 use std::sync::mpsc::TryRecvError;
-use crate::model::Message;
+use std::sync::{mpsc, Arc, RwLock};
 
+type StreamWriter = mpsc::Sender<(SocketAddr, Message)>;
 
 #[derive(Clone, Debug, Default)]
 pub struct Network {
-    outbound: Arc<RwLock<HashMap<SocketAddr, mpsc::Sender<(SocketAddr, Message)>>>>,
+    outbound: Arc<RwLock<HashMap<SocketAddr, StreamWriter>>>,
 }
 
 impl Network {
@@ -21,24 +22,32 @@ impl Network {
         });
 
         match guard.entry(address) {
-            Entry::Occupied(_) => {
-                Err(io::Error::from(io::ErrorKind::AddrInUse))
-            }
+            Entry::Occupied(_) => Err(io::Error::from(io::ErrorKind::AddrInUse)),
             Entry::Vacant(entry) => {
                 let (outbound, inbound) = mpsc::channel();
                 let network = self.clone();
 
                 entry.insert(outbound);
 
-                Ok(CommunicationStream { address, inbound, network })
+                Ok(CommunicationStream {
+                    address,
+                    inbound,
+                    network,
+                })
             }
         }
     }
 
     pub fn connect(&self, to: SocketAddr) -> io::Result<mpsc::Sender<(SocketAddr, Message)>> {
-        let guard = self.outbound.read().map_err(|_| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
+        let guard = self
+            .outbound
+            .read()
+            .map_err(|_| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
 
-        guard.get(&to).cloned().ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))
+        guard
+            .get(&to)
+            .cloned()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))
     }
 }
 
@@ -57,18 +66,19 @@ impl CommunicationStream {
         })
     }
 
-    pub fn send(&mut self, to: SocketAddr, message: Message) -> io::Result<()> {
+    pub fn send<M: Into<Message>>(&mut self, to: SocketAddr, message: M) -> io::Result<()> {
         let outbound = self.network.connect(to)?;
 
-        outbound.send((self.address, message)).map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
+        outbound
+            .send((self.address, message.into()))
+            .map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::model::{Prepare, Request};
     use super::*;
+    use crate::model::{Prepare, Request};
 
     #[test]
     fn basic() {
@@ -95,4 +105,3 @@ mod tests {
         assert_eq!(b_stream.receive().unwrap(), (a, message));
     }
 }
-
