@@ -6,9 +6,11 @@ use std::net::SocketAddr;
 use std::sync::mpsc::TryRecvError;
 use std::sync::{mpsc, Arc, RwLock};
 
+type StreamWriter = mpsc::Sender<(SocketAddr, Message)>;
+
 #[derive(Clone, Debug, Default)]
 pub struct Network {
-    outbound: Arc<RwLock<HashMap<SocketAddr, mpsc::Sender<(SocketAddr, Message)>>>>,
+    outbound: Arc<RwLock<HashMap<SocketAddr, StreamWriter>>>,
 }
 
 impl Network {

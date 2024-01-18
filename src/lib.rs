@@ -1,4 +1,5 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
+use std::cmp::Ordering;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
@@ -241,20 +242,20 @@ where
             Message::Prepare(message) => {
                 let next = self.log.len() + 1;
 
-                if next < message.n {
-                    todo!("Wait for all earlier log entries or perform state transfer to get missing information")
-                } else if next == message.n {
-                    self.log.push(message.m);
+                match next.cmp(&message.n) {
+                    Ordering::Less => todo!("Wait for all earlier log entries or perform state transfer to get missing information"),
+                    Ordering::Equal => {
+                        self.log.push(message.m);
 
-                    let message = PrepareOk {
-                        v: self.view_number,
-                        n: self.log.len(),
-                        i: self.index,
-                    };
+                        let message = PrepareOk {
+                            v: self.view_number,
+                            n: self.log.len(),
+                            i: self.index,
+                        };
 
-                    self.communication.send(from, message.clone())
-                } else {
-                    Ok(())
+                        self.communication.send(from, message.clone())
+                    }
+                    Ordering::Greater => Ok(())
                 }
             }
             Message::Commit(message) if message.v == self.view_number => {
