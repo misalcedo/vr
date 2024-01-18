@@ -259,8 +259,7 @@ where
                 }
             }
             Message::Commit(message) if message.v == self.view_number => {
-                // TODO: figure out how to handle committed less than current.
-                self.committed = message.n;
+                self.committed = self.committed.max(message.n);
                 Ok(())
             }
             _ => Ok(()),
