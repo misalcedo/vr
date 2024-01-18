@@ -9,3 +9,4 @@ Client applications can achieve higher concurrency by utilizing multiple client 
 - [Viewstamped Replication](https://pmg.csail.mit.edu/papers/vr.pdf)
 - [From Viewstamped Replication to Byzantine Fault Tolerance](https://pmg.csail.mit.edu/papers/vr-to-bft.pdf)
 - [Viewstamped Replication Revisited](https://pmg.csail.mit.edu/papers/vr-revisited.pdf)
+- [UUID RFC](https://www.ietf.org/archive/id/draft-peabody-dispatch-new-uuid-format-04.html)

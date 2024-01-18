@@ -292,13 +292,12 @@ pub struct Client {
 }
 
 impl Client {
-    // TODO: use uuid v7 to handle client crashes and recovery (must start with higher request number than before crash).
     pub fn new(configuration: Vec<SocketAddr>, id: u128) -> Self {
         Self {
             configuration,
             view_number: 0,
             id,
-            requests: 0,
+            requests: uuid::Uuid::now_v7().as_u128(),
         }
     }
 
