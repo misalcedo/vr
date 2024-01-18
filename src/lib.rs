@@ -139,6 +139,8 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
 
             entry.remove();
 
+            // TODO: revisit how the primary considers an operation to be committed.
+            // Operations can be committed out of order from when they are executed (in order).
             self.committed += 1;
         }
 
@@ -175,6 +177,9 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
                 }
             }
             Message::PrepareOk(message) => {
+                // TODO: handle the case where the message contains `n` higher than is currently in the log.
+                // TODO: handle the case where `n` is not in the queue but is not yet committed (bug in primary).
+                // Committed ops are popped from the queue, so we can safely ignore prepare messages for these.
                 self.queue.entry(message.n)
                     .and_modify(|state| { state.accepted.insert(message.i); });
 
@@ -208,6 +213,7 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
                 }
             }
             Message::Commit(message) if message.v == self.view_number => {
+                // TODO: figure out how to handle committed less than current.
                 self.committed = message.n;
                 Ok(())
             }
