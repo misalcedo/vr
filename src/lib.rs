@@ -151,27 +151,32 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
     fn process_primary(&mut self, from: SocketAddr, message: Message) -> io::Result<()> {
         match message {
             Message::Request(request) => {
-                // TODO: discard old client requests as we should only cache the most recent request for each client.
                 let cache = self.client_table.entry(request.c)
                     .or_default();
+
+                if let Some((&key, value)) = cache.last_key_value() {
+                    if key > request.s {
+                        // TODO: handle discarding old requests resent by the client.
+                    } else if key < request.s && value.is_none() {
+                        // TODO: handle concurrent requests from a single client.
+                    } else if key < request.s {
+                        // got a newer request. so clear out the client's cache.
+                        cache.clear();
+                    }
+                }
 
                 match cache.entry(request.s) {
                     Entry::Vacant(entry) => {
                         entry.insert(None);
-                        self.log.push(request.clone());
-                        self.queue.insert(self.log.len(), RequestState::new(from, request.s));
-
-                        self.broadcast(Prepare {
-                            v: self.view_number,
-                            n: self.log.len(),
-                            m: request,
-                        })
+                        self.prepare(from, request)
                     }
                     Entry::Occupied(entry) => {
-                        match entry.get().as_ref() {
-                            // TODO: handle sending errors to the client.
-                            None => Err(io::Error::new(io::ErrorKind::InvalidInput, "concurrent request")),
-                            Some(reply) => self.communication.send(from, reply.clone())
+                        match entry.get() {
+                            // TODO: this is a client resending the latest request.
+                            // may want to re-broadcast prepare here if uncommitted.
+                            None => Ok(()),
+                            // send back a cached response for latest request from the client.
+                            Some(reply) => self.communication.send(from, reply.clone()),
                         }
                     }
                 }
@@ -187,6 +192,17 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
             }
             _ => Ok(()),
         }
+    }
+
+    fn prepare(&mut self, from: SocketAddr, request: Request) -> io::Result<()> {
+        self.log.push(request.clone());
+        self.queue.insert(self.log.len(), RequestState::new(from, request.s));
+
+        self.broadcast(Prepare {
+            v: self.view_number,
+            n: self.log.len(),
+            m: request,
+        })
     }
 
     fn process_replica(&mut self, from: SocketAddr, message: Message) -> io::Result<()> {
