@@ -33,6 +33,12 @@ impl RequestState {
             accepted: HashSet::new(),
         }
     }
+
+    pub fn is_committed(&self, group_size: usize) -> bool {
+        let sub_majority = (group_size - 1) / 2;
+
+        return self.accepted.len() >= sub_majority;
+    }
 }
 
 #[derive(Debug)]
@@ -58,6 +64,8 @@ pub struct Replica<Service> {
     client_table: HashMap<u128, BTreeMap<u128, Option<Reply>>>,
     /// The last operation number committed in the current view.
     committed: usize,
+    /// The count of operations executed in the current view.
+    executed: usize,
     /// Log entries yet to be committed log entry.
     queue: BTreeMap<usize, RequestState>
 }
@@ -75,6 +83,7 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
             log: vec![],
             client_table: Default::default(),
             committed: 0,
+            executed: 0,
             queue: BTreeMap::new(),
         }
     }
@@ -102,7 +111,9 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
         // Perform up-call for committed operations in order.
         if is_primary {
             // TODO: re-send broadcast messages for uncommitted changes.
-            self.commit()?;
+            self.update_primary()?;
+        } else {
+            self.update_replica()?;
         }
 
         result
@@ -112,40 +123,41 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
         self.communication.send(to, Inform { v: self.view_number })
     }
 
-    fn commit(&mut self) -> io::Result<()> {
+    fn update_primary(&mut self) -> io::Result<()> {
         while let Some(entry) = self.queue.first_entry() {
-            let sub_majority = (self.configuration.len() - 1) / 2;
-
-            if entry.get().accepted.len() < sub_majority {
+            if !entry.get().is_committed(self.configuration.len()) {
                 break;
             }
 
+            let to = entry.get().address;
             let request = &self.log[entry.key() - 1];
+            let cache = self.client_table.entry(request.c).or_default();
             let reply = Reply {
                 v: self.view_number,
                 s: request.s,
                 x: (self.service)(request.op.as_slice()),
             };
 
-            // TODO: support concurrent requests from a single client.
-            let cache = self.client_table.entry(request.c)
-                .and_modify(|r| { r.clear() })
-                .or_default();
-
             cache.insert(request.s, Some(reply.clone()));
-
-            // TODO: handle partial failure in committing an operation.
-            self.communication.send(entry.get().address, reply)?;
-
+            self.executed += 1;
             entry.remove();
 
-            // TODO: revisit how the primary considers an operation to be committed.
-            // Operations can be committed out of order from when they are executed (in order).
-            self.committed += 1;
+            // TODO: handle partial failure in committing an operation.
+            self.communication.send(to, reply)?;
         }
 
         // TODO: piggy-back committed messages with prepare messages
         self.broadcast(Commit { v: self.view_number, n: self.committed})
+    }
+
+    fn update_replica(&mut self) -> io::Result<()> {
+        while self.committed < self.executed && self.executed < self.log.len() {
+            let request = &self.log[self.executed];
+            self.executed += 1;
+            (self.service)(request.op.as_slice());
+        }
+
+        Ok(())
     }
 
     fn process_primary(&mut self, from: SocketAddr, message: Message) -> io::Result<()> {
@@ -182,11 +194,15 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
                 }
             }
             Message::PrepareOk(message) => {
-                // TODO: handle the case where the message contains `n` higher than is currently in the log.
-                // TODO: handle the case where `n` is not in the queue but is not yet committed (bug in primary).
-                // Committed ops are popped from the queue, so we can safely ignore prepare messages for these.
-                self.queue.entry(message.n)
-                    .and_modify(|state| { state.accepted.insert(message.i); });
+                // Only committed ops are popped from the queue, so we can safely ignore prepare messages for anything not in the queue.
+                if let Entry::Occupied(mut entry) = self.queue.entry(message.n) {
+                    entry.get_mut().accepted.insert(message.i);
+
+                    if entry.get().is_committed(self.configuration.len()) {
+                        // Operations can be committed out of order depending on the guarantees of the network .
+                        self.committed = self.committed.max(message.n);
+                    }
+                }
 
                 Ok(())
             }
@@ -210,11 +226,9 @@ where Service: FnMut(&[u8]) -> Vec<u8> {
             Message::Prepare(message) => {
                 let next = self.log.len() + 1;
 
-                if message.n > next {
-                    // TODO: wait until it has entries in its log for all earlier requests
-                    // (doing state transfer if necessary to get the missing information)
-                    Err(io::Error::new(io::ErrorKind::Unsupported, "state transfer and buffering not yet supported"))
-                } else if message.v == self.view_number && next == message.n {
+                if next < message.n {
+                    todo!("Wait for all earlier log entries or perform state transfer to get missing information")
+                } else if next == message.n {
                     self.log.push(message.m);
 
                     let message = PrepareOk {
