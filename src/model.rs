@@ -84,6 +84,52 @@ impl From<Inform> for Message {
     }
 }
 
+#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+pub struct Ping {
+    /// The current view-number.
+    pub v: usize,
+}
+
+impl From<Ping> for Message {
+    fn from(value: Ping) -> Self {
+        Message::Ping(value)
+    }
+}
+
+#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+pub struct DoViewChange {
+    /// The current view-number of the replica.
+    pub v: usize,
+    /// The log of the replica.
+    pub l: Vec<Request>,
+    /// The op-number of the latest committed request known to the replica.
+    pub k: usize,
+    /// The index of the replica that detected the primary's failure.
+    pub i: usize
+}
+
+impl From<DoViewChange> for Message {
+    fn from(value: DoViewChange) -> Self {
+        Message::DoViewChange(value)
+    }
+}
+
+#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+pub struct StartView {
+    /// The current view-number.
+    pub v: usize,
+    /// The log of the new primary.
+    pub l: usize,
+    /// The op-number of the latest committed request known to the primary.
+    pub k: usize,
+}
+
+impl From<StartView> for Message {
+    fn from(value: StartView) -> Self {
+        Message::StartView(value)
+    }
+}
+
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Message {
     Request(Request),
@@ -92,6 +138,9 @@ pub enum Message {
     Reply(Reply),
     Commit(Commit),
     Inform(Inform),
+    Ping(Ping),
+    DoViewChange(DoViewChange),
+    StartView(StartView),
 }
 
 impl Message {
@@ -103,6 +152,9 @@ impl Message {
             Message::Reply(reply) => reply.v,
             Message::Commit(commit) => commit.v,
             Message::Inform(inform) => inform.v,
+            Message::Ping(ping) => ping.v,
+            Message::DoViewChange(do_view_change) => do_view_change.v,
+            Message::StartView(start_view) => start_view.v,
         }
     }
 }

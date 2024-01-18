@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 mod model;
 mod network;
 
-use crate::model::{Commit, Inform, Message, Prepare, PrepareOk, Reply, Request};
+use crate::model::{Commit, DoViewChange, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request};
 pub use network::{CommunicationStream, Network};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
@@ -42,10 +42,28 @@ impl RequestState {
     }
 }
 
+trait Service {
+    // TODO: support fallible services.
+    fn invoke(&mut self, payload: &[u8]) -> Vec<u8>;
+}
+
+impl<F> Service for F where F: FnMut(&[u8]) -> Vec<u8> {
+    fn invoke(&mut self, payload: &[u8]) -> Vec<u8> {
+        self(payload)
+    }
+}
+
+trait FailureDetector {
+    fn detect(&self) -> bool;
+    fn update(&mut self, view_number: usize, from: SocketAddr);
+}
+
 #[derive(Debug)]
-pub struct Replica<Service> {
+pub struct Replica<Service, FailureDetector> {
     /// The service code for processing committed client requests.
     service: Service,
+    /// Detects when a primary is no longer responsive.
+    failure_detector: FailureDetector,
     /// The interface for this replica to communicate with other replicas.
     communication: CommunicationStream,
     /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
@@ -71,18 +89,21 @@ pub struct Replica<Service> {
     queue: BTreeMap<usize, RequestState>,
 }
 
-impl<Service> Replica<Service>
+impl<S, FD> Replica<S, FD>
 where
-    Service: FnMut(&[u8]) -> Vec<u8>,
+    S: Service,
+    FD: FailureDetector
 {
     pub fn new(
-        service: Service,
+        service: S,
+        failure_detector: FD,
         communication: CommunicationStream,
         configuration: Vec<SocketAddr>,
         index: usize,
     ) -> Self {
         Self {
             service,
+            failure_detector,
             communication,
             configuration,
             index,
@@ -101,17 +122,24 @@ where
         let is_primary = primary == self.index;
 
         let result = match self.communication.receive() {
-            Ok((from, message)) => match self.status {
-                Status::Normal if message.view_number() < self.view_number => self.inform(from),
-                Status::Normal if message.view_number() > self.view_number => {
-                    todo!("Perform state transfer")
+            Ok((from, message)) => {
+                match self.status {
+                    Status::Normal if message.view_number() < self.view_number => self.inform(from),
+                    Status::Normal if message.view_number() > self.view_number => {
+                        todo!("Perform state transfer")
+                    }
+                    Status::Normal if is_primary => self.process_primary(from, message),
+                    Status::Normal if from != self.configuration[primary] => self.inform(from),
+                    Status::Normal => {
+                        self.failure_detector.update(self.view_number, from);
+                        self.process_replica(from, message)
+                    },
+                    Status::ViewChange => todo!("Support view change status"),
+                    Status::Recovering => todo!("Support recovering status"),
                 }
-                Status::Normal if is_primary => self.process_primary(from, message),
-                Status::Normal if from != self.configuration[primary] => self.inform(from),
-                Status::Normal => self.process_replica(from, message),
-                Status::ViewChange => todo!("Support view change status"),
-                Status::Recovering => todo!("Support recovering status"),
             },
+            // TODO: Only send pings if idle.
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock && is_primary => self.broadcast(Ping { v: self.view_number }),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
             Err(e) => Err(e),
         };
@@ -122,6 +150,10 @@ where
             self.update_primary()?;
         } else {
             self.update_replica()?;
+
+            if self.failure_detector.detect() {
+                self.do_view_change()?;
+            }
         }
 
         result
@@ -137,8 +169,12 @@ where
     }
 
     fn update_primary(&mut self) -> io::Result<()> {
+        let mut commit = true;
+
         while let Some(entry) = self.queue.first_entry() {
             if !entry.get().is_committed(self.configuration.len()) {
+                commit = false;
+
                 break;
             }
 
@@ -148,7 +184,7 @@ where
             let reply = Reply {
                 v: self.view_number,
                 s: request.s,
-                x: (self.service)(request.op.as_slice()),
+                x: self.service.invoke(request.op.as_slice()),
             };
 
             cache.insert(request.s, Some(reply.clone()));
@@ -159,18 +195,22 @@ where
             self.communication.send(to, reply)?;
         }
 
-        // TODO: piggy-back committed messages with prepare messages
-        self.broadcast(Commit {
-            v: self.view_number,
-            n: self.committed,
-        })
+        if commit {
+            // TODO: piggy-back committed messages with prepare messages
+            self.broadcast(Commit {
+                v: self.view_number,
+                n: self.committed,
+            })
+        } else {
+            Ok(())
+        }
     }
 
     fn update_replica(&mut self) -> io::Result<()> {
         while self.committed < self.executed && self.executed < self.log.len() {
             let request = &self.log[self.executed];
             self.executed += 1;
-            (self.service)(request.op.as_slice());
+            self.service.invoke(request.op.as_slice());
         }
 
         Ok(())
@@ -282,6 +322,20 @@ where
             Err(io::Error::new(io::ErrorKind::Other, "partial broadcast"))
         }
     }
+
+    fn do_view_change(&mut self) -> io::Result<()> {
+        self.view_number += 1;
+        self.status = Status::ViewChange;
+
+        let primary = self.view_number % self.configuration.len();
+
+        self.communication.send(self.configuration[primary], DoViewChange {
+            v: self.view_number,
+            l: self.log.clone(),
+            k: self.log.len(),
+            i: self.index,
+        })
+    }
 }
 
 pub struct Client {
@@ -323,7 +377,32 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Message;
+    use crate::model::{DoViewChange, Message};
+
+    struct TestFailureDetector {
+        trigger_view: usize,
+        current_view: usize,
+        enabled: bool
+    }
+
+    impl FailureDetector for TestFailureDetector {
+        fn detect(&self) -> bool {
+            self.enabled && self.trigger_view == self.current_view
+        }
+
+        fn update(&mut self, view_number: usize, _: SocketAddr) {
+            self.current_view = view_number
+        }
+    }
+
+    impl FailureDetector for () {
+        fn detect(&self) -> bool {
+            false
+        }
+
+        fn update(&mut self, _: usize, _: SocketAddr) {
+        }
+    }
 
     #[test]
     fn queue() {
@@ -338,11 +417,7 @@ mod tests {
 
     #[test]
     fn simulate() {
-        let configuration = vec![
-            "127.0.0.1:3001".parse().unwrap(),
-            "127.0.0.1:3002".parse().unwrap(),
-            "127.0.0.1:3003".parse().unwrap(),
-        ];
+        let configuration = configuration();
         let mut network = Network::default();
         let mut replicas = Vec::with_capacity(configuration.len());
 
@@ -354,6 +429,7 @@ mod tests {
             };
             replicas.push(Replica::new(
                 service,
+                (),
                 network.bind(*address).unwrap(),
                 configuration.clone(),
                 index,
@@ -390,5 +466,78 @@ mod tests {
                 x: payload.len().to_be_bytes().to_vec(),
             })
         );
+    }
+
+    #[test]
+    fn simulate_failure() {
+        let configuration = configuration();
+        let mut network = Network::default();
+        let mut replicas = Vec::with_capacity(configuration.len());
+
+        for (index, address) in configuration.iter().enumerate() {
+            let mut counter = 0usize;
+            let service = move |request: &[u8]| {
+                counter += request.len();
+                counter.to_be_bytes().to_vec()
+            };
+            replicas.push(Replica::new(
+                service,
+                TestFailureDetector {
+                    trigger_view: 0,
+                    current_view: 0,
+                    enabled: index == 2,
+                },
+                network.bind(*address).unwrap(),
+                configuration.clone(),
+                index,
+            ));
+        }
+
+        let mut client_stream = network.bind("127.0.0.1:4001".parse().unwrap()).unwrap();
+        let mut client = Client::new(configuration.clone(), 1);
+
+        let payload = b"Hello, World!".to_vec();
+        let (primary, request) = client.new_request(payload.clone());
+
+        client_stream
+            .send(primary, Message::Request(request.clone()))
+            .unwrap();
+
+        replicas[0].poll().unwrap();
+        replicas[1].poll().unwrap();
+        replicas[0].poll().unwrap();
+        replicas[1].poll().unwrap();
+
+        let (sender, message) = client_stream.receive().unwrap();
+
+        client.update(&message);
+
+        // skip prepare
+        replicas[2].communication.receive().unwrap();
+        // skip commit
+        replicas[2].communication.receive().unwrap();
+        // start view change
+        replicas[2].poll().unwrap();
+
+        let (sender, message) = replicas[1].communication.receive().unwrap();
+
+        assert_eq!(
+            message,
+            Message::DoViewChange(DoViewChange {
+                v: 1,
+                l: vec![],
+                k: 0,
+                i: 2
+            })
+        );
+        assert_eq!(sender, configuration[2]);
+    }
+
+    fn configuration() -> Vec<SocketAddr> {
+        vec![
+            "127.0.0.1:3001".parse().unwrap(),
+            "127.0.0.1:3002".parse().unwrap(),
+            "127.0.0.1:3003".parse().unwrap(),
+        ]
     }
 }
