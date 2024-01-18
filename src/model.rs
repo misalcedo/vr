@@ -20,6 +20,12 @@ pub struct Reply {
     pub x: Vec<u8>,
 }
 
+impl From<Reply> for Message {
+    fn from(value: Reply) -> Self {
+        Message::Reply(value)
+    }
+}
+
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Prepare {
     /// The current view-number.
@@ -28,6 +34,12 @@ pub struct Prepare {
     pub n: usize,
     /// The message received from the client.
     pub m: Request,
+}
+
+impl From<Prepare> for Message {
+    fn from(value: Prepare) -> Self {
+        Message::Prepare(value)
+    }
 }
 
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
@@ -40,6 +52,11 @@ pub struct PrepareOk {
     pub i: usize
 }
 
+impl From<PrepareOk> for Message {
+    fn from(value: PrepareOk) -> Self {
+        Message::PrepareOk(value)
+    }
+}
 
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Commit {
@@ -49,11 +66,43 @@ pub struct Commit {
     pub n: usize,
 }
 
+impl From<Commit> for Message {
+    fn from(value: Commit) -> Self {
+        Message::Commit(value)
+    }
+}
+
+#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+pub struct Inform {
+    /// The current view-number.
+    pub v: usize,
+}
+
+impl From<Inform> for Message {
+    fn from(value: Inform) -> Self {
+        Message::Inform(value)
+    }
+}
+
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Message {
     Request(Request),
     Prepare(Prepare),
     PrepareOk(PrepareOk),
     Reply(Reply),
-    Commit(Commit)
+    Commit(Commit),
+    Inform(Inform),
+}
+
+impl Message {
+    pub fn view_number(&self) -> usize {
+        match self {
+            Message::Request(request) => request.v,
+            Message::Prepare(prepare) => prepare.v,
+            Message::PrepareOk(prepare_ok) => prepare_ok.v,
+            Message::Reply(reply) => reply.v,
+            Message::Commit(commit) => commit.v,
+            Message::Inform(inform) => inform.v,
+        }
+    }
 }

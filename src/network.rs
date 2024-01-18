@@ -57,10 +57,10 @@ impl CommunicationStream {
         })
     }
 
-    pub fn send(&mut self, to: SocketAddr, message: Message) -> io::Result<()> {
+    pub fn send<M: Into<Message>>(&mut self, to: SocketAddr, message: M) -> io::Result<()> {
         let outbound = self.network.connect(to)?;
 
-        outbound.send((self.address, message)).map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
+        outbound.send((self.address, message.into())).map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
     }
 }
 

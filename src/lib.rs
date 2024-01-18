@@ -1,7 +1,6 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
-
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::btree_map::Entry;
 use std::io;
 use std::net::SocketAddr;
 
@@ -9,7 +8,7 @@ mod model;
 mod network;
 
 pub use network::{Network, CommunicationStream};
-use crate::model::{Message, Prepare, PrepareOk, Reply, Request};
+use crate::model::{Commit, Inform, Message, Prepare, PrepareOk, Reply, Request};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -24,7 +23,6 @@ pub struct RequestState {
     address: SocketAddr,
     request: u128,
     accepted: HashSet<usize>,
-    reply: Option<Reply>,
 }
 
 impl RequestState {
@@ -33,7 +31,6 @@ impl RequestState {
             address,
             request,
             accepted: HashSet::new(),
-            reply: None
         }
     }
 }
@@ -58,15 +55,15 @@ pub struct Replica<Service> {
     log: Vec<Request>,
     /// This records for each client the number of its most recent request,
     /// plus, if the request has been executed, the result sent for that request.
-    client_table: HashMap<u128, RequestState>,
-    /// The last log entry committed.
+    client_table: HashMap<u128, BTreeMap<u128, Option<Reply>>>,
+    /// The last operation number committed in the current view.
     committed: usize,
     /// Log entries yet to be committed log entry.
-    commit_heap: BinaryHeap<Reverse<usize>>
+    queue: BTreeMap<usize, RequestState>
 }
 
 impl<Service> Replica<Service>
-where Service: FnMut(Vec<u8>) -> Vec<u8> {
+where Service: FnMut(&[u8]) -> Vec<u8> {
     pub fn new(service: Service, communication: CommunicationStream, configuration: Vec<SocketAddr>, index: usize) -> Self {
         Self {
             service,
@@ -78,127 +75,139 @@ where Service: FnMut(Vec<u8>) -> Vec<u8> {
             log: vec![],
             client_table: Default::default(),
             committed: 0,
-            commit_heap: BinaryHeap::new(),
+            queue: BTreeMap::new(),
         }
     }
 
     pub fn poll(&mut self) -> io::Result<()> {
-        let is_primary = (self.view_number % self.configuration.len()) == self.index;
+        let primary = self.view_number % self.configuration.len();
+        let is_primary = primary == self.index;
 
         let result = match self.communication.receive() {
-            Ok((from, message)) => self.process(is_primary, from, message),
+            Ok((from, message)) => {
+                match self.status {
+                    Status::Normal if message.view_number() < self.view_number => self.inform(from),
+                    Status::Normal if message.view_number() > self.view_number => todo!("Perform state transfer"),
+                    Status::Normal if is_primary => self.process_primary(from, message),
+                    Status::Normal if from != self.configuration[primary] => self.inform(from),
+                    Status::Normal => self.process_replica(from, message),
+                    Status::ViewChange => todo!("Support view change status"),
+                    Status::Recovering => todo!("Support recovering status")
+                }
+            },
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
             Err(e) => Err(e)
         };
 
         // Perform up-call for committed operations in order.
         if is_primary {
+            // TODO: re-send broadcast messages for uncommitted changes.
             self.commit()?;
         }
 
         result
     }
 
-    fn commit(&mut self) -> io::Result<()> {
-        while let Some(Reverse(candidate)) = self.commit_heap.pop() {
-            let next = self.committed + 1;
-
-            if candidate == next {
-                if let Some(request) = self.log.get(candidate - 1).as_ref() {
-                    let reply = Reply {
-                        v: self.view_number,
-                        s: request.s,
-                        x: (self.service)(request.op.clone()),
-                    };
-
-                    if let Some(state) = self.client_table.get_mut(&request.c) {
-                        if state.request == request.s {
-                            state.reply = Some(reply.clone());
-
-                            // TODO: handle partial failure in committing an operation.
-                            self.communication.send(state.address, Message::Reply(reply))?;
-                        }
-                    }
-
-                    self.committed += 1;
-                }
-            } else if candidate > next {
-                break;
-            } else {
-                continue;
-            }
-        }
-
-        Ok(())
+    fn inform(&mut self, to: SocketAddr) -> io::Result<()> {
+        self.communication.send(to, Inform { v: self.view_number })
     }
 
-    fn process(&mut self, is_primary: bool, from: SocketAddr, message: Message) -> io::Result<()> {
+    fn commit(&mut self) -> io::Result<()> {
+        while let Some(entry) = self.queue.first_entry() {
+            let sub_majority = (self.configuration.len() - 1) / 2;
+
+            if entry.get().accepted.len() < sub_majority {
+                break;
+            }
+
+            let request = &self.log[entry.key() - 1];
+            let reply = Reply {
+                v: self.view_number,
+                s: request.s,
+                x: (self.service)(request.op.as_slice()),
+            };
+
+            // TODO: support concurrent requests from a single client.
+            let cache = self.client_table.entry(request.c)
+                .and_modify(|r| { r.clear() })
+                .or_default();
+
+            cache.insert(request.s, Some(reply.clone()));
+
+            // TODO: handle partial failure in committing an operation.
+            self.communication.send(entry.get().address, reply)?;
+
+            entry.remove();
+
+            self.committed += 1;
+        }
+
+        // TODO: piggy-back committed messages with prepare messages
+        self.broadcast(Commit { v: self.view_number, n: self.committed})
+    }
+
+    fn process_primary(&mut self, from: SocketAddr, message: Message) -> io::Result<()> {
         match message {
-            Message::Request(request) if is_primary => {
-                let state = self.client_table.entry(request.c)
-                    .or_insert_with(|| { RequestState::new(from, request.s) });
+            Message::Request(request) => {
+                // TODO: discard old client requests as we should only cache the most recent request for each client.
+                let cache = self.client_table.entry(request.c)
+                    .or_default();
 
-                match state.reply.as_ref().map(Reply::clone) {
-                    Some(reply) => {
-                        self.communication.send(from, Message::Reply(reply))
-                    },
-                    None => {
+                match cache.entry(request.s) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(None);
                         self.log.push(request.clone());
+                        self.queue.insert(self.log.len(), RequestState::new(from, request.s));
 
-                        let message = Message::Prepare(Prepare {
+                        self.broadcast(Prepare {
                             v: self.view_number,
                             n: self.log.len(),
-                            m: request.clone(),
-                        });
-
-                        self.broadcast(message)
+                            m: request,
+                        })
+                    }
+                    Entry::Occupied(entry) => {
+                        match entry.get().as_ref() {
+                            // TODO: handle sending errors to the client.
+                            None => Err(io::Error::new(io::ErrorKind::InvalidInput, "concurrent request")),
+                            Some(reply) => self.communication.send(from, reply.clone())
+                        }
                     }
                 }
             }
-            Message::Prepare(message) if !is_primary => {
-                // TODO: ensure the prepare is from the current view's primary.
+            Message::PrepareOk(message) => {
+                self.queue.entry(message.n)
+                    .and_modify(|state| { state.accepted.insert(message.i); });
 
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn process_replica(&mut self, from: SocketAddr, message: Message) -> io::Result<()> {
+        match message {
+            Message::Prepare(message) => {
                 let next = self.log.len() + 1;
 
-                if message.v == self.view_number && message.n > next {
+                if message.n > next {
                     // TODO: wait until it has entries in its log for all earlier requests
                     // (doing state transfer if necessary to get the missing information)
                     Err(io::Error::new(io::ErrorKind::Unsupported, "state transfer and buffering not yet supported"))
                 } else if message.v == self.view_number && next == message.n {
                     self.log.push(message.m);
 
-                    let message = Message::PrepareOk(PrepareOk {
+                    let message = PrepareOk {
                         v: self.view_number,
                         n: self.log.len(),
                         i: self.index,
-                    });
+                    };
 
                     self.communication.send(from, message.clone())
                 } else {
                     Ok(())
                 }
             }
-            Message::PrepareOk(message) if is_primary => {
-                match self.log.get(message.n - 1) {
-                    None => Ok(()),
-                    Some(request) => {
-                        let state = self.client_table.entry(request.c)
-                            .or_insert_with(|| { RequestState::new(from, request.s) });
-
-                        if state.request == request.s {
-                            state.accepted.insert(message.i);
-
-                            let sub_majority = (self.configuration.len() - 1) / 2;
-
-                            if state.accepted.len() >= sub_majority && self.committed < message.n {
-                                self.commit_heap.push(Reverse(message.n));
-                            }
-                        }
-                        Ok(())
-                    }
-                }
-            }
-            Message::Commit(message) if !is_primary && message.v == self.view_number => {
+            Message::Commit(message) if message.v == self.view_number => {
                 self.committed = message.n;
                 Ok(())
             }
@@ -206,14 +215,60 @@ where Service: FnMut(Vec<u8>) -> Vec<u8> {
         }
     }
 
-    fn broadcast(&mut self, message: Message) -> io::Result<()> {
+    fn broadcast<M: Into<Message>>(&mut self, message: M) -> io::Result<()> {
+        let mut errors = 0;
+        let message = message.into();
+
         for (i, replica) in self.configuration.iter().enumerate() {
             if i != self.index {
-                self.communication.send(*replica, message.clone())?;
+                if self.communication.send(*replica, message.clone()).is_err() {
+                    errors += 1;
+                }
             }
         }
 
-        Ok(())
+        if errors == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::Other, "partial broadcast"))
+        }
+    }
+}
+
+pub struct Client {
+    configuration: Vec<SocketAddr>,
+    view_number: usize,
+    id: u128,
+    requests: u128,
+}
+
+impl Client {
+    // TODO: use uuid v7 to handle client crashes and recovery (must start with higher request number than before crash).
+    pub fn new(configuration: Vec<SocketAddr>, id: u128) -> Self {
+        Self {
+            configuration,
+            view_number: 0,
+            id,
+            requests: 0,
+        }
+    }
+
+    pub fn new_request(&mut self, payload: Vec<u8>) -> (SocketAddr, Request) {
+        let primary = self.view_number % self.configuration.len();
+        let request = Request {
+            op: payload,
+            c: self.id,
+            s: self.requests,
+            v: self.view_number,
+        };
+
+        self.requests += 1;
+
+        (self.configuration[primary], request)
+    }
+
+    pub fn update(&mut self, message: &Message) {
+         self.view_number = message.view_number();
     }
 }
 
@@ -223,6 +278,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn queue() {
+        let mut map = BTreeMap::new();
+
+        map.insert(1, 1);
+        map.insert(2, 2);
+
+        assert_eq!(map.first_entry().unwrap().remove(), 1);
+        assert_eq!(map.first_entry().unwrap().remove(), 2);
+    }
+
+    #[test]
     fn simulate() {
         let configuration = vec!["127.0.0.1:3001".parse().unwrap(), "127.0.0.1:3002".parse().unwrap(), "127.0.0.1:3003".parse().unwrap()];
         let mut network = Network::default();
@@ -230,23 +296,20 @@ mod tests {
 
         for (index, address) in configuration.iter().enumerate() {
             let mut counter = 0usize;
-            let service = move |request| {
-                counter += 1;
+            let service = move |request: &[u8]| {
+                counter += request.len();
                 counter.to_be_bytes().to_vec()
             };
             replicas.push(Replica::new(service, network.bind(*address).unwrap(), configuration.clone(), index));
         }
 
-        let mut client = network.bind("127.0.0.1:4001".parse().unwrap()).unwrap();
+        let mut client_stream = network.bind("127.0.0.1:4001".parse().unwrap()).unwrap();
+        let mut client = Client::new(configuration.clone(), 1);
 
-        let request = Request {
-            op: b"Hello, World!".to_vec(),
-            c: 1,
-            s: 1,
-            v: 0,
-        };
+        let payload = b"Hello, World!".to_vec();
+        let (primary, request) = client.new_request(payload.clone());
 
-        client.send(configuration[0], Message::Request(request.clone())).unwrap();
+        client_stream.send(primary, Message::Request(request.clone())).unwrap();
 
         replicas[0].poll().unwrap();
         replicas[1].poll().unwrap();
@@ -254,11 +317,17 @@ mod tests {
         replicas[0].poll().unwrap();
         replicas[0].poll().unwrap();
 
-        assert_eq!(client.receive().unwrap(), (configuration[0], Message::Reply(Reply {
+        let (sender, message) = client_stream.receive().unwrap();
+
+        client.update(&message);
+
+        assert_eq!(client.view_number, replicas[0].view_number);
+        assert_eq!(sender, configuration[0]);
+        assert_eq!(message, Message::Reply(Reply {
             v: request.v,
             s: request.s,
-            x: 1usize.to_be_bytes().to_vec(),
-        })));
+            x: payload.len().to_be_bytes().to_vec(),
+        }));
     }
 }
 
