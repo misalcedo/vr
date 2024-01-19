@@ -64,48 +64,6 @@ pub trait IdleDetector {
     fn tick(&mut self);
 }
 
-pub struct State<S> {
-    /// The service code for processing committed client requests.
-    service: S,
-    /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
-    /// The replicas are numbered 0 to 2f.
-    configuration: Vec<SocketAddr>,
-    /// Each replica also knows its own replica number.
-    index: usize,
-    /// The current status, either normal, view-change, or recovering.
-    status: Status,
-    /// The view-table containing for each view up to and including the current one the op-number of the latest request known in that view.
-    view_table: ViewTable,
-    /// This is an array containing op-number entries.
-    /// The entries contain the requests that have been received so far in their assigned order.
-    log: Vec<Request>,
-    /// This records for each client the number of its most recent request,
-    /// plus, if the request has been executed, the result sent for that request.
-    client_table: HashMap<u128, BTreeMap<u128, Option<Reply>>>,
-    /// The last operation number committed in the current view.
-    committed: OpNumber,
-    /// The count of operations executed in the current view.
-    executed: usize,
-}
-
-pub struct Primary<ID> {
-    /// Detects when the current replica has been idle.
-    idle_detector: ID,
-    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
-    queue_depth_threshold: usize,
-    /// Log entries yet to be committed log entry.
-    queue: BTreeMap<OpNumber, RequestState>,
-}
-
-pub struct Backup<FD> {
-    /// Detects when a primary is no longer responsive.
-    failure_detector: FD,
-    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
-    queue_depth_threshold: usize,
-    /// Priority queue of prepare messages to wait until the prepares are in order.
-    queue: BinaryHeap<Reverse<Prepare>>,
-}
-
 #[derive(Debug)]
 pub struct Replica<S, FD, ID> {
     /// The service code for processing committed client requests.
