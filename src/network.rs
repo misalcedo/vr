@@ -66,12 +66,12 @@ impl Network {
 }
 
 pub trait Outbound {
-    fn send(&mut self, to: SocketAddr, envelope: Envelope) -> io::Result<()>;
+    fn send(&mut self, to: SocketAddr, envelope: Envelope);
 }
 
 impl Outbound for Network {
-    fn send(&mut self, to: SocketAddr, envelope: Envelope) -> io::Result<()> {
-        Self::send(self, to, envelope)
+    fn send(&mut self, to: SocketAddr, envelope: Envelope) {
+        Self::send(self, to, envelope).unwrap()
     }
 }
 

@@ -2,7 +2,6 @@
 use std::cmp::Ordering;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io;
 use std::net::SocketAddr;
 
 mod model;
@@ -116,11 +115,11 @@ where
         }
     }
 
-    pub fn poll(&mut self, envelope: Option<Envelope>, outbound: &mut impl Outbound) -> io::Result<()> {
+    pub fn poll(&mut self, envelope: Option<Envelope>, outbound: &mut impl Outbound) {
         let primary = self.view_table.primary_index(self.configuration.len());
         let is_primary = primary == self.index;
 
-        let result = match envelope {
+        match envelope {
             Some(Envelope { from, message}) => {
                 match self.status {
                     Status::Normal if message.view() < self.view_table.view() => self.inform(outbound, from),
@@ -139,39 +138,32 @@ where
             },
             // TODO: Only send pings if idle.
             None if is_primary => self.broadcast(outbound, Ping { v: self.view_table.view() }),
-            None => Ok(()),
+            None => (),
         };
 
         // Perform up-call for committed operations in order.
         if is_primary {
             // TODO: re-send broadcast messages for uncommitted changes.
-            self.update_primary(outbound)?;
+            self.update_primary(outbound);
         } else {
-            self.update_replica()?;
+            self.update_replica();
 
             if self.failure_detector.detect() {
-                self.do_view_change(outbound)?;
+                self.do_view_change(outbound);
             }
         }
-
-        result
     }
 
-    fn send(&mut self, outbound: &mut impl Outbound, to: SocketAddr, message: impl Into<Message>) -> io::Result<()> {
-        outbound.send(to, Envelope::new(self.configuration[self.index], message.into()))
-    }
-
-    fn inform(&mut self, outbound: &mut impl Outbound, to: SocketAddr) -> io::Result<()> {
-        self.send(
-            outbound,
+    fn inform(&mut self, outbound: &mut impl Outbound, to: SocketAddr) {
+        outbound.send(
             to,
-            Inform {
+            Envelope::new(self.configuration[self.index], Inform {
                 v: self.view_table.view(),
-            },
+            })
         )
     }
 
-    fn update_primary(&mut self, outbound: &mut impl Outbound) -> io::Result<()> {
+    fn update_primary(&mut self, outbound: &mut impl Outbound) {
         let mut commit = true;
 
         while let Some(entry) = self.queue.first_entry() {
@@ -195,7 +187,7 @@ where
             entry.remove();
 
             // TODO: handle partial failure in committing an operation.
-            self.send(outbound, to, reply)?;
+            outbound.send(to, Envelope::new(self.configuration[self.index], reply));
         }
 
         if commit {
@@ -204,22 +196,18 @@ where
                 v: self.view_table.view(),
                 n: self.committed,
             })
-        } else {
-            Ok(())
         }
     }
 
-    fn update_replica(&mut self) -> io::Result<()> {
+    fn update_replica(&mut self) {
         while u128::from(self.committed) < (self.executed as u128) && self.executed < self.log.len() {
             let request = &self.log[self.executed];
             self.executed += 1;
             self.service.invoke(request.op.as_slice());
         }
-
-        Ok(())
     }
 
-    fn process_primary(&mut self, from: SocketAddr, message: Message, outbound: &mut impl Outbound) -> io::Result<()> {
+    fn process_primary(&mut self, from: SocketAddr, message: Message, outbound: &mut impl Outbound) {
         match message {
             Message::Request(request) => {
                 let cache = self.client_table.entry(request.c).or_default();
@@ -244,7 +232,7 @@ where
                         match entry.get() {
                             // TODO: this is a client resending the latest request.
                             // may want to re-broadcast prepare here if uncommitted.
-                            None => Ok(()),
+                            None => (),
                             // send back a cached response for latest request from the client.
                             Some(reply) => outbound.send(from, Envelope::new(self.configuration[self.index], reply.clone())),
                         }
@@ -262,13 +250,13 @@ where
                     }
                 }
 
-                Ok(())
+                ()
             }
-            _ => Ok(()),
+            _ => (),
         }
     }
 
-    fn prepare(&mut self, client: SocketAddr, request: Request, outbound: &mut impl Outbound) -> io::Result<()> {
+    fn prepare(&mut self, client: SocketAddr, request: Request, outbound: &mut impl Outbound) {
         self.log.push(request.clone());
         self.view_table.next_op_number();
         self.queue
@@ -281,7 +269,7 @@ where
         })
     }
 
-    fn process_replica(&mut self, from: SocketAddr, message: Message, outbound: &mut impl Outbound) -> io::Result<()> {
+    fn process_replica(&mut self, from: SocketAddr, message: Message, outbound: &mut impl Outbound) {
         match message {
             Message::Prepare(message) => {
                 let next = self.view_table.op_number().increment();
@@ -298,49 +286,42 @@ where
                             i: self.index,
                         };
 
-                        self.send(outbound, from, message.clone())
+                        outbound.send(from, Envelope::new(self.configuration[self.index], message.clone()));
                     }
-                    Ordering::Greater => Ok(())
+                    Ordering::Greater => ()
                 }
             }
             Message::Commit(message) if message.v == self.view_table.view() => {
                 self.committed = self.committed.max(message.n);
-                Ok(())
             }
-            _ => Ok(()),
+            _ => (),
         }
     }
 
-    fn broadcast(&mut self, outbound: &mut impl Outbound, message: impl Into<Message>) -> io::Result<()> {
-        let mut errors = 0;
+    fn broadcast(&mut self, outbound: &mut impl Outbound, message: impl Into<Message>) {
         let message = message.into();
 
         for (i, replica) in self.configuration.iter().enumerate() {
-            if i != self.index && outbound.send(*replica, Envelope::new(self.configuration[self.index], message.clone())).is_err() {
-                errors += 1;
+            if i != self.index {
+                outbound.send(*replica, Envelope::new(self.configuration[self.index], message.clone()));
             }
-        }
-
-        if errors == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::new(io::ErrorKind::Other, "partial broadcast"))
         }
     }
 
-    fn do_view_change(&mut self, outbound: &mut impl Outbound) -> io::Result<()> {
+    fn do_view_change(&mut self, outbound: &mut impl Outbound) {
         // TODO: handle overflow on view and op-number.
         self.view_table.next_view();
         self.status = Status::ViewChange;
 
         let primary = self.view_table.primary_index(self.configuration.len());
-
-        self.send(outbound, self.configuration[primary], DoViewChange {
+        let envelope = Envelope::new(self.configuration[self.index], DoViewChange {
             v: self.view_table.view(),
             l: self.log.clone(),
             k: self.view_table.op_number(),
             i: self.index,
-        })
+        });
+
+        outbound.send(self.configuration[primary], envelope)
     }
 }
 
@@ -455,11 +436,11 @@ mod tests {
             .send(primary, Envelope::new(client_address, request.clone()))
             .unwrap();
 
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network).unwrap();
-        replicas[1].poll(network.receive(configuration[1]).ok(), &mut network).unwrap();
-        replicas[2].poll(network.receive(configuration[2]).ok(), &mut network).unwrap();
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network).unwrap();
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network).unwrap();
+        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
+        replicas[1].poll(network.receive(configuration[1]).ok(), &mut network);
+        replicas[2].poll(network.receive(configuration[2]).ok(), &mut network);
+        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
+        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
 
         let Envelope { from: sender, message} = network.receive(client_address).unwrap();
 
@@ -515,10 +496,10 @@ mod tests {
             .send(primary, Envelope::new(client_address, request.clone()))
             .unwrap();
 
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network).unwrap();
-        replicas[1].poll(network.receive(configuration[1]).ok(), &mut network).unwrap();
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network).unwrap();
-        replicas[1].poll(network.receive(configuration[1]).ok(), &mut network).unwrap();
+        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
+        replicas[1].poll(network.receive(configuration[1]).ok(), &mut network);
+        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
+        replicas[1].poll(network.receive(configuration[1]).ok(), &mut network);
 
         let Envelope { message, ..} = network.receive(client_address).unwrap();
 
@@ -529,7 +510,7 @@ mod tests {
         // skip commit
         network.receive(configuration[2]).unwrap();
         // start view change
-        replicas[2].poll(network.receive(configuration[2]).ok(), &mut network).unwrap();
+        replicas[2].poll(network.receive(configuration[2]).ok(), &mut network);
 
         let Envelope { from, message} = network.receive(configuration[1]).unwrap();
 
