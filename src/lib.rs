@@ -7,9 +7,11 @@ use std::net::SocketAddr;
 
 mod model;
 mod network;
+mod stamps;
 
 use crate::model::{Commit, DoViewChange, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request};
 pub use network::{CommunicationStream, Network};
+use stamps::OpNumber;
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
