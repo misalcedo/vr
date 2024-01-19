@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use crate::stamps::{OpNumber, View};
 
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
@@ -129,6 +130,21 @@ pub struct StartView {
 impl From<StartView> for Message {
     fn from(value: StartView) -> Self {
         Message::StartView(value)
+    }
+}
+
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+pub struct Envelope {
+    pub from: SocketAddr,
+    pub message: Message
+}
+
+impl Envelope {
+    pub fn new(from: SocketAddr, message: Message) -> Self {
+        Self {
+            from,
+            message
+        }
     }
 }
 

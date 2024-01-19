@@ -1,4 +1,4 @@
-use crate::model::Message;
+use crate::model::{Envelope, Message};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::mpsc::TryRecvError;
 use std::sync::{mpsc, Arc, RwLock};
 
-type StreamWriter = mpsc::Sender<(SocketAddr, Message)>;
+type StreamWriter = mpsc::Sender<Envelope>;
 
 #[derive(Clone, Debug, Default)]
 pub struct Network {
@@ -38,7 +38,7 @@ impl Network {
         }
     }
 
-    pub fn connect(&self, to: SocketAddr) -> io::Result<mpsc::Sender<(SocketAddr, Message)>> {
+    pub fn connect(&self, to: SocketAddr) -> io::Result<mpsc::Sender<Envelope>> {
         let guard = self
             .outbound
             .read()
@@ -54,12 +54,12 @@ impl Network {
 #[derive(Debug)]
 pub struct CommunicationStream {
     address: SocketAddr,
-    inbound: mpsc::Receiver<(SocketAddr, Message)>,
+    inbound: mpsc::Receiver<Envelope>,
     network: Network,
 }
 
 impl CommunicationStream {
-    pub fn receive(&mut self) -> io::Result<(SocketAddr, Message)> {
+    pub fn receive(&mut self) -> io::Result<Envelope> {
         self.inbound.try_recv().map_err(|e| match e {
             TryRecvError::Empty => io::Error::from(io::ErrorKind::WouldBlock),
             TryRecvError::Disconnected => io::Error::from(io::ErrorKind::ConnectionAborted),
@@ -70,9 +70,14 @@ impl CommunicationStream {
         let outbound = self.network.connect(to)?;
 
         outbound
-            .send((self.address, message.into()))
+            .send(Envelope::new(self.address, message.into()))
             .map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
     }
+}
+
+pub trait Outbound {
+    fn send(to: SocketAddr, message: Message) -> io::Result<()>;
+    fn send_to_primary(to: SocketAddr, message: Message) -> io::Result<()>;
 }
 
 #[cfg(test)]
@@ -103,6 +108,6 @@ mod tests {
 
         a_stream.send(b, message.clone()).unwrap();
 
-        assert_eq!(b_stream.receive().unwrap(), (a, message));
+        assert_eq!(b_stream.receive().unwrap(), Envelope::new(a, message));
     }
 }

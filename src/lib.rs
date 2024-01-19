@@ -9,7 +9,7 @@ mod model;
 mod network;
 mod stamps;
 
-use crate::model::{Commit, DoViewChange, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request};
+use crate::model::{Commit, DoViewChange, Envelope, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request};
 pub use network::{CommunicationStream, Network};
 use crate::stamps::{OpNumber, View, ViewTable};
 
@@ -124,7 +124,7 @@ where
         let is_primary = primary == self.index;
 
         let result = match self.communication.receive() {
-            Ok((from, message)) => {
+            Ok(Envelope { from, message}) => {
                 match self.status {
                     Status::Normal if message.view() < self.view_table.view() => self.inform(from),
                     Status::Normal if message.view() > self.view_table.view() => {
@@ -457,7 +457,7 @@ mod tests {
         replicas[0].poll().unwrap();
         replicas[0].poll().unwrap();
 
-        let (sender, message) = client_stream.receive().unwrap();
+        let Envelope { from: sender, message} = client_stream.receive().unwrap();
 
         client.update(&message);
 
@@ -513,7 +513,7 @@ mod tests {
         replicas[0].poll().unwrap();
         replicas[1].poll().unwrap();
 
-        let (sender, message) = client_stream.receive().unwrap();
+        let Envelope { message, ..} = client_stream.receive().unwrap();
 
         client.update(&message);
 
@@ -524,7 +524,7 @@ mod tests {
         // start view change
         replicas[2].poll().unwrap();
 
-        let (sender, message) = replicas[1].communication.receive().unwrap();
+        let Envelope { from, message} = replicas[1].communication.receive().unwrap();
 
         assert_eq!(
             message,
@@ -535,7 +535,7 @@ mod tests {
                 i: 2
             })
         );
-        assert_eq!(sender, configuration[2]);
+        assert_eq!(from, configuration[2]);
     }
 
     fn configuration() -> Vec<SocketAddr> {
