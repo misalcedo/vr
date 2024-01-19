@@ -194,7 +194,6 @@ where
             self.executed += 1;
             entry.remove();
 
-            // TODO: handle partial failure in committing an operation.
             outbound.send(to, Envelope::new(self.configuration[self.index], reply));
         }
 
