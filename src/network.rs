@@ -1,4 +1,4 @@
-use crate::model::{Envelope, Message};
+use crate::model::Envelope;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
@@ -6,16 +6,16 @@ use std::net::SocketAddr;
 use std::sync::mpsc::TryRecvError;
 use std::sync::{mpsc, Arc, RwLock};
 
-type StreamWriter = mpsc::Sender<Envelope>;
+type Stream = (mpsc::Sender<Envelope>, mpsc::Receiver<Envelope>);
 
 #[derive(Clone, Debug, Default)]
 pub struct Network {
-    outbound: Arc<RwLock<HashMap<SocketAddr, StreamWriter>>>,
+    channels: Arc<RwLock<HashMap<SocketAddr, Stream>>>,
 }
 
 impl Network {
-    pub fn bind(&mut self, address: SocketAddr) -> io::Result<CommunicationStream> {
-        let mut guard = self.outbound.write().unwrap_or_else(|e| {
+    pub fn bind(&mut self, address: SocketAddr) -> io::Result<()> {
+        let mut guard = self.channels.write().unwrap_or_else(|e| {
             let mut guard = e.into_inner();
             *guard = HashMap::new();
             guard
@@ -24,60 +24,55 @@ impl Network {
         match guard.entry(address) {
             Entry::Occupied(_) => Err(io::Error::from(io::ErrorKind::AddrInUse)),
             Entry::Vacant(entry) => {
-                let (outbound, inbound) = mpsc::channel();
-                let network = self.clone();
+                entry.insert(mpsc::channel());
 
-                entry.insert(outbound);
-
-                Ok(CommunicationStream {
-                    address,
-                    inbound,
-                    network,
-                })
+                Ok(())
             }
         }
     }
 
-    pub fn connect(&self, to: SocketAddr) -> io::Result<mpsc::Sender<Envelope>> {
+    pub fn receive(&mut self, interface: SocketAddr) -> io::Result<Envelope> {
         let guard = self
-            .outbound
+            .channels
             .read()
             .map_err(|_| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
+        let receiver = guard
+            .get(&interface)
+            .map(|(_, receiver)| receiver)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
 
-        guard
-            .get(&to)
-            .cloned()
-            .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))
-    }
-}
-
-#[derive(Debug)]
-pub struct CommunicationStream {
-    address: SocketAddr,
-    inbound: mpsc::Receiver<Envelope>,
-    network: Network,
-}
-
-impl CommunicationStream {
-    pub fn receive(&mut self) -> io::Result<Envelope> {
-        self.inbound.try_recv().map_err(|e| match e {
+        receiver.try_recv().map_err(|e| match e {
             TryRecvError::Empty => io::Error::from(io::ErrorKind::WouldBlock),
             TryRecvError::Disconnected => io::Error::from(io::ErrorKind::ConnectionAborted),
         })
     }
 
-    pub fn send<M: Into<Message>>(&mut self, to: SocketAddr, message: M) -> io::Result<()> {
-        let outbound = self.network.connect(to)?;
+    pub fn send(&mut self, to: SocketAddr, envelope: Envelope) -> io::Result<()> {
+        let guard = self
+            .channels
+            .read()
+            .map_err(|_| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
 
-        outbound
-            .send(Envelope::new(self.address, message.into()))
+        let sender = guard
+            .get(&to)
+            .map(|(sender, _)| sender)
+            .cloned()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
+
+        sender
+            .send(envelope)
             .map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
     }
 }
 
 pub trait Outbound {
-    fn send(to: SocketAddr, message: Message) -> io::Result<()>;
-    fn send_to_primary(to: SocketAddr, message: Message) -> io::Result<()>;
+    fn send(&mut self, to: SocketAddr, envelope: Envelope) -> io::Result<()>;
+}
+
+impl Outbound for Network {
+    fn send(&mut self, to: SocketAddr, envelope: Envelope) -> io::Result<()> {
+        Self::send(self, to, envelope)
+    }
 }
 
 #[cfg(test)]
@@ -92,10 +87,10 @@ mod tests {
         let a = "127.0.0.1:3001".parse().unwrap();
         let b = "127.0.0.1:3002".parse().unwrap();
 
-        let mut a_stream = network.bind(a).unwrap();
-        let mut b_stream = network.bind(b).unwrap();
+        network.bind(a).unwrap();
+        network.bind(b).unwrap();
 
-        let message = Message::Prepare(Prepare {
+        let message = Prepare {
             v: View::from(1),
             n: OpNumber::from(1),
             m: Request {
@@ -104,10 +99,11 @@ mod tests {
                 s: 1,
                 v: Default::default(),
             },
-        });
+        };
+        let envelope = Envelope::new(a, message);
 
-        a_stream.send(b, message.clone()).unwrap();
+        network.send(b, envelope.clone()).unwrap();
 
-        assert_eq!(b_stream.receive().unwrap(), Envelope::new(a, message));
+        assert_eq!(network.receive(b).unwrap(), envelope);
     }
 }

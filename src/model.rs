@@ -13,6 +13,12 @@ pub struct Request {
     pub v: View,
 }
 
+impl From<Request> for Message {
+    fn from(value: Request) -> Self {
+        Message::Request(value)
+    }
+}
+
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Reply {
     /// View number.
@@ -140,10 +146,10 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    pub fn new(from: SocketAddr, message: Message) -> Self {
+    pub fn new(from: SocketAddr, message: impl Into<Message>) -> Self {
         Self {
             from,
-            message
+            message: message.into()
         }
     }
 }
