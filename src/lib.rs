@@ -11,7 +11,7 @@ mod stamps;
 
 use crate::model::{Commit, DoViewChange, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request};
 pub use network::{CommunicationStream, Network};
-use stamps::OpNumber;
+use crate::stamps::{OpNumber, View, ViewTable};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -57,7 +57,7 @@ impl<F> Service for F where F: FnMut(&[u8]) -> Vec<u8> {
 
 trait FailureDetector {
     fn detect(&self) -> bool;
-    fn update(&mut self, view_number: usize, from: SocketAddr);
+    fn update(&mut self, view: View, from: SocketAddr);
 }
 
 #[derive(Debug)]
@@ -73,8 +73,8 @@ pub struct Replica<S, FD> {
     configuration: Vec<SocketAddr>,
     /// Each replica also knows its own replica number.
     index: usize,
-    /// The current view-number, initially 0.
-    view_number: usize,
+    /// The view-table containing for each view up to and including the current one the op-number of the latest request known in that view.
+    view_table: ViewTable,
     /// The current status, either normal, view-change, or recovering.
     status: Status,
     /// This is an array containing op-number entries.
@@ -84,11 +84,11 @@ pub struct Replica<S, FD> {
     /// plus, if the request has been executed, the result sent for that request.
     client_table: HashMap<u128, BTreeMap<u128, Option<Reply>>>,
     /// The last operation number committed in the current view.
-    committed: usize,
+    committed: OpNumber,
     /// The count of operations executed in the current view.
     executed: usize,
     /// Log entries yet to be committed log entry.
-    queue: BTreeMap<usize, RequestState>,
+    queue: BTreeMap<OpNumber, RequestState>,
 }
 
 impl<S, FD> Replica<S, FD>
@@ -109,31 +109,31 @@ where
             communication,
             configuration,
             index,
-            view_number: 0,
+            view_table: Default::default(),
             status: Default::default(),
             log: vec![],
             client_table: Default::default(),
-            committed: 0,
+            committed: Default::default(),
             executed: 0,
             queue: BTreeMap::new(),
         }
     }
 
     pub fn poll(&mut self) -> io::Result<()> {
-        let primary = self.view_number % self.configuration.len();
+        let primary = self.view_table.primary_index(self.configuration.len());
         let is_primary = primary == self.index;
 
         let result = match self.communication.receive() {
             Ok((from, message)) => {
                 match self.status {
-                    Status::Normal if message.view_number() < self.view_number => self.inform(from),
-                    Status::Normal if message.view_number() > self.view_number => {
+                    Status::Normal if message.view() < self.view_table.view() => self.inform(from),
+                    Status::Normal if message.view() > self.view_table.view() => {
                         todo!("Perform state transfer")
                     }
                     Status::Normal if is_primary => self.process_primary(from, message),
                     Status::Normal if from != self.configuration[primary] => self.inform(from),
                     Status::Normal => {
-                        self.failure_detector.update(self.view_number, from);
+                        self.failure_detector.update(self.view_table.view(), from);
                         self.process_replica(from, message)
                     },
                     Status::ViewChange => todo!("Support view change status"),
@@ -141,7 +141,7 @@ where
                 }
             },
             // TODO: Only send pings if idle.
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock && is_primary => self.broadcast(Ping { v: self.view_number }),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock && is_primary => self.broadcast(Ping { v: self.view_table.view() }),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
             Err(e) => Err(e),
         };
@@ -165,7 +165,7 @@ where
         self.communication.send(
             to,
             Inform {
-                v: self.view_number,
+                v: self.view_table.view(),
             },
         )
     }
@@ -181,10 +181,10 @@ where
             }
 
             let to = entry.get().address;
-            let request = &self.log[entry.key() - 1];
+            let request = &self.log[(u128::from(*entry.key()) - 1) as usize];
             let cache = self.client_table.entry(request.c).or_default();
             let reply = Reply {
-                v: self.view_number,
+                v: self.view_table.view(),
                 s: request.s,
                 x: self.service.invoke(request.op.as_slice()),
             };
@@ -200,7 +200,7 @@ where
         if commit {
             // TODO: piggy-back committed messages with prepare messages
             self.broadcast(Commit {
-                v: self.view_number,
+                v: self.view_table.view(),
                 n: self.committed,
             })
         } else {
@@ -209,7 +209,7 @@ where
     }
 
     fn update_replica(&mut self) -> io::Result<()> {
-        while self.committed < self.executed && self.executed < self.log.len() {
+        while u128::from(self.committed) < (self.executed as u128) && self.executed < self.log.len() {
             let request = &self.log[self.executed];
             self.executed += 1;
             self.service.invoke(request.op.as_slice());
@@ -269,12 +269,13 @@ where
 
     fn prepare(&mut self, from: SocketAddr, request: Request) -> io::Result<()> {
         self.log.push(request.clone());
+        self.view_table.next_op_number();
         self.queue
-            .insert(self.log.len(), RequestState::new(from, request.s));
+            .insert(OpNumber::from(self.log.len()), RequestState::new(from, request.s));
 
         self.broadcast(Prepare {
-            v: self.view_number,
-            n: self.log.len(),
+            v: self.view_table.view(),
+            n: OpNumber::from(self.log.len()),
             m: request,
         })
     }
@@ -282,16 +283,17 @@ where
     fn process_replica(&mut self, from: SocketAddr, message: Message) -> io::Result<()> {
         match message {
             Message::Prepare(message) => {
-                let next = self.log.len() + 1;
+                let next = self.view_table.op_number().increment();
 
                 match next.cmp(&message.n) {
                     Ordering::Less => todo!("Wait for all earlier log entries or perform state transfer to get missing information"),
                     Ordering::Equal => {
                         self.log.push(message.m);
+                        self.view_table.next_op_number();
 
                         let message = PrepareOk {
-                            v: self.view_number,
-                            n: self.log.len(),
+                            v: self.view_table.view(),
+                            n: self.view_table.op_number(),
                             i: self.index,
                         };
 
@@ -300,7 +302,7 @@ where
                     Ordering::Greater => Ok(())
                 }
             }
-            Message::Commit(message) if message.v == self.view_number => {
+            Message::Commit(message) if message.v == self.view_table.view() => {
                 self.committed = self.committed.max(message.n);
                 Ok(())
             }
@@ -327,15 +329,15 @@ where
 
     fn do_view_change(&mut self) -> io::Result<()> {
         // TODO: handle overflow on view and op-number.
-        self.view_number += 1;
+        self.view_table.next_view();
         self.status = Status::ViewChange;
 
-        let primary = self.view_number % self.configuration.len();
+        let primary = self.view_table.primary_index(self.configuration.len());
 
         self.communication.send(self.configuration[primary], DoViewChange {
-            v: self.view_number,
+            v: self.view_table.view(),
             l: self.log.clone(),
-            k: self.log.len(),
+            k: self.view_table.op_number(),
             i: self.index,
         })
     }
@@ -343,7 +345,7 @@ where
 
 pub struct Client {
     configuration: Vec<SocketAddr>,
-    view_number: usize,
+    view: View,
     id: u128,
     requests: u128,
 }
@@ -352,19 +354,19 @@ impl Client {
     pub fn new(configuration: Vec<SocketAddr>, id: u128) -> Self {
         Self {
             configuration,
-            view_number: 0,
+            view: Default::default(),
             id,
             requests: uuid::Uuid::now_v7().as_u128(),
         }
     }
 
     pub fn new_request(&mut self, payload: Vec<u8>) -> (SocketAddr, Request) {
-        let primary = self.view_number % self.configuration.len();
+        let primary = self.view.primary_index(self.configuration.len());
         let request = Request {
             op: payload,
             c: self.id,
             s: self.requests,
-            v: self.view_number,
+            v: self.view,
         };
 
         self.requests += 1;
@@ -373,7 +375,7 @@ impl Client {
     }
 
     pub fn update(&mut self, message: &Message) {
-        self.view_number = message.view_number();
+        self.view = message.view();
     }
 }
 
@@ -383,8 +385,8 @@ mod tests {
     use crate::model::{DoViewChange, Message};
 
     struct TestFailureDetector {
-        trigger_view: usize,
-        current_view: usize,
+        trigger_view: View,
+        current_view: View,
         enabled: bool
     }
 
@@ -393,8 +395,8 @@ mod tests {
             self.enabled && self.trigger_view == self.current_view
         }
 
-        fn update(&mut self, view_number: usize, _: SocketAddr) {
-            self.current_view = view_number
+        fn update(&mut self, view: View, _: SocketAddr) {
+            self.current_view = view
         }
     }
 
@@ -403,7 +405,7 @@ mod tests {
             false
         }
 
-        fn update(&mut self, _: usize, _: SocketAddr) {
+        fn update(&mut self, _: View, _: SocketAddr) {
         }
     }
 
@@ -459,7 +461,7 @@ mod tests {
 
         client.update(&message);
 
-        assert_eq!(client.view_number, replicas[0].view_number);
+        assert_eq!(client.view, replicas[0].view_table.view());
         assert_eq!(sender, configuration[0]);
         assert_eq!(
             message,
@@ -486,8 +488,8 @@ mod tests {
             replicas.push(Replica::new(
                 service,
                 TestFailureDetector {
-                    trigger_view: 0,
-                    current_view: 0,
+                    trigger_view: Default::default(),
+                    current_view: Default::default(),
                     enabled: index == 2,
                 },
                 network.bind(*address).unwrap(),
@@ -527,9 +529,9 @@ mod tests {
         assert_eq!(
             message,
             Message::DoViewChange(DoViewChange {
-                v: 1,
+                v: View::from(1),
                 l: vec![],
-                k: 0,
+                k: OpNumber::from(0),
                 i: 2
             })
         );

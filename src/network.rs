@@ -79,6 +79,7 @@ impl CommunicationStream {
 mod tests {
     use super::*;
     use crate::model::{Prepare, Request};
+    use crate::stamps::{OpNumber, View};
 
     #[test]
     fn basic() {
@@ -90,13 +91,13 @@ mod tests {
         let mut b_stream = network.bind(b).unwrap();
 
         let message = Message::Prepare(Prepare {
-            v: 1,
-            n: 1,
+            v: View::from(1),
+            n: OpNumber::from(1),
             m: Request {
                 op: b"Hello, World!".to_vec(),
                 c: 1,
                 s: 1,
-                v: 0,
+                v: Default::default(),
             },
         });
 

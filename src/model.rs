@@ -1,3 +1,5 @@
+use crate::stamps::{OpNumber, View};
+
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Request {
     /// The operation (with its arguments) the client wants to run).
@@ -7,13 +9,13 @@ pub struct Request {
     /// Client-assigned number for the request.
     pub s: u128,
     /// View number known to the client.
-    pub v: usize,
+    pub v: View,
 }
 
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Reply {
     /// View number.
-    pub v: usize,
+    pub v: View,
     /// The number the client provided in the request.
     pub s: u128,
     /// The result of the up-call to the service.
@@ -29,9 +31,9 @@ impl From<Reply> for Message {
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Prepare {
     /// The current view-number.
-    pub v: usize,
+    pub v: View,
     /// The op-number assigned to the request.
-    pub n: usize,
+    pub n: OpNumber,
     /// The message received from the client.
     pub m: Request,
 }
@@ -45,9 +47,9 @@ impl From<Prepare> for Message {
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct PrepareOk {
     /// The current view-number known to the replica.
-    pub v: usize,
+    pub v: View,
     /// The op-number assigned to the accepted prepare message.
-    pub n: usize,
+    pub n: OpNumber,
     /// The index of the replica accepting the prepare message.
     pub i: usize,
 }
@@ -61,9 +63,9 @@ impl From<PrepareOk> for Message {
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Commit {
     /// The current view-number.
-    pub v: usize,
+    pub v: View,
     /// The op-number of the last committed log entry.
-    pub n: usize,
+    pub n: OpNumber,
 }
 
 impl From<Commit> for Message {
@@ -75,7 +77,7 @@ impl From<Commit> for Message {
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Inform {
     /// The current view-number.
-    pub v: usize,
+    pub v: View,
 }
 
 impl From<Inform> for Message {
@@ -87,7 +89,7 @@ impl From<Inform> for Message {
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Ping {
     /// The current view-number.
-    pub v: usize,
+    pub v: View,
 }
 
 impl From<Ping> for Message {
@@ -99,11 +101,11 @@ impl From<Ping> for Message {
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct DoViewChange {
     /// The current view-number of the replica.
-    pub v: usize,
+    pub v: View,
     /// The log of the replica.
     pub l: Vec<Request>,
     /// The op-number of the latest committed request known to the replica.
-    pub k: usize,
+    pub k: OpNumber,
     /// The index of the replica that detected the primary's failure.
     pub i: usize
 }
@@ -117,7 +119,7 @@ impl From<DoViewChange> for Message {
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct StartView {
     /// The current view-number.
-    pub v: usize,
+    pub v: View,
     /// The log of the new primary.
     pub l: usize,
     /// The op-number of the latest committed request known to the primary.
@@ -144,7 +146,7 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn view_number(&self) -> usize {
+    pub fn view(&self) -> View {
         match self {
             Message::Request(request) => request.v,
             Message::Prepare(prepare) => prepare.v,
