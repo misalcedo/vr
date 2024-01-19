@@ -43,6 +43,8 @@ pub struct Prepare {
     pub n: OpNumber,
     /// The message received from the client.
     pub m: Request,
+    /// The op-number of the last committed log entry.
+    pub c: OpNumber,
 }
 
 impl From<Prepare> for Message {
@@ -68,20 +70,6 @@ impl From<PrepareOk> for Message {
 }
 
 #[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Commit {
-    /// The current view-number.
-    pub v: View,
-    /// The op-number of the last committed log entry.
-    pub n: OpNumber,
-}
-
-impl From<Commit> for Message {
-    fn from(value: Commit) -> Self {
-        Message::Commit(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Inform {
     /// The current view-number.
     pub v: View,
@@ -97,6 +85,8 @@ impl From<Inform> for Message {
 pub struct Ping {
     /// The current view-number.
     pub v: View,
+    /// The op-number of the last committed log entry.
+    pub c: OpNumber,
 }
 
 impl From<Ping> for Message {
@@ -160,7 +150,6 @@ pub enum Message {
     Prepare(Prepare),
     PrepareOk(PrepareOk),
     Reply(Reply),
-    Commit(Commit),
     Inform(Inform),
     Ping(Ping),
     DoViewChange(DoViewChange),
@@ -174,7 +163,6 @@ impl Message {
             Message::Prepare(prepare) => prepare.v,
             Message::PrepareOk(prepare_ok) => prepare_ok.v,
             Message::Reply(reply) => reply.v,
-            Message::Commit(commit) => commit.v,
             Message::Inform(inform) => inform.v,
             Message::Ping(ping) => ping.v,
             Message::DoViewChange(do_view_change) => do_view_change.v,

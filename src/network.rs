@@ -99,6 +99,7 @@ mod tests {
                 s: 1,
                 v: Default::default(),
             },
+            c: Default::default()
         };
         let envelope = Envelope::new(a, message);
 

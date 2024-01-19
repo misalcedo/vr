@@ -8,7 +8,7 @@ mod model;
 mod network;
 mod stamps;
 
-use crate::model::{Commit, DoViewChange, Envelope, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request};
+use crate::model::{DoViewChange, Envelope, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request};
 pub use network::Network;
 use crate::network::Outbound;
 use crate::stamps::{OpNumber, View, ViewTable};
@@ -151,7 +151,10 @@ where
             self.update_primary(outbound);
 
             if self.idle_detector.detect() {
-                self.broadcast(outbound, Ping { v: self.view_table.view() })
+                self.broadcast(outbound, Ping {
+                    v: self.view_table.view(),
+                    c: self.committed
+                })
             }
         } else {
             self.update_replica();
@@ -172,12 +175,8 @@ where
     }
 
     fn update_primary(&mut self, outbound: &mut impl Outbound) {
-        let mut commit = true;
-
         while let Some(entry) = self.queue.first_entry() {
             if !entry.get().is_committed(self.configuration.len()) {
-                commit = false;
-
                 break;
             }
 
@@ -195,17 +194,6 @@ where
             entry.remove();
 
             outbound.send(to, Envelope::new(self.configuration[self.index], reply));
-        }
-
-        if commit {
-            // This means we will be sending commits so we are not idle.
-            self.idle_detector.tick();
-
-            // TODO: piggy-back committed messages with prepare messages
-            self.broadcast(outbound, Commit {
-                v: self.view_table.view(),
-                n: self.committed,
-            })
         }
     }
 
@@ -275,12 +263,15 @@ where
             v: self.view_table.view(),
             n: OpNumber::from(self.log.len()),
             m: request,
+            c: self.committed
         })
     }
 
     fn process_replica(&mut self, from: SocketAddr, message: Message, outbound: &mut impl Outbound) {
         match message {
             Message::Prepare(message) => {
+                self.committed = self.committed.max(message.c);
+
                 let next = self.view_table.op_number().increment();
 
                 match next.cmp(&message.n) {
@@ -299,9 +290,6 @@ where
                     }
                     Ordering::Greater => ()
                 }
-            }
-            Message::Commit(message) if message.v == self.view_table.view() => {
-                self.committed = self.committed.max(message.n);
             }
             _ => (),
         }
@@ -523,8 +511,6 @@ mod tests {
         client.update(&message);
 
         // skip prepare
-        network.receive(configuration[2]).unwrap();
-        // skip commit
         network.receive(configuration[2]).unwrap();
         // start view change
         replicas[2].poll(network.receive(configuration[2]).ok(), &mut network);
