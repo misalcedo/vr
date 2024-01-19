@@ -60,12 +60,19 @@ pub trait FailureDetector {
     fn update(&mut self, view: View, from: SocketAddr);
 }
 
+pub trait IdleDetector {
+    fn detect(&self) -> bool;
+    fn tick(&mut self);
+}
+
 #[derive(Debug)]
-pub struct Replica<S, FD> {
+pub struct Replica<S, FD, ID> {
     /// The service code for processing committed client requests.
     service: S,
     /// Detects when a primary is no longer responsive.
     failure_detector: FD,
+    /// Detects when the current replica has been idle.
+    idle_detector: ID,
     /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
     /// The replicas are numbered 0 to 2f.
     configuration: Vec<SocketAddr>,
@@ -89,20 +96,23 @@ pub struct Replica<S, FD> {
     queue: BTreeMap<OpNumber, RequestState>,
 }
 
-impl<S, FD> Replica<S, FD>
+impl<S, FD, ID> Replica<S, FD, ID>
 where
     S: Service,
-    FD: FailureDetector
+    FD: FailureDetector,
+    ID: IdleDetector
 {
     pub fn new(
         service: S,
         failure_detector: FD,
+        idle_detector: ID,
         configuration: Vec<SocketAddr>,
         index: usize,
     ) -> Self {
         Self {
             service,
             failure_detector,
+            idle_detector,
             configuration,
             index,
             view_table: Default::default(),
@@ -119,32 +129,31 @@ where
         let primary = self.view_table.primary_index(self.configuration.len());
         let is_primary = primary == self.index;
 
-        match envelope {
-            Some(Envelope { from, message}) => {
-                match self.status {
-                    Status::Normal if message.view() < self.view_table.view() => self.inform(outbound, from),
-                    Status::Normal if message.view() > self.view_table.view() => {
-                        todo!("Perform state transfer")
-                    }
-                    Status::Normal if is_primary => self.process_primary(from, message, outbound),
-                    Status::Normal if from != self.configuration[primary] => self.inform(outbound, from),
-                    Status::Normal => {
-                        self.failure_detector.update(self.view_table.view(), from);
-                        self.process_replica(from, message, outbound)
-                    },
-                    Status::ViewChange => todo!("Support view change status"),
-                    Status::Recovering => todo!("Support recovering status"),
+        if let Some(Envelope { from, message}) = envelope {
+            match self.status {
+                Status::Normal if message.view() < self.view_table.view() => self.inform(outbound, from),
+                Status::Normal if message.view() > self.view_table.view() => {
+                    todo!("Perform state transfer")
                 }
-            },
-            // TODO: Only send pings if idle.
-            None if is_primary => self.broadcast(outbound, Ping { v: self.view_table.view() }),
-            None => (),
-        };
+                Status::Normal if is_primary => self.process_primary(from, message, outbound),
+                Status::Normal if from != self.configuration[primary] => self.inform(outbound, from),
+                Status::Normal => {
+                    self.failure_detector.update(self.view_table.view(), from);
+                    self.process_replica(from, message, outbound)
+                },
+                Status::ViewChange => todo!("Support view change status"),
+                Status::Recovering => todo!("Support recovering status"),
+            }
+        }
 
         // Perform up-call for committed operations in order.
         if is_primary {
             // TODO: re-send broadcast messages for uncommitted changes.
             self.update_primary(outbound);
+
+            if self.idle_detector.detect() {
+                self.broadcast(outbound, Ping { v: self.view_table.view() })
+            }
         } else {
             self.update_replica();
 
@@ -191,6 +200,9 @@ where
         }
 
         if commit {
+            // This means we will be sending commits so we are not idle.
+            self.idle_detector.tick();
+
             // TODO: piggy-back committed messages with prepare messages
             self.broadcast(outbound, Commit {
                 v: self.view_table.view(),
@@ -210,6 +222,9 @@ where
     fn process_primary(&mut self, from: SocketAddr, message: Message, outbound: &mut impl Outbound) {
         match message {
             Message::Request(request) => {
+                // This means we will be sending prepares so we are not idle.
+                self.idle_detector.tick();
+
                 let cache = self.client_table.entry(request.c).or_default();
 
                 if let Some((&key, value)) = cache.last_key_value() {
@@ -387,8 +402,15 @@ mod tests {
             false
         }
 
-        fn update(&mut self, _: View, _: SocketAddr) {
+        fn update(&mut self, _: View, _: SocketAddr) {}
+    }
+
+    impl IdleDetector for () {
+        fn detect(&self) -> bool {
+            false
         }
+
+        fn tick(&mut self) {}
     }
 
     #[test]
@@ -418,6 +440,7 @@ mod tests {
             };
             replicas.push(Replica::new(
                 service,
+                (),
                 (),
                 configuration.clone(),
                 index,
@@ -479,6 +502,7 @@ mod tests {
                     current_view: Default::default(),
                     enabled: index == 2,
                 },
+                (),
                 configuration.clone(),
                 index,
             ));
