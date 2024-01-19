@@ -47,14 +47,14 @@ impl Network {
         })
     }
 
-    pub fn send(&mut self, to: SocketAddr, envelope: Envelope) -> io::Result<()> {
+    pub fn send(&mut self, envelope: Envelope) -> io::Result<()> {
         let guard = self
             .channels
             .read()
             .map_err(|_| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
 
         let sender = guard
-            .get(&to)
+            .get(&envelope.to)
             .map(|(sender, _)| sender)
             .cloned()
             .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
@@ -66,12 +66,12 @@ impl Network {
 }
 
 pub trait Outbound {
-    fn send(&mut self, to: SocketAddr, envelope: Envelope);
+    fn send(&mut self, envelope: Envelope);
 }
 
 impl Outbound for Network {
-    fn send(&mut self, to: SocketAddr, envelope: Envelope) {
-        Self::send(self, to, envelope).unwrap()
+    fn send(&mut self, envelope: Envelope) {
+        Self::send(self, envelope).unwrap()
     }
 }
 
@@ -101,9 +101,9 @@ mod tests {
             },
             c: Default::default()
         };
-        let envelope = Envelope::new(a, message);
+        let envelope = Envelope::new(a, b, message);
 
-        network.send(b, envelope.clone()).unwrap();
+        network.send(envelope.clone()).unwrap();
 
         assert_eq!(network.receive(b).unwrap(), envelope);
     }

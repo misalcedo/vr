@@ -139,7 +139,7 @@ where
         let primary = self.view_table.primary_index(self.configuration.len());
         let is_primary = primary == self.index;
 
-        if let Some(Envelope { from, message}) = envelope {
+        if let Some(Envelope { from, message, ..}) = envelope {
             match self.status {
                 Status::Normal if message.view() < self.view_table.view() => self.inform(outbound, from),
                 Status::Normal if message.view() > self.view_table.view() => {
@@ -177,8 +177,7 @@ where
 
     fn inform(&mut self, outbound: &mut impl Outbound, to: SocketAddr) {
         outbound.send(
-            to,
-            Envelope::new(self.configuration[self.index], Inform {
+            Envelope::new(self.configuration[self.index], to, Inform {
                 v: self.view_table.view(),
             })
         )
@@ -213,7 +212,7 @@ where
             self.executed += 1;
             entry.remove();
 
-            outbound.send(to, Envelope::new(self.configuration[self.index], reply));
+            outbound.send(Envelope::new(self.configuration[self.index], to, reply));
         }
     }
 
@@ -278,7 +277,7 @@ where
                             // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
                             None => (),
                             // send back a cached response for latest request from the client.
-                            Some(reply) => outbound.send(from, Envelope::new(self.configuration[self.index], reply.clone())),
+                            Some(reply) => outbound.send(Envelope::new(self.configuration[self.index], from, reply.clone())),
                         }
                     }
                 }
@@ -343,7 +342,7 @@ where
             i: self.index,
         };
 
-        outbound.send(from, Envelope::new(self.configuration[self.index], message.clone()));
+        outbound.send(Envelope::new(self.configuration[self.index], from, message.clone()));
     }
 
     fn broadcast(&mut self, outbound: &mut impl Outbound, message: impl Into<Message>) {
@@ -351,7 +350,7 @@ where
 
         for (i, replica) in self.configuration.iter().enumerate() {
             if i != self.index {
-                outbound.send(*replica, Envelope::new(self.configuration[self.index], message.clone()));
+                outbound.send(Envelope::new(self.configuration[self.index], *replica, message.clone()));
             }
         }
     }
@@ -361,14 +360,14 @@ where
         self.status = Status::ViewChange;
 
         let primary = self.view_table.primary_index(self.configuration.len());
-        let envelope = Envelope::new(self.configuration[self.index], DoViewChange {
+        let envelope = Envelope::new(self.configuration[self.index], self.configuration[primary],  DoViewChange {
             v: self.view_table.view(),
             l: self.log.clone(),
             k: self.view_table.op_number(),
             i: self.index,
         });
 
-        outbound.send(self.configuration[primary], envelope)
+        outbound.send(envelope)
     }
 }
 
@@ -490,7 +489,7 @@ mod tests {
         let (primary, request) = client.new_request(payload.clone());
 
         network
-            .send(primary, Envelope::new(client_address, request.clone()))
+            .send(Envelope::new(client_address, primary, request.clone()))
             .unwrap();
 
         replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
@@ -499,7 +498,7 @@ mod tests {
         replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
         replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
 
-        let Envelope { from: sender, message} = network.receive(client_address).unwrap();
+        let Envelope { from: sender, message, ..} = network.receive(client_address).unwrap();
 
         client.update(&message);
 
@@ -553,7 +552,7 @@ mod tests {
         let (primary, request) = client.new_request(payload.clone());
 
         network
-            .send(primary, Envelope::new(client_address, request.clone()))
+            .send(Envelope::new(client_address, primary, request.clone()))
             .unwrap();
 
         replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
@@ -570,7 +569,7 @@ mod tests {
         // start view change
         replicas[2].poll(network.receive(configuration[2]).ok(), &mut network);
 
-        let Envelope { from, message} = network.receive(configuration[1]).unwrap();
+        let Envelope { from, message, ..} = network.receive(configuration[1]).unwrap();
 
         assert_eq!(
             message,

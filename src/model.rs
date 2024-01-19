@@ -157,13 +157,15 @@ impl From<StartView> for Message {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Envelope {
     pub from: SocketAddr,
+    pub to: SocketAddr,
     pub message: Message
 }
 
 impl Envelope {
-    pub fn new(from: SocketAddr, message: impl Into<Message>) -> Self {
+    pub fn new(from: SocketAddr, to: SocketAddr, message: impl Into<Message>) -> Self {
         Self {
             from,
+            to,
             message: message.into()
         }
     }
