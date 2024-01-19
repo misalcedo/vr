@@ -1,7 +1,7 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BinaryHeap, BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 
 mod model;
@@ -64,6 +64,48 @@ pub trait IdleDetector {
     fn tick(&mut self);
 }
 
+pub struct State<S> {
+    /// The service code for processing committed client requests.
+    service: S,
+    /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
+    /// The replicas are numbered 0 to 2f.
+    configuration: Vec<SocketAddr>,
+    /// Each replica also knows its own replica number.
+    index: usize,
+    /// The current status, either normal, view-change, or recovering.
+    status: Status,
+    /// The view-table containing for each view up to and including the current one the op-number of the latest request known in that view.
+    view_table: ViewTable,
+    /// This is an array containing op-number entries.
+    /// The entries contain the requests that have been received so far in their assigned order.
+    log: Vec<Request>,
+    /// This records for each client the number of its most recent request,
+    /// plus, if the request has been executed, the result sent for that request.
+    client_table: HashMap<u128, BTreeMap<u128, Option<Reply>>>,
+    /// The last operation number committed in the current view.
+    committed: OpNumber,
+    /// The count of operations executed in the current view.
+    executed: usize,
+}
+
+pub struct Primary<ID> {
+    /// Detects when the current replica has been idle.
+    idle_detector: ID,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    queue_depth_threshold: usize,
+    /// Log entries yet to be committed log entry.
+    queue: BTreeMap<OpNumber, RequestState>,
+}
+
+pub struct Backup<FD> {
+    /// Detects when a primary is no longer responsive.
+    failure_detector: FD,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    queue_depth_threshold: usize,
+    /// Priority queue of prepare messages to wait until the prepares are in order.
+    queue: BinaryHeap<Reverse<Prepare>>,
+}
+
 #[derive(Debug)]
 pub struct Replica<S, FD, ID> {
     /// The service code for processing committed client requests.
@@ -92,9 +134,13 @@ pub struct Replica<S, FD, ID> {
     /// The count of operations executed in the current view.
     executed: usize,
     /// The depth of the queue at which point the primary will re-broadcast prepare messages.
-    queue_depth_threshold: usize,
+    commit_queue_threshold: usize,
     /// Log entries yet to be committed log entry.
-    queue: BTreeMap<OpNumber, RequestState>,
+    commit_queue: BTreeMap<OpNumber, RequestState>,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    prepare_queue_threshold: usize,
+    /// Priority queue of prepare messages to wait until the prepares are in order.
+    prepare_queue: BinaryHeap<Reverse<Prepare>>,
 }
 
 impl<S, FD, ID> Replica<S, FD, ID>
@@ -109,7 +155,8 @@ where
         idle_detector: ID,
         configuration: Vec<SocketAddr>,
         index: usize,
-        queue_depth_threshold: usize
+        commit_queue_threshold: usize,
+        prepare_queue_threshold: usize
     ) -> Self {
         Self {
             service,
@@ -123,8 +170,10 @@ where
             client_table: Default::default(),
             committed: Default::default(),
             executed: 0,
-            queue_depth_threshold,
-            queue: BTreeMap::new(),
+            commit_queue_threshold,
+            commit_queue: BTreeMap::new(),
+            prepare_queue_threshold,
+            prepare_queue: BinaryHeap::new()
         }
     }
 
@@ -160,7 +209,7 @@ where
                 })
             }
         } else {
-            self.update_replica();
+            self.update_replica(outbound);
 
             if self.failure_detector.detect() {
                 self.do_view_change(outbound);
@@ -178,11 +227,11 @@ where
     }
 
     fn update_primary(&mut self, outbound: &mut impl Outbound) {
-        while let Some(entry) = self.queue.first_entry() {
+        while let Some(entry) = self.commit_queue.first_entry() {
             let request = &self.log[(u128::from(*entry.key()) - 1) as usize];
 
             if !entry.get().is_committed(self.configuration.len()) {
-                if self.queue.len() > self.queue_depth_threshold {
+                if self.commit_queue.len() > self.commit_queue_threshold {
                     self.broadcast(outbound, Prepare {
                         v: self.view_table.view(),
                         n: OpNumber::from(self.log.len()),
@@ -210,11 +259,34 @@ where
         }
     }
 
-    fn update_replica(&mut self) {
+    fn update_replica(&mut self, outbound: &mut impl Outbound) {
         while u128::from(self.committed) < (self.executed as u128) && self.executed < self.log.len() {
             let request = &self.log[self.executed];
             self.executed += 1;
             self.service.invoke(request.op.as_slice());
+        }
+
+        while let Some(Reverse(message)) = self.prepare_queue.pop() {
+            // Ignore buffered prepares for older views.
+            if message.v < self.view_table.view() {
+                continue;
+            }
+
+            let next = self.view_table.op_number().increment();
+
+            if message.n != next {
+                self.prepare_queue.push(Reverse(message));
+
+                if self.prepare_queue.len() > self.prepare_queue_threshold {
+                    todo!("Perform state transfer to get missing information")
+                }
+
+                break;
+            }
+
+            let primary = self.configuration[self.view_table.primary_index(self.configuration.len())];
+
+            self.prepare_ok(primary, message, outbound);
         }
     }
 
@@ -255,7 +327,7 @@ where
             }
             Message::PrepareOk(message) => {
                 // Only committed ops are popped from the queue, so we can safely ignore prepare messages for anything not in the queue.
-                if let Entry::Occupied(mut entry) = self.queue.entry(message.n) {
+                if let Entry::Occupied(mut entry) = self.commit_queue.entry(message.n) {
                     entry.get_mut().accepted.insert(message.i);
 
                     if entry.get().is_committed(self.configuration.len()) {
@@ -271,7 +343,7 @@ where
     fn prepare(&mut self, client: SocketAddr, request: Request, outbound: &mut impl Outbound) {
         self.log.push(request.clone());
         self.view_table.next_op_number();
-        self.queue
+        self.commit_queue
             .insert(OpNumber::from(self.log.len()), RequestState::new(client, request.s));
 
         self.broadcast(outbound, Prepare {
@@ -290,24 +362,30 @@ where
                 let next = self.view_table.op_number().increment();
 
                 match next.cmp(&message.n) {
-                    Ordering::Less => todo!("Wait for all earlier log entries or perform state transfer to get missing information"),
+                    Ordering::Less => {
+                        self.prepare_queue.push(Reverse(message));
+                    },
                     Ordering::Equal => {
-                        self.log.push(message.m);
-                        self.view_table.next_op_number();
-
-                        let message = PrepareOk {
-                            v: self.view_table.view(),
-                            n: self.view_table.op_number(),
-                            i: self.index,
-                        };
-
-                        outbound.send(from, Envelope::new(self.configuration[self.index], message.clone()));
+                        self.prepare_ok(from, message, outbound);
                     }
                     Ordering::Greater => ()
                 }
             }
             _ => (),
         }
+    }
+
+    fn prepare_ok(&mut self, from: SocketAddr, message: Prepare, outbound: &mut impl Outbound) {
+        self.log.push(message.m);
+        self.view_table.next_op_number();
+
+        let message = PrepareOk {
+            v: self.view_table.view(),
+            n: self.view_table.op_number(),
+            i: self.index,
+        };
+
+        outbound.send(from, Envelope::new(self.configuration[self.index], message.clone()));
     }
 
     fn broadcast(&mut self, outbound: &mut impl Outbound, message: impl Into<Message>) {
@@ -440,6 +518,7 @@ mod tests {
                 (),
                 configuration.clone(),
                 index,
+                10,
                 10
             ));
         }
@@ -502,6 +581,7 @@ mod tests {
                 (),
                 configuration.clone(),
                 index,
+                10,
                 10
             ));
         }

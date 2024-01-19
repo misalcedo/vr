@@ -1,7 +1,8 @@
+use std::cmp::Ordering;
 use std::net::SocketAddr;
 use crate::stamps::{OpNumber, View};
 
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Request {
     /// The operation (with its arguments) the client wants to run).
     pub op: Vec<u8>,
@@ -35,7 +36,7 @@ impl From<Reply> for Message {
     }
 }
 
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Prepare {
     /// The current view-number.
     pub v: View,
@@ -45,6 +46,18 @@ pub struct Prepare {
     pub m: Request,
     /// The op-number of the last committed log entry.
     pub c: OpNumber,
+}
+
+impl PartialOrd for Prepare {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (self.v, self.n).partial_cmp(&(other.v, other.n))
+    }
+}
+
+impl Ord for Prepare {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.v, self.n).cmp(&(other.v, other.n))
+    }
 }
 
 impl From<Prepare> for Message {
@@ -95,7 +108,7 @@ impl From<Ping> for Message {
     }
 }
 
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DoViewChange {
     /// The current view-number of the replica.
     pub v: View,
@@ -105,6 +118,18 @@ pub struct DoViewChange {
     pub k: OpNumber,
     /// The index of the replica that detected the primary's failure.
     pub i: usize
+}
+
+impl PartialOrd for DoViewChange {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (self.v, self.k).partial_cmp(&(other.v, other.k))
+    }
+}
+
+impl Ord for DoViewChange {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.v, self.k).cmp(&(other.v, other.k))
+    }
 }
 
 impl From<DoViewChange> for Message {
@@ -129,7 +154,7 @@ impl From<StartView> for Message {
     }
 }
 
-#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Envelope {
     pub from: SocketAddr,
     pub message: Message
@@ -144,7 +169,7 @@ impl Envelope {
     }
 }
 
-#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Message {
     Request(Request),
     Prepare(Prepare),
