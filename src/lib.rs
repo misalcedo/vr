@@ -59,11 +59,11 @@ trait FailureDetector {
 }
 
 #[derive(Debug)]
-pub struct Replica<Service, FailureDetector> {
+pub struct Replica<S, FD> {
     /// The service code for processing committed client requests.
-    service: Service,
+    service: S,
     /// Detects when a primary is no longer responsive.
-    failure_detector: FailureDetector,
+    failure_detector: FD,
     /// The interface for this replica to communicate with other replicas.
     communication: CommunicationStream,
     /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
@@ -324,6 +324,7 @@ where
     }
 
     fn do_view_change(&mut self) -> io::Result<()> {
+        // TODO: handle overflow on view and op-number.
         self.view_number += 1;
         self.status = Status::ViewChange;
 
