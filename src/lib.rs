@@ -91,6 +91,8 @@ pub struct Replica<S, FD, ID> {
     committed: OpNumber,
     /// The count of operations executed in the current view.
     executed: usize,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    queue_depth_threshold: usize,
     /// Log entries yet to be committed log entry.
     queue: BTreeMap<OpNumber, RequestState>,
 }
@@ -107,6 +109,7 @@ where
         idle_detector: ID,
         configuration: Vec<SocketAddr>,
         index: usize,
+        queue_depth_threshold: usize
     ) -> Self {
         Self {
             service,
@@ -120,6 +123,7 @@ where
             client_table: Default::default(),
             committed: Default::default(),
             executed: 0,
+            queue_depth_threshold,
             queue: BTreeMap::new(),
         }
     }
@@ -147,7 +151,6 @@ where
 
         // Perform up-call for committed operations in order.
         if is_primary {
-            // TODO: re-send broadcast messages for uncommitted changes.
             self.update_primary(outbound);
 
             if self.idle_detector.detect() {
@@ -176,12 +179,22 @@ where
 
     fn update_primary(&mut self, outbound: &mut impl Outbound) {
         while let Some(entry) = self.queue.first_entry() {
+            let request = &self.log[(u128::from(*entry.key()) - 1) as usize];
+
             if !entry.get().is_committed(self.configuration.len()) {
+                if self.queue.len() > self.queue_depth_threshold {
+                    self.broadcast(outbound, Prepare {
+                        v: self.view_table.view(),
+                        n: OpNumber::from(self.log.len()),
+                        m: request.clone(),
+                        c: self.committed
+                    });
+                }
+
                 break;
             }
 
             let to = entry.get().address;
-            let request = &self.log[(u128::from(*entry.key()) - 1) as usize];
             let cache = self.client_table.entry(request.c).or_default();
             let reply = Reply {
                 v: self.view_table.view(),
@@ -231,7 +244,9 @@ where
                     }
                     Entry::Occupied(entry) => {
                         match entry.get() {
-                            None => todo!("the client resent the latest request. may want to re-broadcast prepare here if uncommitted"),
+                            // the client resent the latest request.
+                            // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
+                            None => (),
                             // send back a cached response for latest request from the client.
                             Some(reply) => outbound.send(from, Envelope::new(self.configuration[self.index], reply.clone())),
                         }
@@ -425,6 +440,7 @@ mod tests {
                 (),
                 configuration.clone(),
                 index,
+                10
             ));
         }
 
@@ -486,6 +502,7 @@ mod tests {
                 (),
                 configuration.clone(),
                 index,
+                10
             ));
         }
 
