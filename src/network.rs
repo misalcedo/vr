@@ -65,6 +65,11 @@ impl Network {
     }
 }
 
+/// The communication mechanism between replicas.
+/// Order and delivery are not guaranteed.
+/// However, the mechanism must provide an invariant that unacknowledged messages are returned to sender.
+/// Returning unacknowledged messages allows re-sending logic in the replica.
+/// TODO: implement an outbound with return-to-sender semantics.
 pub trait Outbound {
     fn send(&mut self, envelope: Envelope);
 }
