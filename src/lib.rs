@@ -229,9 +229,9 @@ where
 
                 if let Some((&key, value)) = cache.last_key_value() {
                     if key > request.s {
-                        // TODO: handle discarding old requests resent by the client.
+                        todo!("handle discarding old requests resent by the client.")
                     } else if key < request.s && value.is_none() {
-                        // TODO: handle concurrent requests from a single client.
+                        todo!("handle concurrent requests from a single client.")
                     } else if key < request.s {
                         // got a newer request. so clear out the client's cache.
                         cache.clear();
@@ -264,8 +264,6 @@ where
                         self.committed = self.committed.max(message.n);
                     }
                 }
-
-                ()
             }
             _ => (),
         }
@@ -324,7 +322,6 @@ where
     }
 
     fn do_view_change(&mut self, outbound: &mut impl Outbound) {
-        // TODO: handle overflow on view and op-number.
         self.view_table.next_view();
         self.status = Status::ViewChange;
 
