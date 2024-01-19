@@ -45,7 +45,6 @@ impl RequestState {
 }
 
 pub trait Service {
-    // TODO: support fallible services.
     fn invoke(&mut self, payload: &[u8]) -> Vec<u8>;
 }
 
@@ -245,9 +244,7 @@ where
                     }
                     Entry::Occupied(entry) => {
                         match entry.get() {
-                            // TODO: this is a client resending the latest request.
-                            // may want to re-broadcast prepare here if uncommitted.
-                            None => (),
+                            None => todo!("the client resent the latest request. may want to re-broadcast prepare here if uncommitted"),
                             // send back a cached response for latest request from the client.
                             Some(reply) => outbound.send(from, Envelope::new(self.configuration[self.index], reply.clone())),
                         }
