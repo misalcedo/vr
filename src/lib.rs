@@ -3,6 +3,7 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::btree_map::Entry;
 use std::collections::{BinaryHeap, BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 
 mod model;
 mod network;
@@ -55,13 +56,106 @@ impl<F> Service for F where F: FnMut(&[u8]) -> Vec<u8> {
 }
 
 pub trait FailureDetector {
-    fn detect(&self) -> bool;
+    fn detect(&self, index: usize) -> bool;
     fn update(&mut self, view: View, from: SocketAddr);
 }
 
 pub trait IdleDetector {
     fn detect(&self) -> bool;
     fn tick(&mut self);
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ReplicaBuilder<S, FD, ID> {
+    /// The service code for processing committed client requests.
+    service: Option<S>,
+    /// Detects when a primary is no longer responsive.
+    failure_detector: Option<FD>,
+    /// Detects when the current replica has been idle.
+    idle_detector: Option<ID>,
+    /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
+    /// The replicas are numbered 0 to 2f.
+    configuration: Vec<SocketAddr>,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    commit_queue_threshold: usize,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    /// Defined as a multiplier on the commit queue depth to help with prevent spurious view changes.
+    prepare_queue_threshold_multiplier: Option<NonZeroUsize>,
+}
+
+impl<S, FD, ID> ReplicaBuilder<S, FD, ID>
+    where
+        S: Service + Clone,
+        FD: FailureDetector + Clone,
+        ID: IdleDetector + Clone
+{
+    pub fn new() -> Self {
+        Self {
+            service: None,
+            failure_detector: None,
+            idle_detector: None,
+            configuration: Vec::new(),
+            commit_queue_threshold: 1,
+            prepare_queue_threshold_multiplier: None
+        }
+    }
+
+    /// Sets the multiplier for the prepare queue depth threshold.
+    /// Values of `0` are treated as use the default.
+    pub fn with_prepare_multiplier(mut self, multiplier: usize) -> Self {
+        self.prepare_queue_threshold_multiplier = NonZeroUsize::new(multiplier);
+        self
+    }
+
+    pub fn with_commit_queue_threshold(mut self, threshold: usize) -> Self {
+        self.commit_queue_threshold = threshold;
+        self
+    }
+
+    pub fn with_replica(mut self, address: SocketAddr) -> Self {
+        self.configuration.push(address);
+        self
+    }
+
+    pub fn with_service(mut self, service: S) -> Self {
+        self.service = Some(service);
+        self
+    }
+
+    pub fn with_failure_detector(mut self, detector: FD) -> Self {
+        self.failure_detector = Some(detector);
+        self
+    }
+
+    pub fn with_idle_detector(mut self, detector: ID) -> Self {
+        self.idle_detector = Some(detector);
+        self
+    }
+
+    pub fn build(self) -> Result<Vec<Replica<S, FD, ID>>, Self> {
+        let mut clone = self.clone();
+
+        match (clone.service.take(), clone.failure_detector.take(), clone.idle_detector.take(), clone.configuration) {
+            (Some(service), Some(failure_detector), Some(idle_detector), configuration) if !configuration.is_empty() => {
+                let mut replicas = Vec::with_capacity(configuration.len());
+
+                for index in 0..configuration.len() {
+                    replicas.push(Replica::new(
+                        service.clone(),
+                        failure_detector.clone(),
+                        idle_detector.clone(),
+                        configuration.clone(),
+                        index,
+                        self.commit_queue_threshold,
+                        self.prepare_queue_threshold_multiplier.map(NonZeroUsize::get).unwrap_or(2)
+                    ));
+                }
+
+                Ok(replicas)
+            },
+            _ => Err(self)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -86,6 +180,7 @@ pub struct Replica<S, FD, ID> {
     log: Vec<Request>,
     /// This records for each client the number of its most recent request,
     /// plus, if the request has been executed, the result sent for that request.
+    // TODO: Turn this into a proper struct.
     client_table: HashMap<u128, BTreeMap<u128, Option<Reply>>>,
     /// The last operation number committed in the current view.
     committed: OpNumber,
@@ -107,6 +202,7 @@ where
     FD: FailureDetector,
     ID: IdleDetector
 {
+    // TODO: Implement some sort of builder that can stamp out replicas with different indices.
     pub fn new(
         service: S,
         failure_detector: FD,
@@ -114,7 +210,7 @@ where
         configuration: Vec<SocketAddr>,
         index: usize,
         commit_queue_threshold: usize,
-        prepare_queue_threshold: usize
+        prepare_queue_threshold_multiplier: usize
     ) -> Self {
         Self {
             service,
@@ -130,9 +226,13 @@ where
             executed: 0,
             commit_queue_threshold,
             commit_queue: BTreeMap::new(),
-            prepare_queue_threshold,
+            prepare_queue_threshold: commit_queue_threshold * prepare_queue_threshold_multiplier,
             prepare_queue: BinaryHeap::new()
         }
+    }
+
+    pub fn address(&self) -> SocketAddr {
+        self.configuration[self.index]
     }
 
     pub fn poll(&mut self, envelope: Option<Envelope>, outbound: &mut impl Outbound) {
@@ -169,7 +269,7 @@ where
         } else {
             self.update_replica(outbound);
 
-            if self.failure_detector.detect() {
+            if self.failure_detector.detect(self.index) {
                 self.do_view_change(outbound);
             }
         }
@@ -189,6 +289,7 @@ where
 
             if !entry.get().is_committed(self.configuration.len()) {
                 if self.commit_queue.len() > self.commit_queue_threshold {
+                    // TODO: Reaching this threshold should cause the primary to re-send prepares only to replicas that have not responded yet.
                     self.broadcast(outbound, Prepare {
                         v: self.view_table.view(),
                         n: OpNumber::from(self.log.len()),
@@ -314,6 +415,8 @@ where
     fn process_replica(&mut self, from: SocketAddr, message: Message, outbound: &mut impl Outbound) {
         match message {
             Message::Prepare(message) => {
+                // TODO: If committed is higher than messages in the prepare buffer we need to enter recovery mode
+                // to avoid buffering prepares that will never get processed.
                 self.committed = self.committed.max(message.c);
 
                 let next = self.view_table.op_number().increment();
@@ -409,18 +512,27 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
     use super::*;
     use crate::model::{DoViewChange, Message};
 
+    impl Service for usize {
+        fn invoke(&mut self, payload: &[u8]) -> Vec<u8> {
+            *self += payload.len();
+            self.to_be_bytes().to_vec()
+        }
+    }
+
+    #[derive(Clone, Debug)]
     struct TestFailureDetector {
         trigger_view: View,
         current_view: View,
-        enabled: bool
+        index: usize,
     }
 
     impl FailureDetector for TestFailureDetector {
-        fn detect(&self) -> bool {
-            self.enabled && self.trigger_view == self.current_view
+        fn detect(&self, index: usize) -> bool {
+            self.index == index && self.trigger_view == self.current_view
         }
 
         fn update(&mut self, view: View, _: SocketAddr) {
@@ -429,7 +541,7 @@ mod tests {
     }
 
     impl FailureDetector for () {
-        fn detect(&self) -> bool {
+        fn detect(&self, index: usize) -> bool {
             false
         }
 
@@ -457,31 +569,14 @@ mod tests {
 
     #[test]
     fn simulate() {
-        let configuration = configuration();
+        let mut replicas = build_replicas(());
         let mut network = Network::default();
-        let mut replicas = Vec::with_capacity(configuration.len());
-
-        for (index, address) in configuration.iter().enumerate() {
-            network.bind(*address).unwrap();
-
-            let mut counter = 0usize;
-            let service = move |request: &[u8]| {
-                counter += request.len();
-                counter.to_be_bytes().to_vec()
-            };
-            replicas.push(Replica::new(
-                service,
-                (),
-                (),
-                configuration.clone(),
-                index,
-                10,
-                10
-            ));
+        for address in replicas.iter().map(Replica::address) {
+            network.bind(address).unwrap();
         }
 
         let client_address = "127.0.0.1:4001".parse().unwrap();
-        let mut client = Client::new(configuration.clone(), 1);
+        let mut client = Client::new(replicas[0].configuration.clone(), 1);
 
         network.bind(client_address).unwrap();
 
@@ -492,18 +587,18 @@ mod tests {
             .send(Envelope::new(client_address, primary, request.clone()))
             .unwrap();
 
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
-        replicas[1].poll(network.receive(configuration[1]).ok(), &mut network);
-        replicas[2].poll(network.receive(configuration[2]).ok(), &mut network);
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
+        poll(&mut network, &mut replicas[0]);
+        poll(&mut network, &mut replicas[1]);
+        poll(&mut network, &mut replicas[2]);
+        poll(&mut network, &mut replicas[0]);
+        poll(&mut network, &mut replicas[0]);
 
         let Envelope { from: sender, message, ..} = network.receive(client_address).unwrap();
 
         client.update(&message);
 
         assert_eq!(client.view, replicas[0].view_table.view());
-        assert_eq!(sender, configuration[0]);
+        assert_eq!(sender, replicas[0].address());
         assert_eq!(
             message,
             Message::Reply(Reply {
@@ -516,35 +611,18 @@ mod tests {
 
     #[test]
     fn simulate_failure() {
-        let configuration = configuration();
+        let mut replicas = build_replicas(TestFailureDetector {
+                trigger_view: Default::default(),
+                current_view: Default::default(),
+                index: 2
+            });
         let mut network = Network::default();
-        let mut replicas = Vec::with_capacity(configuration.len());
-
-        for (index, address) in configuration.iter().enumerate() {
-            network.bind(*address).unwrap();
-
-            let mut counter = 0usize;
-            let service = move |request: &[u8]| {
-                counter += request.len();
-                counter.to_be_bytes().to_vec()
-            };
-            replicas.push(Replica::new(
-                service,
-                TestFailureDetector {
-                    trigger_view: Default::default(),
-                    current_view: Default::default(),
-                    enabled: index == 2,
-                },
-                (),
-                configuration.clone(),
-                index,
-                10,
-                10
-            ));
+        for address in replicas.iter().map(Replica::address) {
+            network.bind(address).unwrap();
         }
 
         let client_address = "127.0.0.1:4001".parse().unwrap();
-        let mut client = Client::new(configuration.clone(), 1);
+        let mut client = Client::new(replicas[0].configuration.clone(), 1);
 
         network.bind(client_address).unwrap();
 
@@ -555,21 +633,21 @@ mod tests {
             .send(Envelope::new(client_address, primary, request.clone()))
             .unwrap();
 
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
-        replicas[1].poll(network.receive(configuration[1]).ok(), &mut network);
-        replicas[0].poll(network.receive(configuration[0]).ok(), &mut network);
-        replicas[1].poll(network.receive(configuration[1]).ok(), &mut network);
+        poll(&mut network, &mut replicas[0]);
+        poll(&mut network, &mut replicas[1]);
+        poll(&mut network, &mut replicas[0]);
+        poll(&mut network, &mut replicas[1]);
 
         let Envelope { message, ..} = network.receive(client_address).unwrap();
 
         client.update(&message);
 
         // skip prepare
-        network.receive(configuration[2]).unwrap();
+        network.receive(replicas[2].address()).unwrap();
         // start view change
-        replicas[2].poll(network.receive(configuration[2]).ok(), &mut network);
+        poll(&mut network, &mut replicas[2]);
 
-        let Envelope { from, message, ..} = network.receive(configuration[1]).unwrap();
+        let Envelope { from, message, ..} = network.receive(replicas[1].address()).unwrap();
 
         assert_eq!(
             message,
@@ -580,14 +658,24 @@ mod tests {
                 i: 2
             })
         );
-        assert_eq!(from, configuration[2]);
+        assert_eq!(from, replicas[2].address());
     }
 
-    fn configuration() -> Vec<SocketAddr> {
-        vec![
-            "127.0.0.1:3001".parse().unwrap(),
-            "127.0.0.1:3002".parse().unwrap(),
-            "127.0.0.1:3003".parse().unwrap(),
-        ]
+    fn build_replicas<FD: FailureDetector + Clone + Debug>(failure_detector: FD) -> Vec<Replica<impl Service, FD, impl IdleDetector>> {
+        ReplicaBuilder::new()
+            .with_replica("127.0.0.1:3001".parse().unwrap())
+            .with_replica("127.0.0.1:3002".parse().unwrap())
+            .with_replica("127.0.0.1:3003".parse().unwrap())
+            .with_commit_queue_threshold(10)
+            .with_prepare_multiplier(2)
+            .with_service(0usize)
+            .with_idle_detector(())
+            .with_failure_detector(failure_detector)
+            .build()
+            .unwrap()
+    }
+
+    fn poll(network: &mut Network, replica: &mut Replica<impl Service, impl FailureDetector, impl IdleDetector>) {
+        replica.poll(network.receive(replica.address()).ok(), network)
     }
 }

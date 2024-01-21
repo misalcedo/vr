@@ -65,11 +65,21 @@ impl Network {
     }
 }
 
-/// The communication mechanism between replicas.
-/// Order and delivery are not guaranteed.
-/// However, the mechanism must provide an invariant that unacknowledged messages are returned to sender.
-/// Returning unacknowledged messages allows re-sending logic in the replica.
+/// Represents the communication mechanism between replicas.
+/// Order and delivery to the recipient are not guaranteed.
+///
+/// If a message is undeliverable, the message is returned to sender on a receive call on the Network with the sender and recipient unchanged.
+///
+/// Implementations must provide the invariant that undeliverable messages are returned to sender.
+///
+/// The primary must re-send a prepare if there are X prepares waiting for a prepareOK to a single replica.
+/// This ensures that replicas will either trigger a view change or limit the buffering.
+/// To ensure replicas don't trigger view changes due to unreliable networks (high message drop rates or out of order deliveries),
+/// the replicas must allow a larger number of buffered prepares than the primary does.
+/// One way to ensure this is to define it as a multiplier on the outstanding prepare configuration.
+///
 /// TODO: implement an outbound with return-to-sender semantics.
+// Need to determine what the primary will do in the case of return-to-sender.
 pub trait Outbound {
     fn send(&mut self, envelope: Envelope);
 }
