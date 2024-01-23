@@ -56,7 +56,7 @@ impl<F> Service for F where F: FnMut(&[u8]) -> Vec<u8> {
 }
 
 pub trait FailureDetector {
-    fn detect(&self, index: usize) -> bool;
+    fn detect(&self) -> bool;
     fn update(&mut self, view: View, from: SocketAddr);
 }
 
@@ -269,7 +269,7 @@ where
         } else {
             self.update_replica(outbound);
 
-            if self.failure_detector.detect(self.index) {
+            if self.failure_detector.detect() {
                 self.do_view_change(outbound);
             }
         }
@@ -523,25 +523,17 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Debug)]
-    struct TestFailureDetector {
-        trigger_view: View,
-        current_view: View,
-        index: usize,
-    }
-
-    impl FailureDetector for TestFailureDetector {
-        fn detect(&self, index: usize) -> bool {
-            self.index == index && self.trigger_view == self.current_view
+    impl FailureDetector for bool {
+        fn detect(&self) -> bool {
+            *self
         }
 
-        fn update(&mut self, view: View, _: SocketAddr) {
-            self.current_view = view
+        fn update(&mut self, _: View, _: SocketAddr) {
         }
     }
 
     impl FailureDetector for () {
-        fn detect(&self, index: usize) -> bool {
+        fn detect(&self) -> bool {
             false
         }
 
@@ -611,11 +603,7 @@ mod tests {
 
     #[test]
     fn simulate_failure() {
-        let mut replicas = build_replicas(TestFailureDetector {
-                trigger_view: Default::default(),
-                current_view: Default::default(),
-                index: 2
-            });
+        let mut replicas = build_replicas(false);
         let mut network = Network::default();
         for address in replicas.iter().map(Replica::address) {
             network.bind(address).unwrap();
@@ -628,6 +616,8 @@ mod tests {
 
         let payload = b"Hello, World!".to_vec();
         let (primary, request) = client.new_request(payload.clone());
+
+        replicas[2].failure_detector = true;
 
         network
             .send(Envelope::new(client_address, primary, request.clone()))
