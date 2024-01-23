@@ -14,6 +14,12 @@ pub struct Request {
     pub v: View,
 }
 
+impl PartialOrd for Request {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.s.partial_cmp(&other.s).filter(|_| self.c == other.c)
+    }
+}
+
 impl From<Request> for Message {
     fn from(value: Request) -> Self {
         Message::Request(value)

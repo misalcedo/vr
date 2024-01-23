@@ -1,16 +1,18 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
 use std::cmp::{Ordering, Reverse};
 use std::collections::btree_map::Entry;
-use std::collections::{BinaryHeap, BTreeMap, HashMap, HashSet};
+use std::collections::{BinaryHeap, BTreeMap, HashSet};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
+mod client;
 mod model;
 mod network;
 mod stamps;
 
 use crate::model::{DoViewChange, Envelope, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request};
 pub use network::Network;
+use crate::client::RequestCache;
 use crate::network::Outbound;
 use crate::stamps::{OpNumber, View, ViewTable};
 
@@ -180,8 +182,7 @@ pub struct Replica<S, FD, ID> {
     log: Vec<Request>,
     /// This records for each client the number of its most recent request,
     /// plus, if the request has been executed, the result sent for that request.
-    // TODO: Turn this into a proper struct.
-    client_table: HashMap<u128, BTreeMap<u128, Option<Reply>>>,
+    client_table: RequestCache,
     /// The last operation number committed in the current view.
     committed: OpNumber,
     /// The count of operations executed in the current view.
@@ -302,14 +303,14 @@ where
             }
 
             let to = entry.get().address;
-            let cache = self.client_table.entry(request.c).or_default();
             let reply = Reply {
                 v: self.view_table.view(),
                 s: request.s,
                 x: self.service.invoke(request.op.as_slice()),
             };
 
-            cache.insert(request.s, Some(reply.clone()));
+            self.client_table.set(&request, &reply);
+
             self.executed += 1;
             entry.remove();
 
@@ -354,32 +355,31 @@ where
                 // This means we will be sending prepares so we are not idle.
                 self.idle_detector.tick();
 
-                let cache = self.client_table.entry(request.c).or_default();
-
-                if let Some((&key, value)) = cache.last_key_value() {
-                    if key > request.s {
-                        todo!("handle discarding old requests resent by the client.")
-                    } else if key < request.s && value.is_none() {
-                        todo!("handle concurrent requests from a single client.")
-                    } else if key < request.s {
-                        // got a newer request. so clear out the client's cache.
-                        cache.clear();
-                    }
-                }
-
-                match cache.entry(request.s) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(None);
+                match self.client_table.partial_cmp(&request) {
+                    None => {
+                        // got a newer request or this is the first request from the client.
+                        self.client_table.start(&request);
                         self.prepare(from, request, outbound)
                     }
-                    Entry::Occupied(entry) => {
-                        match entry.get() {
-                            // the client resent the latest request.
-                            // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
-                            None => (),
-                            // send back a cached response for latest request from the client.
-                            Some(reply) => outbound.send(Envelope::new(self.configuration[self.index], from, reply.clone())),
+                    Some(Ordering::Less) => {
+                        todo!("handle concurrent requests from a single client.")
+                    }
+                    Some(Ordering::Equal) => {
+                        match self.client_table.get(&request) {
+                            None => {
+                                // the client resent the latest request.
+                                // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
+                                todo!("handle resent in-progress requests.")
+                            }
+                            Some(reply) => {
+                                // send back a cached response for latest request from the client.
+                                outbound.send(Envelope::new(self.configuration[self.index], from, reply.clone()))
+                            }
                         }
+
+                    }
+                    Some(Ordering::Greater) => {
+                        todo!("handle discarding old requests resent by the client.")
                     }
                 }
             }
