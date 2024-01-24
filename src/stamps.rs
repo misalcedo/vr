@@ -104,4 +104,8 @@ impl ViewTable {
         self.op_number = self.op_number.increment();
         self.op_number
     }
+
+    pub fn set_last_op_number(&mut self, op_number: OpNumber) {
+        self.op_number = op_number;
+    }
 }

@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 use std::net::SocketAddr;
-use crate::stamps::{OpNumber, View};
+use crate::stamps::{OpNumber, View, ViewTable};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Request {
@@ -118,6 +118,8 @@ impl From<Ping> for Message {
 pub struct DoViewChange {
     /// The current view-number of the replica.
     pub v: View,
+    /// A table of the op-number of the last known request for each view.
+    pub t: ViewTable,
     /// The log of the replica.
     pub l: Vec<Request>,
     /// The op-number of the latest committed request known to the replica.
@@ -144,14 +146,14 @@ impl From<DoViewChange> for Message {
     }
 }
 
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StartView {
     /// The current view-number.
     pub v: View,
     /// The log of the new primary.
-    pub l: usize,
+    pub l: Vec<Request>,
     /// The op-number of the latest committed request known to the primary.
-    pub k: usize,
+    pub k: OpNumber,
 }
 
 impl From<StartView> for Message {
