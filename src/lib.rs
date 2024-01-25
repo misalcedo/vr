@@ -348,11 +348,7 @@ where
             return;
         }
 
-        while u128::from(self.committed) < (self.executed as u128) && self.executed < self.log.len() {
-            let request = &self.log[self.executed];
-            self.executed += 1;
-            self.service.invoke(request.op.as_slice());
-        }
+        self.execute_committed();
 
         while let Some(Reverse(message)) = self.prepare_queue.pop() {
             // Ignore buffered prepares for older views.
@@ -509,6 +505,7 @@ where
             Some(do_view_change) => {
                 self.log = do_view_change.l;
                 self.view_table.set_last_op_number(do_view_change.t.op_number());
+                self.committed = self.committed.max(do_view_change.k);
                 self.status = Status::Normal;
 
                 self.broadcast(outbound, StartView {
@@ -516,7 +513,27 @@ where
                     l: self.log.clone(),
                     k: self.view_table.op_number(),
                 });
+
+                self.execute_committed();
+
+                // TODO: Send replies to the clients.
+                // We might not know the socket address of the client because we may not be the one that received the request.
+                // The best we can do is wait for the client to query the system and detect that it's last request completed.
             }
+        }
+    }
+
+    fn execute_committed(&mut self) {
+        while u128::from(self.committed) < (self.executed as u128) && self.executed < self.log.len() {
+            let request = &self.log[self.executed];
+            let reply = Reply {
+                v: self.view_table.view(),
+                s: request.s,
+                x: self.service.invoke(request.op.as_slice()),
+            };
+
+            self.client_table.set(&request, &reply);
+            self.executed += 1;
         }
     }
 }
