@@ -245,36 +245,8 @@ where
         let primary = self.view_table.primary_index(self.configuration.len());
         let is_primary = primary == self.index;
 
-        if let Some(Envelope { from, message, ..}) = envelope {
-            match self.status {
-                Status::Normal if message.view() < self.view_table.view() => self.inform(outbound, from),
-                Status::Normal if message.view() > self.view_table.view() => {
-                    let new_primary = message.view().primary_index(self.configuration.len());
-
-                    match message {
-                        Message::DoViewChange(do_view_change) if self.index == new_primary => {
-                            self.view_change_buffer.insert(do_view_change);
-                        }
-                        _ => todo!("Perform state transfer")
-                    }
-                }
-                Status::Normal if is_primary => self.process_primary(from, message, outbound),
-                Status::Normal if from != self.configuration[primary] => self.inform(outbound, from),
-                Status::Normal => {
-                    self.failure_detector.update(self.view_table.view(), from, self.configuration.len());
-                    self.process_replica(from, message, outbound)
-                },
-                Status::ViewChange if self.index == message.view().primary_index(self.configuration.len()) => {
-                    match message {
-                        Message::DoViewChange(do_view_change) => {
-                            self.view_change_buffer.insert(do_view_change);
-                        }
-                        _ => todo!("Figure out what to do with these messages")
-                    }
-                },
-                Status::ViewChange => todo!("Support recovering status"),
-                Status::Recovering => todo!("Support recovering status"),
-            }
+        if let Some(envelope) = envelope {
+            self.process_message(outbound, envelope);
         }
 
         // Perform up-call for committed operations in order.
@@ -294,6 +266,41 @@ where
             if self.failure_detector.detect() {
                 self.do_view_change(outbound);
             }
+        }
+    }
+
+    fn process_message(&mut self, outbound: &mut impl Outbound, envelope: Envelope) {
+        let primary = self.view_table.primary_index(self.configuration.len());
+        let is_primary = primary == self.index;
+
+        match self.status {
+            Status::Normal if envelope.message.view() < self.view_table.view() => self.inform(outbound, envelope.from),
+            Status::Normal if envelope.message.view() > self.view_table.view() => {
+                let new_primary = envelope.message.view().primary_index(self.configuration.len());
+
+                match envelope.message {
+                    Message::DoViewChange(do_view_change) if self.index == new_primary => {
+                        self.view_change_buffer.insert(do_view_change);
+                    }
+                    _ => todo!("Perform state transfer")
+                }
+            }
+            Status::Normal if is_primary => self.process_primary(envelope, outbound),
+            Status::Normal if envelope.from != self.configuration[primary] => self.inform(outbound, envelope.from),
+            Status::Normal => {
+                self.failure_detector.update(self.view_table.view(), envelope.from, self.configuration.len());
+                self.process_replica(envelope, outbound)
+            },
+            Status::ViewChange if self.index == envelope.message.view().primary_index(self.configuration.len()) => {
+                match envelope.message {
+                    Message::DoViewChange(do_view_change) => {
+                        self.view_change_buffer.insert(do_view_change);
+                    }
+                    _ => todo!("Figure out what to do with these messages")
+                }
+            },
+            Status::ViewChange => todo!("Support recovering status"),
+            Status::Recovering => todo!("Support recovering status"),
         }
     }
 
@@ -374,17 +381,14 @@ where
         }
     }
 
-    fn process_primary(&mut self, from: SocketAddr, message: Message, outbound: &mut impl Outbound) {
-        match message {
+    fn process_primary(&mut self, envelope: Envelope, outbound: &mut impl Outbound) {
+        match envelope.message {
             Message::Request(request) => {
-                // This means we will be sending prepares so we are not idle.
-                self.idle_detector.tick();
-
                 match self.client_table.partial_cmp(&request) {
                     None => {
                         // got a newer request or this is the first request from the client.
                         self.client_table.start(&request);
-                        self.prepare(from, request, outbound)
+                        self.prepare(envelope.from, request, outbound)
                     }
                     Some(Ordering::Less) => {
                         todo!("handle concurrent requests from a single client.")
@@ -398,7 +402,7 @@ where
                             }
                             Some(reply) => {
                                 // send back a cached response for latest request from the client.
-                                outbound.send(Envelope::new(self.configuration[self.index], from, reply.clone()))
+                                outbound.send(Envelope::new(self.configuration[self.index], envelope.from, reply.clone()))
                             }
                         }
 
@@ -437,8 +441,8 @@ where
         })
     }
 
-    fn process_replica(&mut self, from: SocketAddr, message: Message, outbound: &mut impl Outbound) {
-        match message {
+    fn process_replica(&mut self, envelope: Envelope, outbound: &mut impl Outbound) {
+        match envelope.message {
             Message::Prepare(message) => {
                 // TODO: If committed is higher than messages in the prepare buffer we need to enter recovery mode
                 // to avoid buffering prepares that will never get processed.
@@ -451,7 +455,7 @@ where
                         self.prepare_queue.push(Reverse(message));
                     },
                     Ordering::Equal => {
-                        self.prepare_ok(from, message, outbound);
+                        self.prepare_ok(envelope.from, message, outbound);
                     }
                     Ordering::Greater => ()
                 }
@@ -481,6 +485,9 @@ where
                 outbound.send(Envelope::new(self.configuration[self.index], *replica, message.clone()));
             }
         }
+
+        // we are not idle if we are sending messages to all replicas.
+        self.idle_detector.tick();
     }
 
     fn do_view_change(&mut self, outbound: &mut impl Outbound) {
