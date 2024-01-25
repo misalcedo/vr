@@ -61,7 +61,7 @@ impl<F> Service for F where F: FnMut(&[u8]) -> Vec<u8> {
 
 pub trait FailureDetector {
     fn detect(&self) -> bool;
-    fn update(&mut self, view: View, from: SocketAddr);
+    fn update(&mut self, view: View, from: SocketAddr, group_size: usize);
 }
 
 pub trait IdleDetector {
@@ -261,7 +261,7 @@ where
                 Status::Normal if is_primary => self.process_primary(from, message, outbound),
                 Status::Normal if from != self.configuration[primary] => self.inform(outbound, from),
                 Status::Normal => {
-                    self.failure_detector.update(self.view_table.view(), from);
+                    self.failure_detector.update(self.view_table.view(), from, self.configuration.len());
                     self.process_replica(from, message, outbound)
                 },
                 Status::ViewChange if self.index == message.view().primary_index(self.configuration.len()) => {
@@ -592,21 +592,13 @@ mod tests {
             *self
         }
 
-        fn update(&mut self, _: View, _: SocketAddr) {
+        fn update(&mut self, _: View, _: SocketAddr, _: usize) {
         }
     }
 
-    impl FailureDetector for () {
+    impl IdleDetector for bool {
         fn detect(&self) -> bool {
-            false
-        }
-
-        fn update(&mut self, _: View, _: SocketAddr) {}
-    }
-
-    impl IdleDetector for () {
-        fn detect(&self) -> bool {
-            false
+            *self
         }
 
         fn tick(&mut self) {}
@@ -625,7 +617,7 @@ mod tests {
 
     #[test]
     fn simulate() {
-        let mut replicas = build_replicas(());
+        let mut replicas = build_replicas(false);
         let mut network = Network::default();
         for address in replicas.iter().map(Replica::address) {
             network.bind(address).unwrap();
@@ -727,7 +719,7 @@ mod tests {
             .with_commit_queue_threshold(10)
             .with_prepare_multiplier(2)
             .with_service(0usize)
-            .with_idle_detector(())
+            .with_idle_detector(false)
             .with_failure_detector(failure_detector)
             .build()
             .unwrap()
