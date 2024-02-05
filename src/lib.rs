@@ -14,7 +14,7 @@ mod view_change;
 use crate::model::{DoViewChange, Envelope, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request, StartView};
 pub use network::Network;
 use crate::client::RequestCache;
-use crate::network::Outbound;
+use crate::network::{Mailbox, Outbound};
 use crate::stamps::{OpNumber, View, ViewTable};
 use crate::view_change::ViewChangeBuffer;
 
@@ -177,7 +177,11 @@ pub struct Replica<S, FD, ID> {
     configuration: Vec<SocketAddr>,
     /// Each replica also knows its own replica number.
     index: usize,
-    /// The view-table containing for each view up to and including the current one the op-number of the latest request known in that view.
+    /// The current view.
+    view: View,
+    /// The latest op-number received by this replica.
+    op_number: OpNumber,
+    /// The view-table containing for each past view the op-number of the latest request known in that view.
     view_table: ViewTable,
     /// The current status, either normal, view-change, or recovering.
     status: Status,
@@ -225,6 +229,8 @@ where
             idle_detector,
             configuration,
             index,
+            view: View::default(),
+            op_number: OpNumber::default(),
             view_table: Default::default(),
             status: Default::default(),
             log: vec![],
@@ -243,8 +249,14 @@ where
         self.configuration[self.index]
     }
 
+    pub fn poll2(&mut self, mailbox: &mut Mailbox) {
+        let primary = self.view.primary_index(self.configuration.len());
+        let is_primary = primary == self.index;
+
+    }
+
     pub fn poll(&mut self, envelope: Option<Envelope>, outbound: &mut impl Outbound) {
-        let primary = self.view_table.primary_index(self.configuration.len());
+        let primary = self.view.primary_index(self.configuration.len());
         let is_primary = primary == self.index;
 
         if let Some(envelope) = envelope {
@@ -258,7 +270,7 @@ where
 
             if self.idle_detector.detect() {
                 self.broadcast(outbound, Ping {
-                    v: self.view_table.view(),
+                    v: self.view,
                     c: self.committed
                 })
             }
@@ -272,12 +284,12 @@ where
     }
 
     fn process_message(&mut self, outbound: &mut impl Outbound, envelope: Envelope) {
-        let primary = self.view_table.primary_index(self.configuration.len());
+        let primary = self.view.primary_index(self.configuration.len());
         let is_primary = primary == self.index;
 
         match self.status {
-            Status::Normal if envelope.message.view() < self.view_table.view() => self.inform(outbound, envelope.from),
-            Status::Normal if envelope.message.view() > self.view_table.view() => {
+            Status::Normal if envelope.message.view() < self.view => self.inform(outbound, envelope.from),
+            Status::Normal if envelope.message.view() > self.view => {
                 let new_primary = envelope.message.view().primary_index(self.configuration.len());
 
                 match envelope.message {
@@ -285,7 +297,10 @@ where
                         self.view_change_buffer.insert(do_view_change);
                     }
                     Message::StartView(start_view) if self.index != new_primary => {
+                        self.op_number = start_view.t.last_op_number();
                         self.view_table = start_view.t;
+                        self.view = start_view.v;
+                        self.committed = self.committed.max(start_view.k);
                         self.log = start_view.l;
                         self.status = Status::Normal;
                     }
@@ -295,7 +310,7 @@ where
             Status::Normal if is_primary => self.process_primary(envelope, outbound),
             Status::Normal if envelope.from != self.configuration[primary] => self.inform(outbound, envelope.from),
             Status::Normal => {
-                self.failure_detector.update(self.view_table.view(), envelope.from, self.configuration.len());
+                self.failure_detector.update(self.view, envelope.from, self.configuration.len());
                 self.process_replica(envelope, outbound)
             },
             Status::ViewChange if self.index == envelope.message.view().primary_index(self.configuration.len()) => {
@@ -308,7 +323,8 @@ where
             },
             Status::ViewChange => {
                 match envelope.message {
-                    Message::StartView(start_view) if start_view.v == self.view_table.view() => {
+                    Message::StartView(start_view) if start_view.v == self.view => {
+                        self.op_number = start_view.t.last_op_number();
                         self.view_table = start_view.t;
                         self.log = start_view.l;
                         self.status = Status::Normal;
@@ -322,8 +338,8 @@ where
 
     fn inform(&mut self, outbound: &mut impl Outbound, to: SocketAddr) {
         outbound.send(
-            Envelope::new(self.configuration[self.index], to, Inform {
-                v: self.view_table.view(),
+            Envelope::new(self.view, self.configuration[self.index], to, Inform {
+                v: self.view,
             })
         )
     }
@@ -340,7 +356,7 @@ where
                 if self.commit_queue.len() > self.commit_queue_threshold {
                     // TODO: Reaching this threshold should cause the primary to re-send prepares only to replicas that have not responded yet.
                     self.broadcast(outbound, Prepare {
-                        v: self.view_table.view(),
+                        v: self.view,
                         n: OpNumber::from(self.log.len()),
                         m: request.clone(),
                         c: self.committed
@@ -352,7 +368,7 @@ where
 
             let to = entry.get().address;
             let reply = Reply {
-                v: self.view_table.view(),
+                v: self.view,
                 s: request.s,
                 x: self.service.invoke(request.op.as_slice()),
             };
@@ -362,7 +378,7 @@ where
             self.executed += 1;
             entry.remove();
 
-            outbound.send(Envelope::new(self.configuration[self.index], to, reply));
+            outbound.send(Envelope::new(self.view, self.configuration[self.index], to, reply));
         }
     }
 
@@ -375,11 +391,11 @@ where
 
         while let Some(Reverse(message)) = self.prepare_queue.pop() {
             // Ignore buffered prepares for older views.
-            if message.v < self.view_table.view() {
+            if message.v < self.view {
                 continue;
             }
 
-            let next = self.view_table.op_number().increment();
+            let next = self.op_number.next();
 
             if message.n != next {
                 self.prepare_queue.push(Reverse(message));
@@ -391,7 +407,7 @@ where
                 break;
             }
 
-            let primary = self.configuration[self.view_table.primary_index(self.configuration.len())];
+            let primary = self.configuration[self.view.primary_index(self.configuration.len())];
 
             self.prepare_ok(primary, message, outbound);
         }
@@ -418,7 +434,7 @@ where
                             }
                             Some(reply) => {
                                 // send back a cached response for latest request from the client.
-                                outbound.send(Envelope::new(self.configuration[self.index], envelope.from, reply.clone()))
+                                outbound.send(Envelope::new(self.view, self.configuration[self.index], envelope.from, reply.clone()))
                             }
                         }
 
@@ -445,12 +461,12 @@ where
 
     fn prepare(&mut self, client: SocketAddr, request: Request, outbound: &mut impl Outbound) {
         self.log.push(request.clone());
-        self.view_table.next_op_number();
+        self.op_number.increment();
         self.commit_queue
             .insert(OpNumber::from(self.log.len()), RequestState::new(client, request.s));
 
         self.broadcast(outbound, Prepare {
-            v: self.view_table.view(),
+            v: self.view,
             n: OpNumber::from(self.log.len()),
             m: request,
             c: self.committed
@@ -464,7 +480,7 @@ where
                 // to avoid buffering prepares that will never get processed.
                 self.committed = self.committed.max(message.c);
 
-                let next = self.view_table.op_number().increment();
+                let next = self.op_number.next();
 
                 match next.cmp(&message.n) {
                     Ordering::Less => {
@@ -482,15 +498,15 @@ where
 
     fn prepare_ok(&mut self, from: SocketAddr, message: Prepare, outbound: &mut impl Outbound) {
         self.log.push(message.m);
-        self.view_table.next_op_number();
+        self.op_number.increment();
 
         let message = PrepareOk {
-            v: self.view_table.view(),
-            n: self.view_table.op_number(),
+            v: self.view,
+            n: self.op_number,
             i: self.index,
         };
 
-        outbound.send(Envelope::new(self.configuration[self.index], from, message.clone()));
+        outbound.send(Envelope::new(self.view, self.configuration[self.index], from, message.clone()));
     }
 
     fn broadcast(&mut self, outbound: &mut impl Outbound, message: impl Into<Message>) {
@@ -498,7 +514,7 @@ where
 
         for (i, replica) in self.configuration.iter().enumerate() {
             if i != self.index {
-                outbound.send(Envelope::new(self.configuration[self.index], *replica, message.clone()));
+                outbound.send(Envelope::new(self.view, self.configuration[self.index], *replica, message.clone()));
             }
         }
 
@@ -507,15 +523,15 @@ where
     }
 
     fn do_view_change(&mut self, outbound: &mut impl Outbound) {
-        self.view_table.next_view();
+        self.view.increment();
         self.status = Status::ViewChange;
 
-        let primary = self.view_table.primary_index(self.configuration.len());
-        let envelope = Envelope::new(self.configuration[self.index], self.configuration[primary],  DoViewChange {
-            v: self.view_table.view(),
+        let primary = self.view.primary_index(self.configuration.len());
+        let envelope = Envelope::new(self.view, self.configuration[self.index], self.configuration[primary],  DoViewChange {
+            v: self.view,
             t: self.view_table.clone(),
             l: self.log.clone(),
-            k: self.view_table.op_number(),
+            k: self.op_number,
             i: self.index,
         });
 
@@ -527,15 +543,16 @@ where
             None => (),
             Some(do_view_change) => {
                 self.log = do_view_change.l;
-                self.view_table.set_last_op_number(do_view_change.t.op_number());
+                self.op_number = do_view_change.t.last_op_number();
+                self.view_table = do_view_change.t;
                 self.committed = self.committed.max(do_view_change.k);
                 self.status = Status::Normal;
 
                 self.broadcast(outbound, StartView {
-                    v: self.view_table.view(),
+                    v: self.view,
                     t: self.view_table.clone(),
                     l: self.log.clone(),
-                    k: self.view_table.op_number(),
+                    k: self.committed,
                 });
 
                 self.execute_committed();
@@ -551,7 +568,7 @@ where
         while u128::from(self.committed) < (self.executed as u128) && self.executed < self.log.len() {
             let request = &self.log[self.executed];
             let reply = Reply {
-                v: self.view_table.view(),
+                v: self.view,
                 s: request.s,
                 x: self.service.invoke(request.op.as_slice()),
             };
@@ -602,7 +619,7 @@ impl Client {
 mod tests {
     use std::fmt::Debug;
     use super::*;
-    use crate::model::{DoViewChange, Message};
+    use crate::model::Message;
 
     impl Service for usize {
         fn invoke(&mut self, payload: &[u8]) -> Vec<u8> {
@@ -656,7 +673,7 @@ mod tests {
         let (primary, request) = client.new_request(payload.clone());
 
         network
-            .send(Envelope::new(client_address, primary, request.clone()))
+            .send(Envelope::new(View::default(), client_address, primary, request.clone()))
             .unwrap();
 
         poll(&mut network, &mut replicas[0]);
@@ -669,7 +686,7 @@ mod tests {
 
         client.update(&message);
 
-        assert_eq!(client.view, replicas[0].view_table.view());
+        assert_eq!(client.view, replicas[0].view);
         assert_eq!(sender, replicas[0].address());
         assert_eq!(
             message,
@@ -700,7 +717,7 @@ mod tests {
         replicas[2].failure_detector = true;
 
         network
-            .send(Envelope::new(client_address, primary, request.clone()))
+            .send(Envelope::new(View::default(), client_address, primary, request.clone()))
             .unwrap();
 
         poll(&mut network, &mut replicas[0]);
@@ -731,7 +748,7 @@ mod tests {
         poll(&mut network, &mut replicas[0]);
 
         for replica in &replicas {
-            assert_eq!(replica.view_table.view(), View::from(1));
+            assert_eq!(replica.view, View::from(1));
             assert_eq!(replica.status, Status::Normal);
         }
     }

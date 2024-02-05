@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::num::NonZeroU128;
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
@@ -31,7 +31,11 @@ impl From<OpNumber> for u128 {
 }
 
 impl OpNumber {
-    pub fn increment(&self) -> Self {
+    pub fn increment(&mut self) {
+        self.0 = NonZeroU128::new(1 + u128::from(*self))
+    }
+
+    pub fn next(&self) -> Self {
         Self(NonZeroU128::new(1 + u128::from(*self)))
     }
 }
@@ -53,8 +57,8 @@ impl From<View> for u128 {
 }
 
 impl View {
-    pub fn increment(&self) -> Self {
-        Self(1 + self.0)
+    pub fn increment(&mut self) {
+        self.0 = 1 + self.0;
     }
 
     pub fn primary_index(&self, group_size: usize) -> usize {
@@ -64,48 +68,31 @@ impl View {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ViewTable {
-    table: HashMap<View, OpNumber>,
-    view: View,
-    op_number: OpNumber
+    table: BTreeMap<View, OpNumber>,
 }
 
 impl PartialOrd for ViewTable {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.view, self.op_number).partial_cmp(&(other.view, other.op_number))
+        self.table.last_key_value().partial_cmp(&other.table.last_key_value())
     }
 }
 
 impl Ord for ViewTable {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.view, self.op_number).cmp(&(other.view, other.op_number))
+        self.table.last_key_value().cmp(&other.table.last_key_value())
     }
 }
 
 impl ViewTable {
-    pub fn view(&self) -> View {
-        self.view
+    pub fn insert_view(&mut self, view: View, op_number: OpNumber) {
+        self.table.insert(view, op_number);
     }
 
-    pub fn op_number(&self) -> OpNumber {
-        self.op_number
+    pub fn last_entry(&self) -> (View, OpNumber) {
+        self.table.last_key_value().map(|kv| (kv.0.clone(), kv.1.clone())).unwrap_or_default()
     }
 
-    pub fn primary_index(&self, group_size: usize) -> usize {
-        self.view.primary_index(group_size)
-    }
-
-    pub fn next_view(&mut self) -> View {
-        self.table.insert(self.view, self.op_number);
-        self.view = self.view.increment();
-        self.view
-    }
-
-    pub fn next_op_number(&mut self) -> OpNumber {
-        self.op_number = self.op_number.increment();
-        self.op_number
-    }
-
-    pub fn set_last_op_number(&mut self, op_number: OpNumber) {
-        self.op_number = op_number;
+    pub fn last_op_number(&self) -> OpNumber {
+        self.table.last_key_value().map(|kv| kv.1.clone()).unwrap_or_default()
     }
 }

@@ -28,7 +28,7 @@ impl ViewChangeBuffer {
         if self.is_complete(index, group_size) {
             let message = self.buffer.drain()
                 .map(|(_, v)| v)
-                .max_by_key(|do_view_change| (do_view_change.t.view(), do_view_change.t.op_number()))?;
+                .max_by_key(|do_view_change| do_view_change.t.last_entry())?;
 
             Some(message)
         } else {

@@ -8,6 +8,11 @@ use std::sync::{mpsc, Arc, RwLock};
 
 type Stream = (mpsc::Sender<Envelope>, mpsc::Receiver<Envelope>);
 
+#[derive(Debug, Default)]
+pub struct Mailbox {
+    envelopes: Vec<Envelope>
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Network {
     channels: Arc<RwLock<HashMap<SocketAddr, Stream>>>,
@@ -116,7 +121,7 @@ mod tests {
             },
             c: Default::default()
         };
-        let envelope = Envelope::new(a, b, message);
+        let envelope = Envelope::new(View::default(), a, b, message);
 
         network.send(envelope.clone()).unwrap();
 
