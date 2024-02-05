@@ -150,6 +150,8 @@ impl From<DoViewChange> for Message {
 pub struct StartView {
     /// The current view-number.
     pub v: View,
+    /// A table of the op-number of the last known request for each view.
+    pub t: ViewTable,
     /// The log of the new primary.
     pub l: Vec<Request>,
     /// The op-number of the latest committed request known to the primary.

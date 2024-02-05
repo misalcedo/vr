@@ -162,6 +162,8 @@ impl<S, FD, ID> ReplicaBuilder<S, FD, ID>
     }
 }
 
+// TODO: Move view and op-number from view table to replica.
+// View table only used on view change.
 #[derive(Debug)]
 pub struct Replica<S, FD, ID> {
     /// The service code for processing committed client requests.
@@ -282,6 +284,11 @@ where
                     Message::DoViewChange(do_view_change) if self.index == new_primary => {
                         self.view_change_buffer.insert(do_view_change);
                     }
+                    Message::StartView(start_view) if self.index != new_primary => {
+                        self.view_table = start_view.t;
+                        self.log = start_view.l;
+                        self.status = Status::Normal;
+                    }
                     _ => todo!("Perform state transfer")
                 }
             }
@@ -299,7 +306,16 @@ where
                     _ => todo!("Figure out what to do with these messages")
                 }
             },
-            Status::ViewChange => todo!("Support recovering status"),
+            Status::ViewChange => {
+                match envelope.message {
+                    Message::StartView(start_view) if start_view.v == self.view_table.view() => {
+                        self.view_table = start_view.t;
+                        self.log = start_view.l;
+                        self.status = Status::Normal;
+                    }
+                    _ => todo!("Handle unexpected messages on view change status.")
+                }
+            },
             Status::Recovering => todo!("Support recovering status"),
         }
     }
@@ -517,6 +533,7 @@ where
 
                 self.broadcast(outbound, StartView {
                     v: self.view_table.view(),
+                    t: self.view_table.clone(),
                     l: self.log.clone(),
                     k: self.view_table.op_number(),
                 });
@@ -697,25 +714,26 @@ mod tests {
 
         // skip prepare
         network.receive(replicas[2].address()).unwrap();
-        // start view change
+        // do view change
         poll(&mut network, &mut replicas[2]);
 
-        let Envelope { from, message, ..} = network.receive(replicas[1].address()).unwrap();
+        replicas[1].failure_detector = true;
 
-        let mut table = ViewTable::default();
-        table.next_view();
+        // do view change
+        poll(&mut network, &mut replicas[1]);
+        // start view change
+        poll(&mut network, &mut replicas[1]);
 
-        assert_eq!(
-            message,
-            Message::DoViewChange(DoViewChange {
-                v: View::from(1),
-                t: table,
-                l: vec![],
-                k: OpNumber::from(0),
-                i: 2
-            })
-        );
-        assert_eq!(from, replicas[2].address());
+        replicas[1].failure_detector = false;
+        replicas[2].failure_detector = false;
+
+        poll(&mut network, &mut replicas[2]);
+        poll(&mut network, &mut replicas[0]);
+
+        for replica in &replicas {
+            assert_eq!(replica.view_table.view(), View::from(1));
+            assert_eq!(replica.status, Status::Normal);
+        }
     }
 
     fn build_replicas<FD: FailureDetector + Clone + Debug>(failure_detector: FD) -> Vec<Replica<impl Service, FD, impl IdleDetector>> {
