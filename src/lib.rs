@@ -6,15 +6,20 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
 mod client;
+mod mailbox;
 mod model;
+mod new_model;
 mod network;
+mod replica;
+mod service;
 mod stamps;
 mod view_change;
 
-use crate::model::{DoViewChange, Envelope, Envelope2, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request, StartView};
+use crate::model::{DoViewChange, Envelope, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request, StartView};
 pub use network::Network;
 use crate::client::RequestCache;
-use crate::network::{Mailbox, Outbound, Sender};
+use crate::network::Outbound;
+use crate::service::Service;
 use crate::stamps::{OpNumber, View, ViewTable};
 use crate::view_change::ViewChangeBuffer;
 
@@ -46,16 +51,6 @@ impl RequestState {
         let sub_majority = (group_size - 1) / 2;
 
         self.accepted.len() >= sub_majority
-    }
-}
-
-pub trait Service {
-    fn invoke(&mut self, payload: &[u8]) -> Vec<u8>;
-}
-
-impl<F> Service for F where F: FnMut(&[u8]) -> Vec<u8> {
-    fn invoke(&mut self, payload: &[u8]) -> Vec<u8> {
-        self(payload)
     }
 }
 
@@ -162,8 +157,6 @@ impl<S, FD, ID> ReplicaBuilder<S, FD, ID>
     }
 }
 
-// TODO: Move view and op-number from view table to replica.
-// View table only used on view change.
 #[derive(Debug)]
 pub struct Replica<S, FD, ID> {
     /// The service code for processing committed client requests.
@@ -213,7 +206,6 @@ where
     FD: FailureDetector,
     ID: IdleDetector
 {
-    // TODO: Implement some sort of builder that can stamp out replicas with different indices.
     pub fn new(
         service: S,
         failure_detector: FD,
@@ -247,49 +239,6 @@ where
 
     pub fn address(&self) -> SocketAddr {
         self.configuration[self.index]
-    }
-
-    pub fn poll2(&mut self, mailbox: &mut Mailbox) {
-        let primary = self.view.primary_index(self.configuration.len());
-
-        if primary == self.index {
-            self.poll_primary(mailbox);
-        } else {
-            self.poll_replica(mailbox);
-        }
-    }
-
-    fn poll_primary(&mut self, mailbox: &mut Mailbox) {
-        match self.status {
-            Status::Normal => self.process_normal_primary(mailbox),
-            Status::ViewChange => self.process_view_change_primary(mailbox),
-            Status::Recovering => ()
-        }
-    }
-
-    fn process_normal_primary(&mut self, mailbox: &mut Mailbox) {
-        mailbox.select(|s, e| self.select_normal_primary(s, e))
-    }
-
-    fn select_normal_primary(&mut self, sender: &mut Sender, envelope: Envelope2) -> Option<Envelope2> {
-        Some(envelope)
-    }
-
-    fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {
-    }
-
-    fn poll_replica(&mut self, mailbox: &mut Mailbox) {
-        match self.status {
-            Status::Normal => self.process_normal_replica(mailbox),
-            Status::ViewChange => self.process_view_change_replica(mailbox),
-            Status::Recovering => ()
-        }
-    }
-
-    fn process_normal_replica(&mut self, mailbox: &mut Mailbox) {
-    }
-
-    fn process_view_change_replica(&mut self, mailbox: &mut Mailbox) {
     }
 
     pub fn poll(&mut self, envelope: Option<Envelope>, outbound: &mut impl Outbound) {
