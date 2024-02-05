@@ -1,16 +1,75 @@
-use crate::model::Envelope;
+use crate::model::{Address, Envelope, Envelope2, Inform, Message};
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::SocketAddr;
 use std::sync::mpsc::TryRecvError;
 use std::sync::{mpsc, Arc, RwLock};
+use crate::stamps::View;
 
 type Stream = (mpsc::Sender<Envelope>, mpsc::Receiver<Envelope>);
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Mailbox {
-    envelopes: Vec<Envelope>
+    address: Address,
+    group: Address,
+    inbound: Vec<Option<Envelope2>>,
+    outbound: VecDeque<Envelope2>
+}
+
+pub struct Sender<'a>(&'a mut VecDeque<Envelope2>);
+
+impl Mailbox {
+    pub fn new(address: Address, group: Address) -> Self {
+        Self {
+            address,
+            group,
+            inbound: Default::default(),
+            outbound: Default::default()
+        }
+    }
+
+    pub fn send(&mut self, view: View, to: Address, payload: impl Into<Message>) {
+        let from = self.address;
+        let message = payload.into();
+
+        self.outbound.push_back(Envelope2 { view, from, to, message });
+    }
+
+    pub fn broadcast(&mut self, view: View, payload: impl Into<Message>) {
+        let from = self.address;
+        let to = self.group;
+        let message = payload.into();
+
+        self.outbound.push_back(Envelope2 { view, from, to, message });
+    }
+
+    pub fn inform(&mut self, view: View) {
+        for slot in self.inbound.iter_mut() {
+            match slot.take() {
+                Some(envelope) if envelope.view < view => {
+                    let from = self.address;
+                    let to = envelope.to;
+                    let message = Inform { v: view }.into();
+
+                    self.outbound.push_back(Envelope2 { view, from, to, message } )
+                },
+                value => {
+                    *slot = value;
+                }
+            }
+        }
+    }
+
+    pub fn select<F: FnMut(&mut Sender, Envelope2) -> Option<Envelope2>>(&mut self, mut f: F) {
+        let mut sender = Sender(&mut self.outbound);
+
+         for slot in self.inbound.iter_mut() {
+             if let Some(envelope) = slot.take() {
+                 *slot = f(&mut sender, envelope);
+             }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -98,8 +157,26 @@ impl Outbound for Network {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Prepare, Request};
+    use crate::model::{Inform, Prepare, Request};
     use crate::stamps::{OpNumber, View};
+
+    #[test]
+    fn mailbox() {
+        let a = Address::Replica(1);
+        let b = Address::Client(0);
+        let view = View::default();
+        let message = Inform { v: Default::default() }.into();
+
+        let mut instance = Mailbox::new(Address::Replica(0), Address::Group(0));
+
+        instance.inbound = vec![None, Some(Envelope2 { view, from: a, to: b, message })];
+
+        instance.select(|s, e| Some(e));
+        assert!(!instance.inbound.iter().all(Option::is_none));
+
+        instance.select(|_, _| None);
+        assert!(instance.inbound.iter().all(Option::is_none));
+    }
 
     #[test]
     fn basic() {

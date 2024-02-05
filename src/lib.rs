@@ -11,10 +11,10 @@ mod network;
 mod stamps;
 mod view_change;
 
-use crate::model::{DoViewChange, Envelope, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request, StartView};
+use crate::model::{DoViewChange, Envelope, Envelope2, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request, StartView};
 pub use network::Network;
 use crate::client::RequestCache;
-use crate::network::{Mailbox, Outbound};
+use crate::network::{Mailbox, Outbound, Sender};
 use crate::stamps::{OpNumber, View, ViewTable};
 use crate::view_change::ViewChangeBuffer;
 
@@ -251,8 +251,45 @@ where
 
     pub fn poll2(&mut self, mailbox: &mut Mailbox) {
         let primary = self.view.primary_index(self.configuration.len());
-        let is_primary = primary == self.index;
 
+        if primary == self.index {
+            self.poll_primary(mailbox);
+        } else {
+            self.poll_replica(mailbox);
+        }
+    }
+
+    fn poll_primary(&mut self, mailbox: &mut Mailbox) {
+        match self.status {
+            Status::Normal => self.process_normal_primary(mailbox),
+            Status::ViewChange => self.process_view_change_primary(mailbox),
+            Status::Recovering => ()
+        }
+    }
+
+    fn process_normal_primary(&mut self, mailbox: &mut Mailbox) {
+        mailbox.select(|s, e| self.select_normal_primary(s, e))
+    }
+
+    fn select_normal_primary(&mut self, sender: &mut Sender, envelope: Envelope2) -> Option<Envelope2> {
+        Some(envelope)
+    }
+
+    fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {
+    }
+
+    fn poll_replica(&mut self, mailbox: &mut Mailbox) {
+        match self.status {
+            Status::Normal => self.process_normal_replica(mailbox),
+            Status::ViewChange => self.process_view_change_replica(mailbox),
+            Status::Recovering => ()
+        }
+    }
+
+    fn process_normal_replica(&mut self, mailbox: &mut Mailbox) {
+    }
+
+    fn process_view_change_replica(&mut self, mailbox: &mut Mailbox) {
     }
 
     pub fn poll(&mut self, envelope: Option<Envelope>, outbound: &mut impl Outbound) {

@@ -172,6 +172,21 @@ pub struct Envelope {
     pub message: Message
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum Address {
+    Replica(usize),
+    Group(u128),
+    Client(u128)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Envelope2 {
+    pub view: View,
+    pub from: Address,
+    pub to: Address,
+    pub message: Message
+}
+
 impl Envelope {
     pub fn new(view: View, from: SocketAddr, to: SocketAddr, message: impl Into<Message>) -> Self {
         Self {
