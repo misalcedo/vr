@@ -1,5 +1,5 @@
 use crate::mailbox::{Mailbox, Sender};
-use crate::new_model::{Envelope, Message, ReplicaIdentifier, Request, View, OpNumber, Payload, Prepare, ClientIdentifier, GroupIdentifier, RequestIdentifier};
+use crate::new_model::{Envelope, Message, ReplicaIdentifier, Request, View, OpNumber, Payload, Prepare, ClientIdentifier, GroupIdentifier, RequestIdentifier, PrepareOk};
 use crate::service::Service;
 
 pub struct Client {
@@ -96,14 +96,10 @@ impl<S> Replica<S>
     }
 
     fn process_normal_primary(&mut self, mailbox: &mut Mailbox) {
-        mailbox.select(|s, e| self.select_normal_primary(s, e))
-    }
-
-    fn select_normal_primary(&mut self, sender: &mut Sender, envelope: Envelope) -> Option<Envelope> {
-        match envelope {
+        mailbox.select(|sender, envelope| match envelope {
             Envelope { message: Message { payload: Payload::Request(request), ..}, .. } => {
-                self.op_number.increment();
-                self.log.push(request.clone());
+                self.push_request(request.clone());
+
                 sender.broadcast(Message::new(
                     self.view,
                     Prepare {
@@ -116,7 +112,7 @@ impl<S> Replica<S>
                 None
             }
             _ => Some(envelope)
-        }
+        })
     }
 
     fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {
@@ -131,9 +127,30 @@ impl<S> Replica<S>
     }
 
     fn process_normal_replica(&mut self, mailbox: &mut Mailbox) {
+        let next_op = self.op_number.next();
+
+        mailbox.select(|sender, envelope| match envelope {
+            Envelope { message: Message { payload: Payload::Prepare(prepare), ..}, .. } if next_op == prepare.n => {
+                self.push_request(prepare.m);
+
+                let primary = self.identifier.primary(self.view);
+
+                sender.send(primary, Message::new(self.view, PrepareOk { n: self.op_number, }));
+
+                None
+            }
+            // TODO: perform state transfer if necessary to get missing information.
+            _ => Some(envelope)
+        })
     }
 
     fn process_view_change_replica(&mut self, mailbox: &mut Mailbox) {
+    }
+
+    // Push a request to the end of the log and increment the op-number.
+    fn push_request(&mut self, request: Request) {
+        self.op_number.increment();
+        self.log.push(request);
     }
 }
 
@@ -145,22 +162,76 @@ mod tests {
 
     #[test]
     fn request_primary() {
+        let operation = b"Hi!";
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
 
-        let mut replica = Replica::new(0, replicas[0]);
+        let mut primary = Replica::new(0, replicas[0]);
         let mut client = Client::new(group);
-        let mut mailbox = Mailbox::from(replicas[0]);
+        let mut mailbox = simulate_prepare(&mut primary, &mut client, operation, 1);
 
+        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+
+        assert_eq!(envelopes, vec![prepare_envelope(&primary, &client, operation)]);
+    }
+
+    #[test]
+    fn prepare_replica() {
         let operation = b"Hi!";
-        let envelope = client.envelope(operation);
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, replicas[0]);
+        let mut client = Client::new(group);
+
+        let mut replica = Replica::new(0, replicas[1]);
+        let mut mailbox = Mailbox::from(replicas[1]);
+
+        simulate_prepare(&mut primary, &mut client, operation, 1);
+
+        let envelope = prepare_envelope(&primary, &client, operation);
 
         mailbox.deliver(envelope);
         replica.poll(&mut mailbox);
 
         let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
 
-        assert_eq!(envelopes, vec![prepare_envelope(&replica, &client, operation)]);
+        assert_eq!(envelopes, vec![prepare_ok_envelope(&primary, &replica)]);
+    }
+
+    #[test]
+    fn prepare_replica_buffered() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, replicas[0]);
+        let mut client = Client::new(group);
+
+        let mut replica = Replica::new(0, replicas[1]);
+        let mut mailbox = Mailbox::from(replicas[1]);
+
+        simulate_prepare(&mut primary, &mut client, operation, 2);
+
+        let envelope = prepare_envelope(&primary, &client, operation);
+
+        mailbox.deliver(envelope);
+        replica.poll(&mut mailbox);
+
+        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+
+        assert_eq!(envelopes, vec![]);
+    }
+
+    fn simulate_prepare(primary: &mut Replica<usize>, client: &mut Client, operation: &[u8], times: usize) -> Mailbox {
+        let mut mailbox = Mailbox::from(primary.identifier);
+
+        for _ in 0..times {
+            mailbox.deliver(client.envelope(operation));
+            primary.poll(&mut mailbox);
+        }
+
+        mailbox
     }
 
     fn prepare_envelope<S>(replica: &Replica<S>, client: &Client, operation: &[u8]) -> Envelope {
@@ -177,6 +248,19 @@ mod tests {
                         s: client.request,
                     },
                     k: replica.committed,
+                }.into()
+            },
+        }
+    }
+
+    fn prepare_ok_envelope<S>(primary: &Replica<S>, replica: &Replica<S>) -> Envelope {
+        Envelope {
+            from: replica.identifier.into(),
+            to: primary.identifier.into(),
+            message: Message {
+                view: replica.view,
+                payload: PrepareOk {
+                    n: replica.op_number,
                 }.into()
             },
         }

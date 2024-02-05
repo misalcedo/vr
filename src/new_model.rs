@@ -47,7 +47,8 @@ impl Message {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Payload {
     Request(Request),
-    Prepare(Prepare)
+    Prepare(Prepare),
+    PrepareOk(PrepareOk)
 }
 
 impl From<Request> for Payload {
@@ -59,6 +60,12 @@ impl From<Request> for Payload {
 impl From<Prepare> for Payload {
     fn from(value: Prepare) -> Self {
         Self::Prepare(value)
+    }
+}
+
+impl From<PrepareOk> for Payload {
+    fn from(value: PrepareOk) -> Self {
+        Self::PrepareOk(value)
     }
 }
 
@@ -80,6 +87,12 @@ pub struct Prepare {
     pub m: Request,
     /// The op-number of the last committed log entry.
     pub k: OpNumber,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrepareOk {
+    /// The op-number assigned to the request.
+    pub n: OpNumber,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -142,33 +155,13 @@ impl RequestIdentifier {
 #[repr(transparent)]
 pub struct OpNumber(Option<NonZeroU128>);
 
-impl From<u128> for OpNumber {
-    fn from(value: u128) -> Self {
-        Self(NonZeroU128::new(value))
-    }
-}
-
-impl From<usize> for OpNumber {
-    fn from(value: usize) -> Self {
-        Self(NonZeroU128::new(value as u128))
-    }
-}
-
-impl From<i32> for OpNumber {
-    fn from(value: i32) -> Self {
-        Self(NonZeroU128::new(value as u128))
-    }
-}
-
-impl From<OpNumber> for u128 {
-    fn from(value: OpNumber) -> Self {
-        value.0.map(NonZeroU128::get).unwrap_or(0)
-    }
-}
-
 impl OpNumber {
     pub fn increment(&mut self) {
-        self.0 = NonZeroU128::new(1 + u128::from(*self))
+        self.0 = NonZeroU128::new(1 + self.0.map(NonZeroU128::get).unwrap_or(0))
+    }
+
+    pub fn next(&self) -> Self {
+        Self(NonZeroU128::new(1 + self.0.map(NonZeroU128::get).unwrap_or(0)))
     }
 }
 
@@ -176,20 +169,19 @@ impl OpNumber {
 #[repr(transparent)]
 pub struct View(u128);
 
-impl From<u128> for View {
-    fn from(value: u128) -> Self {
-        Self(value)
-    }
-}
-
-impl From<View> for u128 {
-    fn from(value: View) -> Self {
-        value.0
-    }
-}
-
 impl View {
     pub fn increment(&mut self) {
         self.0 = 1 + self.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl From<u128> for OpNumber {
+        fn from(value: u128) -> Self {
+            Self(NonZeroU128::new(value))
+        }
     }
 }

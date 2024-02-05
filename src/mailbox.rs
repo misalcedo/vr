@@ -19,8 +19,9 @@ impl Sender {
         Self { address, group, outbound: Default::default() }
     }
 
-    pub fn send(&mut self, to: Address, message: Message) {
+    pub fn send(&mut self, to: impl Into<Address>, message: Message) {
         let from = self.address;
+        let to = to.into();
 
         self.outbound.push_back(Envelope { from, to, message });
     }
