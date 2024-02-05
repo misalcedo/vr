@@ -1,6 +1,34 @@
 use crate::mailbox::{Mailbox, Sender};
-use crate::new_model::{Envelope, Message, ReplicaIdentifier, Request, View, OpNumber, Payload, Prepare};
+use crate::new_model::{Envelope, Message, ReplicaIdentifier, Request, View, OpNumber, Payload, Prepare, ClientIdentifier, GroupIdentifier, RequestIdentifier};
 use crate::service::Service;
+
+pub struct Client {
+    identifier: ClientIdentifier,
+    view: View,
+    request: RequestIdentifier,
+    group: GroupIdentifier,
+}
+
+impl Client {
+    pub fn new(group: GroupIdentifier) -> Self {
+        Self { identifier: Default::default(), view: Default::default(), request: Default::default(), group }
+    }
+
+    pub fn envelope(&mut self, payload: &[u8]) -> Envelope {
+        Envelope {
+            from: self.identifier.into(),
+            to: self.group.primary(self.view).into(),
+            message: Message {
+                view: self.view,
+                payload: Request {
+                    op: Vec::from(payload),
+                    c: self.identifier,
+                    s: self.request.increment(),
+                }.into()
+            },
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -10,7 +38,6 @@ pub enum Status {
     Recovering,
 }
 
-#[derive(Debug)]
 pub struct Replica<S> {
     /// The service code for processing committed client requests.
     service: S,
@@ -77,7 +104,6 @@ impl<S> Replica<S>
             Envelope { message: Message { payload: Payload::Request(request), ..}, .. } => {
                 self.op_number.increment();
                 self.log.push(request.clone());
-
                 sender.broadcast(Message::new(
                     self.view,
                     Prepare {
@@ -108,5 +134,51 @@ impl<S> Replica<S>
     }
 
     fn process_view_change_replica(&mut self, mailbox: &mut Mailbox) {
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::new_model::GroupIdentifier;
+    use super::*;
+
+    #[test]
+    fn request_primary() {
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut replica = Replica::new(0, replicas[0]);
+        let mut client = Client::new(group);
+        let mut mailbox = Mailbox::from(replicas[0]);
+
+        let operation = b"Hi!";
+        let envelope = client.envelope(operation);
+
+        mailbox.deliver(envelope);
+        replica.poll(&mut mailbox);
+
+        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+
+        assert_eq!(envelopes, vec![prepare_envelope(&replica, &client, operation)]);
+    }
+
+    fn prepare_envelope<S>(replica: &Replica<S>, client: &Client, operation: &[u8]) -> Envelope {
+        Envelope {
+            from: replica.identifier.into(),
+            to: replica.identifier.group().into(),
+            message: Message {
+                view: replica.view,
+                payload: Prepare {
+                    n: replica.op_number,
+                    m: Request {
+                        op: Vec::from(operation),
+                        c: client.identifier,
+                        s: client.request,
+                    },
+                    k: replica.committed,
+                }.into()
+            },
+        }
     }
 }

@@ -607,13 +607,6 @@ mod tests {
     use super::*;
     use crate::model::Message;
 
-    impl Service for usize {
-        fn invoke(&mut self, payload: &[u8]) -> Vec<u8> {
-            *self += payload.len();
-            self.to_be_bytes().to_vec()
-        }
-    }
-
     impl FailureDetector for bool {
         fn detect(&self) -> bool {
             *self

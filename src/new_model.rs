@@ -86,6 +86,10 @@ pub struct Prepare {
 pub struct ReplicaIdentifier(GroupIdentifier, usize);
 
 impl ReplicaIdentifier {
+    pub fn group(&self) -> GroupIdentifier {
+        self.0
+    }
+
     pub fn primary(&self, view: View) -> Self {
         self.0.primary(view)
     }
