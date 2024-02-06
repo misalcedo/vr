@@ -1,4 +1,4 @@
-use std::num::NonZeroU128;
+use std::num::NonZeroUsize;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Address {
@@ -48,7 +48,8 @@ impl Message {
 pub enum Payload {
     Request(Request),
     Prepare(Prepare),
-    PrepareOk(PrepareOk)
+    PrepareOk(PrepareOk),
+    Reply(Reply)
 }
 
 impl From<Request> for Payload {
@@ -66,6 +67,12 @@ impl From<Prepare> for Payload {
 impl From<PrepareOk> for Payload {
     fn from(value: PrepareOk) -> Self {
         Self::PrepareOk(value)
+    }
+}
+
+impl From<Reply> for Payload {
+    fn from(value: Reply) -> Self {
+        Self::Reply(value)
     }
 }
 
@@ -89,10 +96,18 @@ pub struct Prepare {
     pub k: OpNumber,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PrepareOk {
     /// The op-number assigned to the request.
     pub n: OpNumber,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Reply {
+    /// The response from the service after executing the operation.
+    pub x: Vec<u8>,
+    /// Client-assigned number for the request.
+    pub s: RequestIdentifier,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -105,6 +120,10 @@ impl ReplicaIdentifier {
 
     pub fn primary(&self, view: View) -> Self {
         self.0.primary(view)
+    }
+
+    pub fn sub_majority(&self) -> usize {
+        self.0.sub_majority()
     }
 }
 
@@ -130,6 +149,10 @@ impl GroupIdentifier {
         let clone = *self;
         (0..self.1).into_iter().map(move |i| ReplicaIdentifier(clone, i))
     }
+
+    pub fn sub_majority(&self) -> usize {
+        (self.1 - 1) / 2
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -153,15 +176,27 @@ impl RequestIdentifier {
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[repr(transparent)]
-pub struct OpNumber(Option<NonZeroU128>);
+pub struct OpNumber(Option<NonZeroUsize>);
+
+impl From<usize> for OpNumber {
+    fn from(value: usize) -> Self {
+        Self(NonZeroUsize::new(value))
+    }
+}
+
+impl From<OpNumber> for usize {
+    fn from(value: OpNumber) -> Self {
+        value.0.map(NonZeroUsize::get).unwrap_or_default() as usize
+    }
+}
 
 impl OpNumber {
     pub fn increment(&mut self) {
-        self.0 = NonZeroU128::new(1 + self.0.map(NonZeroU128::get).unwrap_or(0))
+        self.0 = NonZeroUsize::new(1 + self.0.map(NonZeroUsize::get).unwrap_or(0))
     }
 
     pub fn next(&self) -> Self {
-        Self(NonZeroU128::new(1 + self.0.map(NonZeroU128::get).unwrap_or(0)))
+        Self(NonZeroUsize::new(1 + self.0.map(NonZeroUsize::get).unwrap_or(0)))
     }
 }
 
@@ -179,9 +214,10 @@ impl View {
 mod tests {
     use super::*;
 
-    impl From<u128> for OpNumber {
-        fn from(value: u128) -> Self {
-            Self(NonZeroU128::new(value))
-        }
+    #[test]
+    fn sub_majority() {
+        assert_eq!(GroupIdentifier::new(3).sub_majority(), 1);
+        assert_eq!(GroupIdentifier::new(4).sub_majority(), 1);
+        assert_eq!(GroupIdentifier::new(5).sub_majority(), 2);
     }
 }
