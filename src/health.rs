@@ -1,6 +1,6 @@
 use crate::new_model::{Message, ReplicaIdentifier, View};
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum HealthStatus {
     #[default]
     Normal,
@@ -24,5 +24,12 @@ mod tests {
         }
 
         fn notify(&mut self, _: View, _: Message) {}
+    }
+
+    #[test]
+    fn order() {
+        assert!(HealthStatus::Normal < HealthStatus::Suspect);
+        assert!(HealthStatus::Suspect < HealthStatus::Unhealthy);
+        assert!(HealthStatus::Normal < HealthStatus::Unhealthy);
     }
 }

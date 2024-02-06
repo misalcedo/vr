@@ -109,76 +109,80 @@ where
     fn process_normal_primary(&mut self, mailbox: &mut Mailbox) {
         let mut prepared: HashMap<OpNumber, HashSet<Address>> = HashMap::new();
 
-        mailbox.select(|sender, message| {
-            match message {
-                _ if message.view > self.view => {
-                    todo!("Perform state transfer")
-                }
-                _ if message.view < self.view => {
-                    sender.send(message.from, self.view, Payload::Outdated);
-                    None
-                }
-                Message {
-                    payload: Payload::Request(request),
-                    ..
-                } => {
-                    self.push_request(request.clone());
+        Self::select(self.view, mailbox, |sender, message| match message {
+            Message {
+                payload: Payload::Request(request),
+                ..
+            } => {
+                self.push_request(request.clone());
 
-                    sender.broadcast(
-                        self.view,
-                        Prepare {
-                            n: self.op_number,
-                            m: request,
-                            k: self.committed,
-                        },
-                    );
+                sender.broadcast(
+                    self.view,
+                    Prepare {
+                        n: self.op_number,
+                        m: request,
+                        k: self.committed,
+                    },
+                );
 
+                None
+            }
+            ref envelope @ Message {
+                from,
+                payload: Payload::PrepareOk(prepare_ok),
+                ..
+            } => {
+                if self.committed >= prepare_ok.n {
                     None
-                }
-                ref envelope @ Message {
-                    from,
-                    payload: Payload::PrepareOk(prepare_ok),
-                    ..
-                } => {
-                    if self.committed >= prepare_ok.n {
+                } else {
+                    let replication = prepared.entry(prepare_ok.n).or_insert_with(HashSet::new);
+
+                    replication.insert(from);
+
+                    if replication.len() >= self.identifier.sub_majority() {
+                        self.committed = self.committed.max(prepare_ok.n);
+
+                        let length = OpNumber::from(self.log.len());
+                        while self.committed > self.executed && self.executed < length {
+                            // executed must be incremented after indexing the log to avoid panicking.
+                            let request = &self.log[usize::from(self.executed)];
+                            let reply = self.service.invoke(request.op.as_slice());
+
+                            sender.send(
+                                request.c,
+                                self.view,
+                                Reply {
+                                    s: request.s,
+                                    x: reply,
+                                },
+                            );
+                            self.executed.increment();
+                        }
+
                         None
                     } else {
-                        let replication = prepared.entry(prepare_ok.n).or_insert_with(HashSet::new);
-
-                        replication.insert(from);
-
-                        if replication.len() >= self.identifier.sub_majority() {
-                            self.committed = self.committed.max(prepare_ok.n);
-
-                            let length = OpNumber::from(self.log.len());
-                            while self.committed > self.executed && self.executed < length {
-                                // executed must be incremented after indexing the log to avoid panicking.
-                                let request = &self.log[usize::from(self.executed)];
-                                let reply = self.service.invoke(request.op.as_slice());
-
-                                sender.send(
-                                    request.c,
-                                    self.view,
-                                    Reply {
-                                        s: request.s,
-                                        x: reply,
-                                    },
-                                );
-                                self.executed.increment();
-                            }
-
-                            None
-                        } else {
-                            Some(envelope.clone())
-                        }
+                        Some(envelope.clone())
                     }
                 }
-                _ => Some(message),
             }
+            _ => Some(message),
         })
     }
 
-    fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {}
+    fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {
+        Self::select(self.view, mailbox, |sender, message| match message {
+            Message {
+                from: Address::Replica(replica),
+                payload: Payload::DoViewChange(do_view_change),
+                ..
+            } => {
+                if Vec::<()>::new().len() > self.identifier.sub_majority() {}
+
+                None
+            }
+            _ => Some(message),
+        });
+    }
 
     fn poll_replica(&mut self, mailbox: &mut Mailbox) {
         match self.status {
@@ -191,14 +195,7 @@ where
     fn process_normal_replica(&mut self, mailbox: &mut Mailbox) {
         let next_op = self.op_number.next();
 
-        mailbox.select(|sender, message| match message {
-            _ if message.view > self.view => {
-                todo!("Perform state transfer")
-            }
-            _ if message.view < self.view => {
-                sender.send(message.from, self.view, Payload::Outdated);
-                None
-            }
+        Self::select(self.view, mailbox, |sender, message| match message {
             Message {
                 payload: Payload::Prepare(prepare),
                 ..
@@ -224,7 +221,7 @@ where
             _ => Some(message),
         });
 
-        if self.health_detector.detect(self.view, self.identifier) == HealthStatus::Unhealthy {
+        if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Unhealthy {
             self.view.increment();
             self.status = Status::ViewChange;
 
@@ -245,6 +242,23 @@ where
     fn push_request(&mut self, request: Request) {
         self.op_number.increment();
         self.log.push(request);
+    }
+
+    pub fn select<F: FnMut(&mut Mailbox, Message) -> Option<Message>>(
+        view: View,
+        mailbox: &mut Mailbox,
+        mut f: F,
+    ) {
+        mailbox.select(|sender, message| match message {
+            _ if message.view > view => {
+                todo!("Perform state transfer")
+            }
+            _ if message.view < view => {
+                sender.send(message.from, view, Payload::Outdated);
+                None
+            }
+            _ => f(sender, message),
+        })
     }
 }
 
@@ -527,10 +541,7 @@ mod tests {
 
         let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
-        assert_eq!(
-            envelopes,
-            vec![do_view_change_message(&replicas, &replica)]
-        );
+        assert_eq!(envelopes, vec![do_view_change_message(&replicas, &replica)]);
     }
 
     fn do_view_change_message<S, H>(
