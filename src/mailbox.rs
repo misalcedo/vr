@@ -1,12 +1,12 @@
-use crate::new_model::{Address, Envelope, Message, ReplicaIdentifier};
+use crate::new_model::{Address, Message, Payload, ReplicaIdentifier, View};
 use std::collections::VecDeque;
 
 #[derive(Debug)]
 pub struct Mailbox {
     address: Address,
     group: Address,
-    inbound: Vec<Option<Envelope>>,
-    outbound: VecDeque<Envelope>,
+    inbound: Vec<Option<Message>>,
+    outbound: VecDeque<Message>,
 }
 
 impl From<ReplicaIdentifier> for Mailbox {
@@ -25,7 +25,7 @@ impl Mailbox {
         }
     }
 
-    pub fn deliver(&mut self, envelope: Envelope) {
+    pub fn deliver(&mut self, envelope: Message) {
         // Find an empty slot starting at the end
         for slot in self.inbound.iter_mut().rev() {
             if slot.is_none() {
@@ -37,9 +37,9 @@ impl Mailbox {
         self.inbound.push(Some(envelope));
     }
 
-    pub fn select<F: FnMut(&mut Self, Envelope) -> Option<Envelope>>(&mut self, mut f: F) {
+    pub fn select<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) {
         for index in 0..self.inbound.len() {
-            if let Some(envelope) = self.inbound[index].take() {
+            if let Some(envelope) = self.inbound.get_mut(index).and_then(Option::take) {
                 self.inbound[index] = f(self, envelope);
 
                 if self.inbound[index].is_none() {
@@ -49,33 +49,33 @@ impl Mailbox {
         }
     }
 
-    pub fn test<A, F: Fn(&Envelope, &mut A)>(&self, initial: A, f: F) -> A {
-        let mut accumulator = initial;
-
-        for slot in self.inbound.iter() {
-            if let Some(envelope) = slot {
-                f(envelope, &mut accumulator);
-            }
-        }
-
-        accumulator
-    }
-
-    pub fn send(&mut self, to: impl Into<Address>, message: Message) {
+    pub fn send(&mut self, to: impl Into<Address>, view: View, payload: impl Into<Payload>) {
         let from = self.address;
         let to = to.into();
+        let payload = payload.into();
 
-        self.outbound.push_back(Envelope { from, to, message });
+        self.outbound.push_back(Message {
+            from,
+            to,
+            view,
+            payload,
+        });
     }
 
-    pub fn broadcast(&mut self, message: Message) {
+    pub fn broadcast(&mut self, view: View, payload: impl Into<Payload>) {
         let from = self.address;
         let to = self.group;
+        let payload = payload.into();
 
-        self.outbound.push_back(Envelope { from, to, message });
+        self.outbound.push_back(Message {
+            from,
+            to,
+            view,
+            payload,
+        });
     }
 
-    pub fn drain_outbound(&mut self) -> impl Iterator<Item = Envelope> + '_ {
+    pub fn drain_outbound(&mut self) -> impl Iterator<Item = Message> + '_ {
         self.outbound.drain(..)
     }
 }
@@ -97,21 +97,22 @@ mod tests {
             c: client,
             s: Default::default(),
         };
-        let message: Message = Message::new(view, request);
 
         let mut instance = Mailbox::new(replica, Address::from(group));
 
         instance.inbound = vec![
             None,
-            Some(Envelope {
+            Some(Message {
                 from: client_address,
                 to: replica,
-                message: message.clone(),
+                view,
+                payload: request.clone().into(),
             }),
-            Some(Envelope {
+            Some(Message {
                 from: client_address,
                 to: replica,
-                message,
+                view,
+                payload: request.clone().into(),
             }),
         ];
 
@@ -137,77 +138,35 @@ mod tests {
             c: client,
             s: Default::default(),
         };
-        let message: Message = Message::new(view, request);
 
         let mut instance = Mailbox::new(replica, Address::from(group));
 
         instance.inbound = vec![
             None,
-            Some(Envelope {
+            Some(Message {
                 from: replica,
                 to: replica,
-                message: message.clone(),
+                view,
+                payload: request.clone().into(),
             }),
         ];
 
-        instance.deliver(Envelope {
+        instance.deliver(Message {
             from: client_address,
             to: replica,
-            message: message.clone(),
+            view,
+            payload: request.clone().into(),
         });
         assert!(instance.inbound.iter().all(Option::is_some));
         assert_eq!(instance.inbound.len(), 2);
 
-        instance.deliver(Envelope {
+        instance.deliver(Message {
             from: client_address,
             to: replica,
-            message: message.clone(),
+            view,
+            payload: request.clone().into(),
         });
         assert!(instance.inbound.iter().all(Option::is_some));
         assert_eq!(instance.inbound.len(), 3);
-    }
-
-    #[test]
-    fn test_predicate() {
-        let group = GroupIdentifier::default();
-        let client = ClientIdentifier::default();
-        let client_address = Address::from(client);
-        let replica = Address::from(group.replicas().next().unwrap());
-        let view = View::default();
-        let request = Request {
-            op: vec![],
-            c: client,
-            s: Default::default(),
-        };
-        let message: Message = Message::new(view, request);
-
-        let mut instance = Mailbox::new(replica, Address::from(group));
-
-        instance.inbound = vec![
-            None,
-            Some(Envelope {
-                from: replica,
-                to: replica,
-                message: message.clone(),
-            }),
-            Some(Envelope {
-                from: replica,
-                to: replica,
-                message: message.clone(),
-            }),
-            Some(Envelope {
-                from: client_address,
-                to: replica,
-                message: message.clone(),
-            }),
-        ];
-
-        let result = instance.test(0, |e, c| {
-            if e.from == replica {
-                *c += 1
-            }
-        });
-
-        assert_eq!(result, 2);
     }
 }

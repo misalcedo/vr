@@ -1,7 +1,7 @@
 use crate::mailbox::Mailbox;
 use crate::new_model::{
-    Address, ClientIdentifier, Envelope, GroupIdentifier, Message, OpNumber, Payload, Prepare,
-    PrepareOk, ReplicaIdentifier, Reply, Request, RequestIdentifier, View,
+    Address, ClientIdentifier, GroupIdentifier, Message, OpNumber, Payload, Prepare, PrepareOk,
+    ReplicaIdentifier, Reply, Request, RequestIdentifier, View,
 };
 use crate::service::Service;
 use std::collections::{HashMap, HashSet};
@@ -23,19 +23,17 @@ impl Client {
         }
     }
 
-    pub fn envelope(&mut self, payload: &[u8]) -> Envelope {
-        Envelope {
+    pub fn envelope(&mut self, payload: &[u8]) -> Message {
+        Message {
             from: self.identifier.into(),
             to: self.group.primary(self.view).into(),
-            message: Message {
-                view: self.view,
-                payload: Request {
-                    op: Vec::from(payload),
-                    c: self.identifier,
-                    s: self.request.increment(),
-                }
-                .into(),
-            },
+            view: self.view,
+            payload: Request {
+                op: Vec::from(payload),
+                c: self.identifier,
+                s: self.request.increment(),
+            }
+            .into(),
         }
     }
 }
@@ -107,48 +105,33 @@ where
 
         mailbox.select(|sender, envelope| {
             match envelope {
-                Envelope {
-                    message: Message { view, .. },
-                    ..
-                } if view > self.view => {
+                Message { view, .. } if view > self.view => {
                     todo!("Perform state transfer")
                 }
-                Envelope {
-                    from,
-                    message: Message { view, .. },
-                    ..
-                } if view < self.view => {
-                    sender.send(from, Message::new(self.view, Payload::Outdated));
+                Message { from, view, .. } if view < self.view => {
+                    sender.send(from, self.view, Payload::Outdated);
                     None
                 }
-                Envelope {
-                    message:
-                        Message {
-                            payload: Payload::Request(request),
-                            ..
-                        },
+                Message {
+                    payload: Payload::Request(request),
                     ..
                 } => {
                     self.push_request(request.clone());
 
-                    sender.broadcast(Message::new(
+                    sender.broadcast(
                         self.view,
                         Prepare {
                             n: self.op_number,
                             m: request,
                             k: self.committed,
                         },
-                    ));
+                    );
 
                     None
                 }
-                ref envelope @ Envelope {
+                ref envelope @ Message {
                     from,
-                    message:
-                        Message {
-                            payload: Payload::PrepareOk(prepare_ok),
-                            ..
-                        },
+                    payload: Payload::PrepareOk(prepare_ok),
                     ..
                 } => {
                     if self.committed >= prepare_ok.n {
@@ -169,13 +152,11 @@ where
 
                                 sender.send(
                                     request.c,
-                                    Message::new(
-                                        self.view,
-                                        Reply {
-                                            s: request.s,
-                                            x: reply,
-                                        },
-                                    ),
+                                    self.view,
+                                    Reply {
+                                        s: request.s,
+                                        x: reply,
+                                    },
                                 );
                                 self.executed.increment();
                             }
@@ -205,35 +186,21 @@ where
         let next_op = self.op_number.next();
 
         mailbox.select(|sender, envelope| match envelope {
-            Envelope {
-                message: Message { view, .. },
-                ..
-            } if view > self.view => {
+            Message { view, .. } if view > self.view => {
                 todo!("Perform state transfer")
             }
-            Envelope {
-                from,
-                message: Message { view, .. },
-                ..
-            } if view < self.view => {
-                sender.send(from, Message::new(self.view, Payload::Outdated));
+            Message { from, view, .. } if view < self.view => {
+                sender.send(from, self.view, Payload::Outdated);
                 None
             }
-            Envelope {
-                message:
-                    Message {
-                        payload: Payload::Prepare(prepare),
-                        ..
-                    },
+            Message {
+                payload: Payload::Prepare(prepare),
                 ..
             } if next_op == prepare.n => {
                 self.push_request(prepare.m);
 
                 let primary = self.identifier.primary(self.view);
-                sender.send(
-                    primary,
-                    Message::new(self.view, PrepareOk { n: self.op_number }),
-                );
+                sender.send(primary, self.view, PrepareOk { n: self.op_number });
 
                 self.committed = self.committed.max(prepare.k);
 
@@ -276,7 +243,7 @@ mod tests {
         let mut client = Client::new(group);
         let mut mailbox = simulate_request(&mut primary, &mut client, operation, 1);
 
-        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(
             envelopes,
@@ -299,14 +266,15 @@ mod tests {
 
         let mut mailbox = simulate_request(&mut primary, &mut client, operation, 1);
 
-        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(
             envelopes,
-            vec![Envelope {
+            vec![Message {
                 from: primary.identifier.into(),
                 to: client.identifier.into(),
-                message: Message::new(primary.view, Payload::Outdated),
+                view: primary.view,
+                payload: Payload::Outdated,
             }]
         );
     }
@@ -330,7 +298,7 @@ mod tests {
         mailbox.deliver(envelope);
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(envelopes, vec![prepare_ok_envelope(&primary, &replica)]);
         assert_eq!(replica.op_number, OpNumber::from(1));
@@ -358,14 +326,15 @@ mod tests {
         mailbox.deliver(envelope);
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(
             envelopes,
-            vec![Envelope {
+            vec![Message {
                 from: replica.identifier.into(),
                 to: primary.identifier.into(),
-                message: Message::new(replica.view, Payload::Outdated),
+                view: replica.view,
+                payload: Payload::Outdated,
             }]
         );
     }
@@ -394,7 +363,7 @@ mod tests {
         mailbox.deliver(envelope);
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(envelopes, vec![prepare_ok_envelope(&primary, &replica)]);
         assert_eq!(replica.service, operation.len());
@@ -443,7 +412,7 @@ mod tests {
         mailbox.deliver(envelope);
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(envelopes, vec![]);
     }
@@ -471,7 +440,7 @@ mod tests {
         mailbox.deliver(envelope2);
         primary.poll(&mut mailbox);
 
-        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(
             envelopes,
@@ -502,7 +471,7 @@ mod tests {
         mailbox.deliver(envelope2);
         primary.poll(&mut mailbox);
 
-        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
         // backtrack the request id to build the replies correctly.
         client.request = RequestIdentifier::default();
@@ -518,7 +487,7 @@ mod tests {
     }
 
     fn simulate_broadcast(source: &mut Mailbox, replicas: Vec<&mut Replica<usize>>) {
-        let envelopes: Vec<Envelope> = source.drain_outbound().collect();
+        let envelopes: Vec<Message> = source.drain_outbound().collect();
 
         for replica in replicas {
             let mut mailbox = Mailbox::from(replica.identifier);
@@ -546,37 +515,33 @@ mod tests {
         mailbox
     }
 
-    fn prepare_envelope<S>(replica: &Replica<S>, client: &Client, operation: &[u8]) -> Envelope {
-        Envelope {
+    fn prepare_envelope<S>(replica: &Replica<S>, client: &Client, operation: &[u8]) -> Message {
+        Message {
             from: replica.identifier.into(),
             to: replica.identifier.group().into(),
-            message: Message {
-                view: replica.view,
-                payload: Prepare {
-                    n: replica.op_number,
-                    m: Request {
-                        op: Vec::from(operation),
-                        c: client.identifier,
-                        s: client.request,
-                    },
-                    k: replica.committed,
-                }
-                .into(),
-            },
+            view: replica.view,
+            payload: Prepare {
+                n: replica.op_number,
+                m: Request {
+                    op: Vec::from(operation),
+                    c: client.identifier,
+                    s: client.request,
+                },
+                k: replica.committed,
+            }
+            .into(),
         }
     }
 
-    fn prepare_ok_envelope<S>(primary: &Replica<S>, replica: &Replica<S>) -> Envelope {
-        Envelope {
+    fn prepare_ok_envelope<S>(primary: &Replica<S>, replica: &Replica<S>) -> Message {
+        Message {
             from: replica.identifier.into(),
             to: primary.identifier.into(),
-            message: Message {
-                view: replica.view,
-                payload: PrepareOk {
-                    n: replica.op_number,
-                }
-                .into(),
-            },
+            view: replica.view,
+            payload: PrepareOk {
+                n: replica.op_number,
+            }
+            .into(),
         }
     }
 
@@ -585,18 +550,16 @@ mod tests {
         client: &Client,
         operation: &[u8],
         times: usize,
-    ) -> Envelope {
-        Envelope {
+    ) -> Message {
+        Message {
             from: primary.identifier.into(),
             to: client.identifier.into(),
-            message: Message {
-                view: primary.view,
-                payload: Reply {
-                    x: (operation.len() * times).to_be_bytes().to_vec(),
-                    s: client.request,
-                }
-                .into(),
-            },
+            view: primary.view,
+            payload: Reply {
+                x: (operation.len() * times).to_be_bytes().to_vec(),
+                s: client.request,
+            }
+            .into(),
         }
     }
 }

@@ -26,25 +26,11 @@ impl From<ClientIdentifier> for Address {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Envelope {
+pub struct Message {
     pub from: Address,
     pub to: Address,
-    pub message: Message,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Message {
     pub view: View,
     pub payload: Payload,
-}
-
-impl Message {
-    pub fn new(view: View, payload: impl Into<Payload>) -> Self {
-        Self {
-            view,
-            payload: payload.into(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
