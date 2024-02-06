@@ -53,6 +53,8 @@ pub enum Payload {
     Prepare(Prepare),
     PrepareOk(PrepareOk),
     Reply(Reply),
+    Ping,
+    Outdated,
 }
 
 impl From<Request> for Payload {

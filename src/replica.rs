@@ -108,6 +108,20 @@ where
         mailbox.select(|sender, envelope| {
             match envelope {
                 Envelope {
+                    message: Message { view, .. },
+                    ..
+                } if view > self.view => {
+                    todo!("Perform state transfer")
+                }
+                Envelope {
+                    from,
+                    message: Message { view, .. },
+                    ..
+                } if view < self.view => {
+                    sender.send(from, Message::new(self.view, Payload::Outdated));
+                    None
+                }
+                Envelope {
                     message:
                         Message {
                             payload: Payload::Request(request),
@@ -192,6 +206,20 @@ where
 
         mailbox.select(|sender, envelope| match envelope {
             Envelope {
+                message: Message { view, .. },
+                ..
+            } if view > self.view => {
+                todo!("Perform state transfer")
+            }
+            Envelope {
+                from,
+                message: Message { view, .. },
+                ..
+            } if view < self.view => {
+                sender.send(from, Message::new(self.view, Payload::Outdated));
+                None
+            }
+            Envelope {
                 message:
                     Message {
                         payload: Payload::Prepare(prepare),
@@ -257,6 +285,33 @@ mod tests {
     }
 
     #[test]
+    fn request_primary_outdated() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, replicas[0]);
+        let mut client = Client::new(group);
+
+        for _ in 1..=replicas.len() {
+            primary.view.increment();
+        }
+
+        let mut mailbox = simulate_request(&mut primary, &mut client, operation, 1);
+
+        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+
+        assert_eq!(
+            envelopes,
+            vec![Envelope {
+                from: primary.identifier.into(),
+                to: client.identifier.into(),
+                message: Message::new(primary.view, Payload::Outdated),
+            }]
+        );
+    }
+
+    #[test]
     fn prepare_replica() {
         let operation = b"Hi!";
         let group = GroupIdentifier::new(3);
@@ -279,6 +334,40 @@ mod tests {
 
         assert_eq!(envelopes, vec![prepare_ok_envelope(&primary, &replica)]);
         assert_eq!(replica.op_number, OpNumber::from(1));
+    }
+
+    #[test]
+    fn prepare_replica_outdated() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, replicas[0]);
+        let mut client = Client::new(group);
+
+        let mut replica = Replica::new(0, replicas[1]);
+        let mut mailbox = Mailbox::from(replicas[1]);
+
+        simulate_request(&mut primary, &mut client, operation, 1);
+
+        let envelope = prepare_envelope(&primary, &client, operation);
+
+        replica.view.increment();
+        replica.view.increment();
+
+        mailbox.deliver(envelope);
+        replica.poll(&mut mailbox);
+
+        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+
+        assert_eq!(
+            envelopes,
+            vec![Envelope {
+                from: replica.identifier.into(),
+                to: primary.identifier.into(),
+                message: Message::new(replica.view, Payload::Outdated),
+            }]
+        );
     }
 
     #[test]
@@ -449,7 +538,7 @@ mod tests {
     ) -> Mailbox {
         let mut mailbox = Mailbox::from(primary.identifier);
 
-        for _ in 0..times {
+        for _ in 1..=times {
             mailbox.deliver(client.envelope(operation));
             primary.poll(&mut mailbox);
         }
