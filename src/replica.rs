@@ -109,13 +109,13 @@ where
     fn process_normal_primary(&mut self, mailbox: &mut Mailbox) {
         let mut prepared: HashMap<OpNumber, HashSet<Address>> = HashMap::new();
 
-        mailbox.select(|sender, envelope| {
-            match envelope {
-                Message { view, .. } if view > self.view => {
+        mailbox.select(|sender, message| {
+            match message {
+                _ if message.view > self.view => {
                     todo!("Perform state transfer")
                 }
-                Message { from, view, .. } if view < self.view => {
-                    sender.send(from, self.view, Payload::Outdated);
+                _ if message.view < self.view => {
+                    sender.send(message.from, self.view, Payload::Outdated);
                     None
                 }
                 Message {
@@ -173,7 +173,7 @@ where
                         }
                     }
                 }
-                _ => Some(envelope),
+                _ => Some(message),
             }
         })
     }
@@ -191,12 +191,12 @@ where
     fn process_normal_replica(&mut self, mailbox: &mut Mailbox) {
         let next_op = self.op_number.next();
 
-        mailbox.select(|sender, envelope| match envelope {
-            Message { view, .. } if view > self.view => {
+        mailbox.select(|sender, message| match message {
+            _ if message.view > self.view => {
                 todo!("Perform state transfer")
             }
-            Message { from, view, .. } if view < self.view => {
-                sender.send(from, self.view, Payload::Outdated);
+            _ if message.view < self.view => {
+                sender.send(message.from, self.view, Payload::Outdated);
                 None
             }
             Message {
@@ -221,7 +221,7 @@ where
                 None
             }
             // TODO: perform state transfer if necessary to get missing information.
-            _ => Some(envelope),
+            _ => Some(message),
         });
 
         if self.health_detector.detect(self.view, self.identifier) == HealthStatus::Unhealthy {

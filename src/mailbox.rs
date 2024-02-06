@@ -116,7 +116,7 @@ mod tests {
             }),
         ];
 
-        instance.select(|_, e| Some(e));
+        instance.select(|_, m| Some(m));
         assert!(!instance.inbound.iter().all(Option::is_none));
 
         instance.select(|_, _| None);
