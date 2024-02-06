@@ -5,7 +5,7 @@ pub enum HealthStatus {
     #[default]
     Normal,
     Suspect,
-    Unhealthy
+    Unhealthy,
 }
 
 pub trait HealthDetector {

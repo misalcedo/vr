@@ -39,6 +39,7 @@ pub enum Payload {
     Prepare(Prepare),
     PrepareOk(PrepareOk),
     Reply(Reply),
+    DoViewChange(DoViewChange),
     Ping,
     Outdated,
 }
@@ -64,6 +65,12 @@ impl From<PrepareOk> for Payload {
 impl From<Reply> for Payload {
     fn from(value: Reply) -> Self {
         Self::Reply(value)
+    }
+}
+
+impl From<DoViewChange> for Payload {
+    fn from(value: DoViewChange) -> Self {
+        Self::DoViewChange(value)
     }
 }
 
@@ -99,6 +106,14 @@ pub struct Reply {
     pub x: Vec<u8>,
     /// Client-assigned number for the request.
     pub s: RequestIdentifier,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoViewChange {
+    /// The log of the replica.
+    pub l: Vec<Request>,
+    /// The op-number of the latest committed request known to the replica.
+    pub k: OpNumber,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
