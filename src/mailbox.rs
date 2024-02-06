@@ -37,16 +37,18 @@ impl Mailbox {
         self.inbound.push(Some(envelope));
     }
 
-    pub fn select<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) {
+    pub fn select<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) -> bool {
         for index in 0..self.inbound.len() {
             if let Some(envelope) = self.inbound.get_mut(index).and_then(Option::take) {
                 self.inbound[index] = f(self, envelope);
 
                 if self.inbound[index].is_none() {
-                    break;
+                    return true;
                 }
             }
         }
+
+        false
     }
 
     pub fn send(&mut self, to: impl Into<Address>, view: View, payload: impl Into<Payload>) {

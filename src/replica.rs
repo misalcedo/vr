@@ -109,7 +109,14 @@ where
     fn process_normal_primary(&mut self, mailbox: &mut Mailbox) {
         let mut prepared: HashMap<OpNumber, HashSet<Address>> = HashMap::new();
 
-        Self::select(self.view, mailbox, |sender, message| match message {
+        mailbox.select(|sender, message| match message {
+            _ if message.view > self.view => {
+                todo!("Perform state transfer")
+            }
+            _ if message.view < self.view => {
+                sender.send(message.from, self.view, Payload::Outdated);
+                None
+            }
             Message {
                 payload: Payload::Request(request),
                 ..
@@ -166,11 +173,18 @@ where
                 }
             }
             _ => Some(message),
-        })
+        });
     }
 
     fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {
-        Self::select(self.view, mailbox, |sender, message| match message {
+        mailbox.select(|sender, message| match message {
+            _ if message.view > self.view => {
+                todo!("Perform state transfer")
+            }
+            _ if message.view < self.view => {
+                sender.send(message.from, self.view, Payload::Outdated);
+                None
+            }
             Message {
                 from: Address::Replica(replica),
                 payload: Payload::DoViewChange(do_view_change),
@@ -195,7 +209,14 @@ where
     fn process_normal_replica(&mut self, mailbox: &mut Mailbox) {
         let next_op = self.op_number.next();
 
-        Self::select(self.view, mailbox, |sender, message| match message {
+        mailbox.select(|sender, message| match message {
+            _ if message.view > self.view => {
+                todo!("Perform state transfer")
+            }
+            _ if message.view < self.view => {
+                sender.send(message.from, self.view, Payload::Outdated);
+                None
+            }
             Message {
                 payload: Payload::Prepare(prepare),
                 ..
@@ -242,23 +263,6 @@ where
     fn push_request(&mut self, request: Request) {
         self.op_number.increment();
         self.log.push(request);
-    }
-
-    pub fn select<F: FnMut(&mut Mailbox, Message) -> Option<Message>>(
-        view: View,
-        mailbox: &mut Mailbox,
-        mut f: F,
-    ) {
-        mailbox.select(|sender, message| match message {
-            _ if message.view > view => {
-                todo!("Perform state transfer")
-            }
-            _ if message.view < view => {
-                sender.send(message.from, view, Payload::Outdated);
-                None
-            }
-            _ => f(sender, message),
-        })
     }
 }
 
