@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
 mod client;
+mod health;
 mod mailbox;
 mod model;
 mod network;
