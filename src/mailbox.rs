@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use crate::new_model::{Address, Envelope, Message, ReplicaIdentifier};
+use std::collections::VecDeque;
 
 #[derive(Debug)]
 pub struct Mailbox {
@@ -21,7 +21,7 @@ impl Mailbox {
             address,
             group,
             inbound: Default::default(),
-            outbound: Default::default()
+            outbound: Default::default(),
         }
     }
 
@@ -75,16 +75,15 @@ impl Mailbox {
         self.outbound.push_back(Envelope { from, to, message });
     }
 
-    pub fn drain_outbound(&mut self) -> impl Iterator<Item=Envelope> + '_ {
+    pub fn drain_outbound(&mut self) -> impl Iterator<Item = Envelope> + '_ {
         self.outbound.drain(..)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::new_model::{ClientIdentifier, GroupIdentifier, Request, View};
     use super::*;
-
+    use crate::new_model::{ClientIdentifier, GroupIdentifier, Request, View};
 
     #[test]
     fn mailbox() {
@@ -93,15 +92,27 @@ mod tests {
         let client_address = Address::from(client);
         let replica = Address::from(group.replicas().next().unwrap());
         let view = View::default();
-        let request = Request { op: vec![], c: client, s: Default::default() };
+        let request = Request {
+            op: vec![],
+            c: client,
+            s: Default::default(),
+        };
         let message: Message = Message::new(view, request);
 
         let mut instance = Mailbox::new(replica, Address::from(group));
 
         instance.inbound = vec![
             None,
-            Some(Envelope { from: client_address, to: replica, message: message.clone() }),
-            Some(Envelope { from: client_address, to: replica, message }),
+            Some(Envelope {
+                from: client_address,
+                to: replica,
+                message: message.clone(),
+            }),
+            Some(Envelope {
+                from: client_address,
+                to: replica,
+                message,
+            }),
         ];
 
         instance.select(|_, e| Some(e));
@@ -121,21 +132,37 @@ mod tests {
         let client_address = Address::from(client);
         let replica = Address::from(group.replicas().next().unwrap());
         let view = View::default();
-        let request = Request { op: vec![], c: client, s: Default::default() };
+        let request = Request {
+            op: vec![],
+            c: client,
+            s: Default::default(),
+        };
         let message: Message = Message::new(view, request);
 
         let mut instance = Mailbox::new(replica, Address::from(group));
 
         instance.inbound = vec![
             None,
-            Some(Envelope { from: replica, to: replica, message: message.clone() }),
+            Some(Envelope {
+                from: replica,
+                to: replica,
+                message: message.clone(),
+            }),
         ];
 
-        instance.deliver(Envelope { from: client_address, to: replica, message: message.clone() });
+        instance.deliver(Envelope {
+            from: client_address,
+            to: replica,
+            message: message.clone(),
+        });
         assert!(instance.inbound.iter().all(Option::is_some));
         assert_eq!(instance.inbound.len(), 2);
 
-        instance.deliver(Envelope { from: client_address, to: replica, message: message.clone() });
+        instance.deliver(Envelope {
+            from: client_address,
+            to: replica,
+            message: message.clone(),
+        });
         assert!(instance.inbound.iter().all(Option::is_some));
         assert_eq!(instance.inbound.len(), 3);
     }
@@ -147,20 +174,38 @@ mod tests {
         let client_address = Address::from(client);
         let replica = Address::from(group.replicas().next().unwrap());
         let view = View::default();
-        let request = Request { op: vec![], c: client, s: Default::default() };
+        let request = Request {
+            op: vec![],
+            c: client,
+            s: Default::default(),
+        };
         let message: Message = Message::new(view, request);
 
         let mut instance = Mailbox::new(replica, Address::from(group));
 
         instance.inbound = vec![
             None,
-            Some(Envelope { from: replica, to: replica, message: message.clone() }),
-            Some(Envelope { from: replica, to: replica, message: message.clone() }),
-            Some(Envelope { from: client_address, to: replica, message: message.clone() }),
+            Some(Envelope {
+                from: replica,
+                to: replica,
+                message: message.clone(),
+            }),
+            Some(Envelope {
+                from: replica,
+                to: replica,
+                message: message.clone(),
+            }),
+            Some(Envelope {
+                from: client_address,
+                to: replica,
+                message: message.clone(),
+            }),
         ];
 
-        let result = instance.test(0, |e, c| if e.from == replica {
-            *c += 1
+        let result = instance.test(0, |e, c| {
+            if e.from == replica {
+                *c += 1
+            }
         });
 
         assert_eq!(result, 2);

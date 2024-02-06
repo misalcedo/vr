@@ -1,7 +1,10 @@
-use std::collections::{HashMap, HashSet};
 use crate::mailbox::Mailbox;
-use crate::new_model::{Envelope, Message, ReplicaIdentifier, Request, View, OpNumber, Payload, Prepare, ClientIdentifier, GroupIdentifier, RequestIdentifier, PrepareOk, Address, Reply};
+use crate::new_model::{
+    Address, ClientIdentifier, Envelope, GroupIdentifier, Message, OpNumber, Payload, Prepare,
+    PrepareOk, ReplicaIdentifier, Reply, Request, RequestIdentifier, View,
+};
 use crate::service::Service;
+use std::collections::{HashMap, HashSet};
 
 pub struct Client {
     identifier: ClientIdentifier,
@@ -12,7 +15,12 @@ pub struct Client {
 
 impl Client {
     pub fn new(group: GroupIdentifier) -> Self {
-        Self { identifier: Default::default(), view: Default::default(), request: Default::default(), group }
+        Self {
+            identifier: Default::default(),
+            view: Default::default(),
+            request: Default::default(),
+            group,
+        }
     }
 
     pub fn envelope(&mut self, payload: &[u8]) -> Envelope {
@@ -25,7 +33,8 @@ impl Client {
                     op: Vec::from(payload),
                     c: self.identifier,
                     s: self.request.increment(),
-                }.into(),
+                }
+                .into(),
             },
         }
     }
@@ -59,13 +68,10 @@ pub struct Replica<S> {
 }
 
 impl<S> Replica<S>
-    where
-        S: Service,
+where
+    S: Service,
 {
-    pub fn new(
-        service: S,
-        identifier: ReplicaIdentifier,
-    ) -> Self {
+    pub fn new(service: S, identifier: ReplicaIdentifier) -> Self {
         Self {
             service,
             identifier,
@@ -92,7 +98,7 @@ impl<S> Replica<S>
         match self.status {
             Status::Normal => self.process_normal_primary(mailbox),
             Status::ViewChange => self.process_view_change_primary(mailbox),
-            Status::Recovering => ()
+            Status::Recovering => (),
         }
     }
 
@@ -101,7 +107,14 @@ impl<S> Replica<S>
 
         mailbox.select(|sender, envelope| {
             match envelope {
-                Envelope { message: Message { payload: Payload::Request(request), .. }, .. } => {
+                Envelope {
+                    message:
+                        Message {
+                            payload: Payload::Request(request),
+                            ..
+                        },
+                    ..
+                } => {
                     self.push_request(request.clone());
 
                     sender.broadcast(Message::new(
@@ -115,7 +128,15 @@ impl<S> Replica<S>
 
                     None
                 }
-                ref envelope @ Envelope { from, message: Message { payload: Payload::PrepareOk(prepare_ok), .. }, .. } => {
+                ref envelope @ Envelope {
+                    from,
+                    message:
+                        Message {
+                            payload: Payload::PrepareOk(prepare_ok),
+                            ..
+                        },
+                    ..
+                } => {
                     if self.committed >= prepare_ok.n {
                         None
                     } else {
@@ -132,7 +153,16 @@ impl<S> Replica<S>
                                 let request = &self.log[usize::from(self.executed)];
                                 let reply = self.service.invoke(request.op.as_slice());
 
-                                sender.send(request.c, Message::new(self.view, Reply { s: request.s, x: reply }));
+                                sender.send(
+                                    request.c,
+                                    Message::new(
+                                        self.view,
+                                        Reply {
+                                            s: request.s,
+                                            x: reply,
+                                        },
+                                    ),
+                                );
                                 self.executed.increment();
                             }
 
@@ -142,7 +172,7 @@ impl<S> Replica<S>
                         }
                     }
                 }
-                _ => Some(envelope)
+                _ => Some(envelope),
             }
         })
     }
@@ -153,7 +183,7 @@ impl<S> Replica<S>
         match self.status {
             Status::Normal => self.process_normal_replica(mailbox),
             Status::ViewChange => self.process_view_change_replica(mailbox),
-            Status::Recovering => ()
+            Status::Recovering => (),
         }
     }
 
@@ -161,11 +191,21 @@ impl<S> Replica<S>
         let next_op = self.op_number.next();
 
         mailbox.select(|sender, envelope| match envelope {
-            Envelope { message: Message { payload: Payload::Prepare(prepare), .. }, .. } if next_op == prepare.n => {
+            Envelope {
+                message:
+                    Message {
+                        payload: Payload::Prepare(prepare),
+                        ..
+                    },
+                ..
+            } if next_op == prepare.n => {
                 self.push_request(prepare.m);
 
                 let primary = self.identifier.primary(self.view);
-                sender.send(primary, Message::new(self.view, PrepareOk { n: self.op_number }));
+                sender.send(
+                    primary,
+                    Message::new(self.view, PrepareOk { n: self.op_number }),
+                );
 
                 self.committed = self.committed.max(prepare.k);
 
@@ -180,7 +220,7 @@ impl<S> Replica<S>
                 None
             }
             // TODO: perform state transfer if necessary to get missing information.
-            _ => Some(envelope)
+            _ => Some(envelope),
         })
     }
 
@@ -193,11 +233,10 @@ impl<S> Replica<S>
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::new_model::GroupIdentifier;
     use super::*;
+    use crate::new_model::GroupIdentifier;
 
     #[test]
     fn request_primary() {
@@ -211,7 +250,10 @@ mod tests {
 
         let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
 
-        assert_eq!(envelopes, vec![prepare_envelope(&primary, &client, operation)]);
+        assert_eq!(
+            envelopes,
+            vec![prepare_envelope(&primary, &client, operation)]
+        );
     }
 
     #[test]
@@ -342,7 +384,10 @@ mod tests {
 
         let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
 
-        assert_eq!(envelopes, vec![reply_envelope(&primary, &client, operation, 1)]);
+        assert_eq!(
+            envelopes,
+            vec![reply_envelope(&primary, &client, operation, 1)]
+        );
         assert_eq!(primary.service, operation.len());
     }
 
@@ -396,7 +441,12 @@ mod tests {
         }
     }
 
-    fn simulate_request(primary: &mut Replica<usize>, client: &mut Client, operation: &[u8], times: usize) -> Mailbox {
+    fn simulate_request(
+        primary: &mut Replica<usize>,
+        client: &mut Client,
+        operation: &[u8],
+        times: usize,
+    ) -> Mailbox {
         let mut mailbox = Mailbox::from(primary.identifier);
 
         for _ in 0..times {
@@ -421,7 +471,8 @@ mod tests {
                         s: client.request,
                     },
                     k: replica.committed,
-                }.into(),
+                }
+                .into(),
             },
         }
     }
@@ -434,12 +485,18 @@ mod tests {
                 view: replica.view,
                 payload: PrepareOk {
                     n: replica.op_number,
-                }.into(),
+                }
+                .into(),
             },
         }
     }
 
-    fn reply_envelope<S>(primary: &Replica<S>, client: &Client, operation: &[u8], times: usize) -> Envelope {
+    fn reply_envelope<S>(
+        primary: &Replica<S>,
+        client: &Client,
+        operation: &[u8],
+        times: usize,
+    ) -> Envelope {
         Envelope {
             from: primary.identifier.into(),
             to: client.identifier.into(),
@@ -448,7 +505,8 @@ mod tests {
                 payload: Reply {
                     x: (operation.len() * times).to_be_bytes().to_vec(),
                     s: client.request,
-                }.into(),
+                }
+                .into(),
             },
         }
     }

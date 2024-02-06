@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 pub enum Address {
     Replica(ReplicaIdentifier),
     Group(GroupIdentifier),
-    Client(ClientIdentifier)
+    Client(ClientIdentifier),
 }
 
 impl From<ReplicaIdentifier> for Address {
@@ -29,18 +29,21 @@ impl From<ClientIdentifier> for Address {
 pub struct Envelope {
     pub from: Address,
     pub to: Address,
-    pub message: Message
+    pub message: Message,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Message {
     pub view: View,
-    pub payload: Payload
+    pub payload: Payload,
 }
 
 impl Message {
     pub fn new(view: View, payload: impl Into<Payload>) -> Self {
-        Self { view, payload: payload.into() }
+        Self {
+            view,
+            payload: payload.into(),
+        }
     }
 }
 
@@ -49,7 +52,7 @@ pub enum Payload {
     Request(Request),
     Prepare(Prepare),
     PrepareOk(PrepareOk),
-    Reply(Reply)
+    Reply(Reply),
 }
 
 impl From<Request> for Payload {
@@ -145,9 +148,11 @@ impl GroupIdentifier {
         ReplicaIdentifier(*self, (view.0 % (self.1 as u128)) as usize)
     }
 
-    pub fn replicas(&self) -> impl Iterator<Item=ReplicaIdentifier> {
+    pub fn replicas(&self) -> impl Iterator<Item = ReplicaIdentifier> {
         let clone = *self;
-        (0..self.1).into_iter().map(move |i| ReplicaIdentifier(clone, i))
+        (0..self.1)
+            .into_iter()
+            .map(move |i| ReplicaIdentifier(clone, i))
     }
 
     pub fn sub_majority(&self) -> usize {
@@ -196,7 +201,9 @@ impl OpNumber {
     }
 
     pub fn next(&self) -> Self {
-        Self(NonZeroUsize::new(1 + self.0.map(NonZeroUsize::get).unwrap_or(0)))
+        Self(NonZeroUsize::new(
+            1 + self.0.map(NonZeroUsize::get).unwrap_or(0),
+        ))
     }
 }
 

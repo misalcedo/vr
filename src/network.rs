@@ -114,7 +114,7 @@ mod tests {
                 s: 1,
                 v: Default::default(),
             },
-            c: Default::default()
+            c: Default::default(),
         };
         let envelope = Envelope::new(View::default(), a, b, message);
 

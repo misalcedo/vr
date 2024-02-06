@@ -1,6 +1,6 @@
+use crate::stamps::{OpNumber, View, ViewTable};
 use std::cmp::Ordering;
 use std::net::SocketAddr;
-use crate::stamps::{OpNumber, View, ViewTable};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Request {
@@ -125,7 +125,7 @@ pub struct DoViewChange {
     /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
     /// The index of the replica that detected the primary's failure.
-    pub i: usize
+    pub i: usize,
 }
 
 impl PartialOrd for DoViewChange {
@@ -169,7 +169,7 @@ pub struct Envelope {
     pub view: View,
     pub from: SocketAddr,
     pub to: SocketAddr,
-    pub message: Message
+    pub message: Message,
 }
 
 impl Envelope {
@@ -178,7 +178,7 @@ impl Envelope {
             view,
             from,
             to,
-            message: message.into()
+            message: message.into(),
         }
     }
 }

@@ -1,12 +1,12 @@
-use std::cmp::Ordering;
-use std::collections::HashMap;
 use crate::model::DoViewChange;
 use crate::stamps::View;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 
 #[derive(Debug, Default)]
 pub struct ViewChangeBuffer {
     view: View,
-    buffer: HashMap<usize, DoViewChange>
+    buffer: HashMap<usize, DoViewChange>,
 }
 
 impl ViewChangeBuffer {
@@ -26,7 +26,9 @@ impl ViewChangeBuffer {
 
     pub fn start_view(&mut self, index: usize, group_size: usize) -> Option<DoViewChange> {
         if self.is_complete(index, group_size) {
-            let message = self.buffer.drain()
+            let message = self
+                .buffer
+                .drain()
                 .map(|(_, v)| v)
                 .max_by_key(|do_view_change| do_view_change.t.last_entry())?;
 

@@ -73,13 +73,17 @@ pub struct ViewTable {
 
 impl PartialOrd for ViewTable {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.table.last_key_value().partial_cmp(&other.table.last_key_value())
+        self.table
+            .last_key_value()
+            .partial_cmp(&other.table.last_key_value())
     }
 }
 
 impl Ord for ViewTable {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.table.last_key_value().cmp(&other.table.last_key_value())
+        self.table
+            .last_key_value()
+            .cmp(&other.table.last_key_value())
     }
 }
 
@@ -89,10 +93,16 @@ impl ViewTable {
     }
 
     pub fn last_entry(&self) -> (View, OpNumber) {
-        self.table.last_key_value().map(|kv| (kv.0.clone(), kv.1.clone())).unwrap_or_default()
+        self.table
+            .last_key_value()
+            .map(|kv| (kv.0.clone(), kv.1.clone()))
+            .unwrap_or_default()
     }
 
     pub fn last_op_number(&self) -> OpNumber {
-        self.table.last_key_value().map(|kv| kv.1.clone()).unwrap_or_default()
+        self.table
+            .last_key_value()
+            .map(|kv| kv.1.clone())
+            .unwrap_or_default()
     }
 }
