@@ -127,7 +127,6 @@ impl<S> Replica<S>
                             self.committed = self.committed.max(prepare_ok.n);
 
                             let length = OpNumber::from(self.log.len());
-
                             while self.committed > self.executed && self.executed < length {
                                 // executed must be incremented after indexing the log to avoid panicking.
                                 let request = &self.log[usize::from(self.executed)];
@@ -166,8 +165,17 @@ impl<S> Replica<S>
                 self.push_request(prepare.m);
 
                 let primary = self.identifier.primary(self.view);
-
                 sender.send(primary, Message::new(self.view, PrepareOk { n: self.op_number }));
+
+                self.committed = self.committed.max(prepare.k);
+
+                let length = OpNumber::from(self.log.len());
+                while self.committed > self.executed && self.executed < length {
+                    // executed must be incremented after indexing the log to avoid panicking.
+                    let request = &self.log[usize::from(self.executed)];
+                    self.service.invoke(request.op.as_slice());
+                    self.executed.increment();
+                }
 
                 None
             }
@@ -229,6 +237,60 @@ mod tests {
 
         assert_eq!(envelopes, vec![prepare_ok_envelope(&primary, &replica)]);
         assert_eq!(replica.op_number, OpNumber::from(1));
+    }
+
+    #[test]
+    fn prepare_replica_committed() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, replicas[0]);
+        let mut client = Client::new(group);
+
+        let mut replica = Replica::new(0, replicas[1]);
+        let mut mailbox = Mailbox::from(replicas[1]);
+
+        simulate_request(&mut primary, &mut client, operation, 1);
+        let envelope = prepare_envelope(&primary, &client, operation);
+        mailbox.deliver(envelope);
+        replica.poll(&mut mailbox);
+        assert_eq!(mailbox.drain_outbound().count(), 1);
+
+        simulate_request(&mut primary, &mut client, operation, 1);
+        primary.committed.increment();
+        let envelope = prepare_envelope(&primary, &client, operation);
+        mailbox.deliver(envelope);
+        replica.poll(&mut mailbox);
+
+        let envelopes: Vec<Envelope> = mailbox.drain_outbound().collect();
+
+        assert_eq!(envelopes, vec![prepare_ok_envelope(&primary, &replica)]);
+        assert_eq!(replica.service, operation.len());
+    }
+
+    #[test]
+    fn prepare_replica_committed_not_in_log() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, replicas[0]);
+        let mut client = Client::new(group);
+
+        let mut replica = Replica::new(0, replicas[1]);
+        let mut mailbox = Mailbox::from(replicas[1]);
+
+        simulate_request(&mut primary, &mut client, operation, 2);
+        primary.committed.increment();
+
+        let envelope = prepare_envelope(&primary, &client, operation);
+
+        mailbox.deliver(envelope);
+        replica.poll(&mut mailbox);
+
+        assert_eq!(mailbox.drain_outbound().count(), 0);
+        assert_eq!(replica.service, 0);
     }
 
     #[test]
