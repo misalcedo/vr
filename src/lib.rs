@@ -1,15 +1,27 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io;
+use std::collections::{BinaryHeap, BTreeMap, HashSet};
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 
+mod client;
+mod mailbox;
 mod model;
+mod new_model;
 mod network;
+mod replica;
+mod service;
+mod stamps;
+mod view_change;
 
-use crate::model::{Commit, Inform, Message, Prepare, PrepareOk, Reply, Request};
-pub use network::{CommunicationStream, Network};
+use crate::model::{DoViewChange, Envelope, Inform, Message, Ping, Prepare, PrepareOk, Reply, Request, StartView};
+pub use network::Network;
+use crate::client::RequestCache;
+use crate::network::Outbound;
+use crate::service::Service;
+use crate::stamps::{OpNumber, View, ViewTable};
+use crate::view_change::ViewChangeBuffer;
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -42,19 +54,128 @@ impl RequestState {
     }
 }
 
-#[derive(Debug)]
-pub struct Replica<Service> {
+pub trait FailureDetector {
+    fn detect(&self) -> bool;
+    fn update(&mut self, view: View, from: SocketAddr, group_size: usize);
+}
+
+pub trait IdleDetector {
+    fn detect(&self) -> bool;
+    fn tick(&mut self);
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ReplicaBuilder<S, FD, ID> {
     /// The service code for processing committed client requests.
-    service: Service,
-    /// The interface for this replica to communicate with other replicas.
-    communication: CommunicationStream,
+    service: Option<S>,
+    /// Detects when a primary is no longer responsive.
+    failure_detector: Option<FD>,
+    /// Detects when the current replica has been idle.
+    idle_detector: Option<ID>,
+    /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
+    /// The replicas are numbered 0 to 2f.
+    configuration: Vec<SocketAddr>,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    commit_queue_threshold: usize,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    /// Defined as a multiplier on the commit queue depth to help with prevent spurious view changes.
+    prepare_queue_threshold_multiplier: Option<NonZeroUsize>,
+}
+
+impl<S, FD, ID> ReplicaBuilder<S, FD, ID>
+    where
+        S: Service + Clone,
+        FD: FailureDetector + Clone,
+        ID: IdleDetector + Clone
+{
+    pub fn new() -> Self {
+        Self {
+            service: None,
+            failure_detector: None,
+            idle_detector: None,
+            configuration: Vec::new(),
+            commit_queue_threshold: 1,
+            prepare_queue_threshold_multiplier: None
+        }
+    }
+
+    /// Sets the multiplier for the prepare queue depth threshold.
+    /// Values of `0` are treated as use the default.
+    pub fn with_prepare_multiplier(mut self, multiplier: usize) -> Self {
+        self.prepare_queue_threshold_multiplier = NonZeroUsize::new(multiplier);
+        self
+    }
+
+    pub fn with_commit_queue_threshold(mut self, threshold: usize) -> Self {
+        self.commit_queue_threshold = threshold;
+        self
+    }
+
+    pub fn with_replica(mut self, address: SocketAddr) -> Self {
+        self.configuration.push(address);
+        self
+    }
+
+    pub fn with_service(mut self, service: S) -> Self {
+        self.service = Some(service);
+        self
+    }
+
+    pub fn with_failure_detector(mut self, detector: FD) -> Self {
+        self.failure_detector = Some(detector);
+        self
+    }
+
+    pub fn with_idle_detector(mut self, detector: ID) -> Self {
+        self.idle_detector = Some(detector);
+        self
+    }
+
+    pub fn build(self) -> Result<Vec<Replica<S, FD, ID>>, Self> {
+        let mut clone = self.clone();
+
+        match (clone.service.take(), clone.failure_detector.take(), clone.idle_detector.take(), clone.configuration) {
+            (Some(service), Some(failure_detector), Some(idle_detector), configuration) if !configuration.is_empty() => {
+                let mut replicas = Vec::with_capacity(configuration.len());
+
+                for index in 0..configuration.len() {
+                    replicas.push(Replica::new(
+                        service.clone(),
+                        failure_detector.clone(),
+                        idle_detector.clone(),
+                        configuration.clone(),
+                        index,
+                        self.commit_queue_threshold,
+                        self.prepare_queue_threshold_multiplier.map(NonZeroUsize::get).unwrap_or(2)
+                    ));
+                }
+
+                Ok(replicas)
+            },
+            _ => Err(self)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Replica<S, FD, ID> {
+    /// The service code for processing committed client requests.
+    service: S,
+    /// Detects when a primary is no longer responsive.
+    failure_detector: FD,
+    /// Detects when the current replica has been idle.
+    idle_detector: ID,
     /// The configuration, i.e., the IP address and replica number for each of the 2f + 1 replicas.
     /// The replicas are numbered 0 to 2f.
     configuration: Vec<SocketAddr>,
     /// Each replica also knows its own replica number.
     index: usize,
-    /// The current view-number, initially 0.
-    view_number: usize,
+    /// The current view.
+    view: View,
+    /// The latest op-number received by this replica.
+    op_number: OpNumber,
+    /// The view-table containing for each past view the op-number of the latest request known in that view.
+    view_table: ViewTable,
     /// The current status, either normal, view-change, or recovering.
     status: Status,
     /// This is an array containing op-number entries.
@@ -62,155 +183,256 @@ pub struct Replica<Service> {
     log: Vec<Request>,
     /// This records for each client the number of its most recent request,
     /// plus, if the request has been executed, the result sent for that request.
-    client_table: HashMap<u128, BTreeMap<u128, Option<Reply>>>,
+    client_table: RequestCache,
     /// The last operation number committed in the current view.
-    committed: usize,
+    committed: OpNumber,
     /// The count of operations executed in the current view.
     executed: usize,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    commit_queue_threshold: usize,
     /// Log entries yet to be committed log entry.
-    queue: BTreeMap<usize, RequestState>,
+    commit_queue: BTreeMap<OpNumber, RequestState>,
+    /// The depth of the queue at which point the primary will re-broadcast prepare messages.
+    prepare_queue_threshold: usize,
+    /// Priority queue of prepare messages to wait until the prepares are in order.
+    prepare_queue: BinaryHeap<Reverse<Prepare>>,
+    /// Buffer of do-view-change messages on the primary of the new view.
+    view_change_buffer: ViewChangeBuffer
 }
 
-impl<Service> Replica<Service>
+impl<S, FD, ID> Replica<S, FD, ID>
 where
-    Service: FnMut(&[u8]) -> Vec<u8>,
+    S: Service,
+    FD: FailureDetector,
+    ID: IdleDetector
 {
     pub fn new(
-        service: Service,
-        communication: CommunicationStream,
+        service: S,
+        failure_detector: FD,
+        idle_detector: ID,
         configuration: Vec<SocketAddr>,
         index: usize,
+        commit_queue_threshold: usize,
+        prepare_queue_threshold_multiplier: usize
     ) -> Self {
         Self {
             service,
-            communication,
+            failure_detector,
+            idle_detector,
             configuration,
             index,
-            view_number: 0,
+            view: View::default(),
+            op_number: OpNumber::default(),
+            view_table: Default::default(),
             status: Default::default(),
             log: vec![],
             client_table: Default::default(),
-            committed: 0,
+            committed: Default::default(),
             executed: 0,
-            queue: BTreeMap::new(),
+            commit_queue_threshold,
+            commit_queue: BTreeMap::new(),
+            prepare_queue_threshold: commit_queue_threshold * prepare_queue_threshold_multiplier,
+            prepare_queue: BinaryHeap::new(),
+            view_change_buffer: Default::default(),
         }
     }
 
-    pub fn poll(&mut self) -> io::Result<()> {
-        let primary = self.view_number % self.configuration.len();
+    pub fn address(&self) -> SocketAddr {
+        self.configuration[self.index]
+    }
+
+    pub fn poll(&mut self, envelope: Option<Envelope>, outbound: &mut impl Outbound) {
+        let primary = self.view.primary_index(self.configuration.len());
         let is_primary = primary == self.index;
 
-        let result = match self.communication.receive() {
-            Ok((from, message)) => match self.status {
-                Status::Normal if message.view_number() < self.view_number => self.inform(from),
-                Status::Normal if message.view_number() > self.view_number => {
-                    todo!("Perform state transfer")
-                }
-                Status::Normal if is_primary => self.process_primary(from, message),
-                Status::Normal if from != self.configuration[primary] => self.inform(from),
-                Status::Normal => self.process_replica(from, message),
-                Status::ViewChange => todo!("Support view change status"),
-                Status::Recovering => todo!("Support recovering status"),
-            },
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
-            Err(e) => Err(e),
-        };
+        if let Some(envelope) = envelope {
+            self.process_message(outbound, envelope);
+        }
 
         // Perform up-call for committed operations in order.
         if is_primary {
-            // TODO: re-send broadcast messages for uncommitted changes.
-            self.update_primary()?;
-        } else {
-            self.update_replica()?;
-        }
+            self.start_view_change(outbound);
+            self.update_primary(outbound);
 
-        result
+            if self.idle_detector.detect() {
+                self.broadcast(outbound, Ping {
+                    v: self.view,
+                    c: self.committed
+                })
+            }
+        } else {
+            self.update_replica(outbound);
+
+            if self.failure_detector.detect() {
+                self.do_view_change(outbound);
+            }
+        }
     }
 
-    fn inform(&mut self, to: SocketAddr) -> io::Result<()> {
-        self.communication.send(
-            to,
-            Inform {
-                v: self.view_number,
+    fn process_message(&mut self, outbound: &mut impl Outbound, envelope: Envelope) {
+        let primary = self.view.primary_index(self.configuration.len());
+        let is_primary = primary == self.index;
+
+        match self.status {
+            Status::Normal if envelope.message.view() < self.view => self.inform(outbound, envelope.from),
+            Status::Normal if envelope.message.view() > self.view => {
+                let new_primary = envelope.message.view().primary_index(self.configuration.len());
+
+                match envelope.message {
+                    Message::DoViewChange(do_view_change) if self.index == new_primary => {
+                        self.view_change_buffer.insert(do_view_change);
+                    }
+                    Message::StartView(start_view) if self.index != new_primary => {
+                        self.op_number = start_view.t.last_op_number();
+                        self.view_table = start_view.t;
+                        self.view = start_view.v;
+                        self.committed = self.committed.max(start_view.k);
+                        self.log = start_view.l;
+                        self.status = Status::Normal;
+                    }
+                    _ => todo!("Perform state transfer")
+                }
+            }
+            Status::Normal if is_primary => self.process_primary(envelope, outbound),
+            Status::Normal if envelope.from != self.configuration[primary] => self.inform(outbound, envelope.from),
+            Status::Normal => {
+                self.failure_detector.update(self.view, envelope.from, self.configuration.len());
+                self.process_replica(envelope, outbound)
             },
+            Status::ViewChange if self.index == envelope.message.view().primary_index(self.configuration.len()) => {
+                match envelope.message {
+                    Message::DoViewChange(do_view_change) => {
+                        self.view_change_buffer.insert(do_view_change);
+                    }
+                    _ => todo!("Figure out what to do with these messages")
+                }
+            },
+            Status::ViewChange => {
+                match envelope.message {
+                    Message::StartView(start_view) if start_view.v == self.view => {
+                        self.op_number = start_view.t.last_op_number();
+                        self.view_table = start_view.t;
+                        self.log = start_view.l;
+                        self.status = Status::Normal;
+                    }
+                    _ => todo!("Handle unexpected messages on view change status.")
+                }
+            },
+            Status::Recovering => todo!("Support recovering status"),
+        }
+    }
+
+    fn inform(&mut self, outbound: &mut impl Outbound, to: SocketAddr) {
+        outbound.send(
+            Envelope::new(self.view, self.configuration[self.index], to, Inform {
+                v: self.view,
+            })
         )
     }
 
-    fn update_primary(&mut self) -> io::Result<()> {
-        while let Some(entry) = self.queue.first_entry() {
+    fn update_primary(&mut self, outbound: &mut impl Outbound) {
+        if self.status != Status::Normal {
+            return;
+        }
+
+        while let Some(entry) = self.commit_queue.first_entry() {
+            let request = &self.log[(u128::from(*entry.key()) - 1) as usize];
+
             if !entry.get().is_committed(self.configuration.len()) {
+                if self.commit_queue.len() > self.commit_queue_threshold {
+                    // TODO: Reaching this threshold should cause the primary to re-send prepares only to replicas that have not responded yet.
+                    self.broadcast(outbound, Prepare {
+                        v: self.view,
+                        n: OpNumber::from(self.log.len()),
+                        m: request.clone(),
+                        c: self.committed
+                    });
+                }
+
                 break;
             }
 
             let to = entry.get().address;
-            let request = &self.log[entry.key() - 1];
-            let cache = self.client_table.entry(request.c).or_default();
             let reply = Reply {
-                v: self.view_number,
+                v: self.view,
                 s: request.s,
-                x: (self.service)(request.op.as_slice()),
+                x: self.service.invoke(request.op.as_slice()),
             };
 
-            cache.insert(request.s, Some(reply.clone()));
+            self.client_table.set(&request, &reply);
+
             self.executed += 1;
             entry.remove();
 
-            // TODO: handle partial failure in committing an operation.
-            self.communication.send(to, reply)?;
+            outbound.send(Envelope::new(self.view, self.configuration[self.index], to, reply));
         }
-
-        // TODO: piggy-back committed messages with prepare messages
-        self.broadcast(Commit {
-            v: self.view_number,
-            n: self.committed,
-        })
     }
 
-    fn update_replica(&mut self) -> io::Result<()> {
-        while self.committed < self.executed && self.executed < self.log.len() {
-            let request = &self.log[self.executed];
-            self.executed += 1;
-            (self.service)(request.op.as_slice());
+    fn update_replica(&mut self, outbound: &mut impl Outbound) {
+        if self.status != Status::Normal {
+            return;
         }
 
-        Ok(())
-    }
+        self.execute_committed();
 
-    fn process_primary(&mut self, from: SocketAddr, message: Message) -> io::Result<()> {
-        match message {
-            Message::Request(request) => {
-                let cache = self.client_table.entry(request.c).or_default();
+        while let Some(Reverse(message)) = self.prepare_queue.pop() {
+            // Ignore buffered prepares for older views.
+            if message.v < self.view {
+                continue;
+            }
 
-                if let Some((&key, value)) = cache.last_key_value() {
-                    if key > request.s {
-                        // TODO: handle discarding old requests resent by the client.
-                    } else if key < request.s && value.is_none() {
-                        // TODO: handle concurrent requests from a single client.
-                    } else if key < request.s {
-                        // got a newer request. so clear out the client's cache.
-                        cache.clear();
-                    }
+            let next = self.op_number.next();
+
+            if message.n != next {
+                self.prepare_queue.push(Reverse(message));
+
+                if self.prepare_queue.len() > self.prepare_queue_threshold {
+                    todo!("Perform state transfer to get missing information")
                 }
 
-                match cache.entry(request.s) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(None);
-                        self.prepare(from, request)
+                break;
+            }
+
+            let primary = self.configuration[self.view.primary_index(self.configuration.len())];
+
+            self.prepare_ok(primary, message, outbound);
+        }
+    }
+
+    fn process_primary(&mut self, envelope: Envelope, outbound: &mut impl Outbound) {
+        match envelope.message {
+            Message::Request(request) => {
+                match self.client_table.partial_cmp(&request) {
+                    None => {
+                        // got a newer request or this is the first request from the client.
+                        self.client_table.start(&request);
+                        self.prepare(envelope.from, request, outbound)
                     }
-                    Entry::Occupied(entry) => {
-                        match entry.get() {
-                            // TODO: this is a client resending the latest request.
-                            // may want to re-broadcast prepare here if uncommitted.
-                            None => Ok(()),
-                            // send back a cached response for latest request from the client.
-                            Some(reply) => self.communication.send(from, reply.clone()),
+                    Some(Ordering::Less) => {
+                        todo!("handle concurrent requests from a single client.")
+                    }
+                    Some(Ordering::Equal) => {
+                        match self.client_table.get(&request) {
+                            None => {
+                                // the client resent the latest request.
+                                // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
+                                todo!("handle resent in-progress requests.")
+                            }
+                            Some(reply) => {
+                                // send back a cached response for latest request from the client.
+                                outbound.send(Envelope::new(self.view, self.configuration[self.index], envelope.from, reply.clone()))
+                            }
                         }
+
+                    }
+                    Some(Ordering::Greater) => {
+                        todo!("handle discarding old requests resent by the client.")
                     }
                 }
             }
             Message::PrepareOk(message) => {
                 // Only committed ops are popped from the queue, so we can safely ignore prepare messages for anything not in the queue.
-                if let Entry::Occupied(mut entry) = self.queue.entry(message.n) {
+                if let Entry::Occupied(mut entry) = self.commit_queue.entry(message.n) {
                     entry.get_mut().accepted.insert(message.i);
 
                     if entry.get().is_committed(self.configuration.len()) {
@@ -218,98 +440,155 @@ where
                         self.committed = self.committed.max(message.n);
                     }
                 }
-
-                Ok(())
             }
-            _ => Ok(()),
+            _ => (),
         }
     }
 
-    fn prepare(&mut self, from: SocketAddr, request: Request) -> io::Result<()> {
+    fn prepare(&mut self, client: SocketAddr, request: Request, outbound: &mut impl Outbound) {
         self.log.push(request.clone());
-        self.queue
-            .insert(self.log.len(), RequestState::new(from, request.s));
+        self.op_number.increment();
+        self.commit_queue
+            .insert(OpNumber::from(self.log.len()), RequestState::new(client, request.s));
 
-        self.broadcast(Prepare {
-            v: self.view_number,
-            n: self.log.len(),
+        self.broadcast(outbound, Prepare {
+            v: self.view,
+            n: OpNumber::from(self.log.len()),
             m: request,
+            c: self.committed
         })
     }
 
-    fn process_replica(&mut self, from: SocketAddr, message: Message) -> io::Result<()> {
-        match message {
+    fn process_replica(&mut self, envelope: Envelope, outbound: &mut impl Outbound) {
+        match envelope.message {
             Message::Prepare(message) => {
-                let next = self.log.len() + 1;
+                // TODO: If committed is higher than messages in the prepare buffer we need to enter recovery mode
+                // to avoid buffering prepares that will never get processed.
+                self.committed = self.committed.max(message.c);
+
+                let next = self.op_number.next();
 
                 match next.cmp(&message.n) {
-                    Ordering::Less => todo!("Wait for all earlier log entries or perform state transfer to get missing information"),
+                    Ordering::Less => {
+                        self.prepare_queue.push(Reverse(message));
+                    },
                     Ordering::Equal => {
-                        self.log.push(message.m);
-
-                        let message = PrepareOk {
-                            v: self.view_number,
-                            n: self.log.len(),
-                            i: self.index,
-                        };
-
-                        self.communication.send(from, message.clone())
+                        self.prepare_ok(envelope.from, message, outbound);
                     }
-                    Ordering::Greater => Ok(())
+                    Ordering::Greater => ()
                 }
             }
-            Message::Commit(message) if message.v == self.view_number => {
-                // TODO: figure out how to handle committed less than current.
-                self.committed = message.n;
-                Ok(())
-            }
-            _ => Ok(()),
+            _ => (),
         }
     }
 
-    fn broadcast<M: Into<Message>>(&mut self, message: M) -> io::Result<()> {
-        let mut errors = 0;
+    fn prepare_ok(&mut self, from: SocketAddr, message: Prepare, outbound: &mut impl Outbound) {
+        self.log.push(message.m);
+        self.op_number.increment();
+
+        let message = PrepareOk {
+            v: self.view,
+            n: self.op_number,
+            i: self.index,
+        };
+
+        outbound.send(Envelope::new(self.view, self.configuration[self.index], from, message.clone()));
+    }
+
+    fn broadcast(&mut self, outbound: &mut impl Outbound, message: impl Into<Message>) {
         let message = message.into();
 
         for (i, replica) in self.configuration.iter().enumerate() {
-            if i != self.index && self.communication.send(*replica, message.clone()).is_err() {
-                errors += 1;
+            if i != self.index {
+                outbound.send(Envelope::new(self.view, self.configuration[self.index], *replica, message.clone()));
             }
         }
 
-        if errors == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::new(io::ErrorKind::Other, "partial broadcast"))
+        // we are not idle if we are sending messages to all replicas.
+        self.idle_detector.tick();
+    }
+
+    fn do_view_change(&mut self, outbound: &mut impl Outbound) {
+        self.view.increment();
+        self.status = Status::ViewChange;
+
+        let primary = self.view.primary_index(self.configuration.len());
+        let envelope = Envelope::new(self.view, self.configuration[self.index], self.configuration[primary],  DoViewChange {
+            v: self.view,
+            t: self.view_table.clone(),
+            l: self.log.clone(),
+            k: self.op_number,
+            i: self.index,
+        });
+
+        outbound.send(envelope)
+    }
+
+    fn start_view_change(&mut self, outbound: &mut impl Outbound) {
+        match self.view_change_buffer.start_view(self.index, self.configuration.len()) {
+            None => (),
+            Some(do_view_change) => {
+                self.log = do_view_change.l;
+                self.op_number = do_view_change.t.last_op_number();
+                self.view_table = do_view_change.t;
+                self.committed = self.committed.max(do_view_change.k);
+                self.status = Status::Normal;
+
+                self.broadcast(outbound, StartView {
+                    v: self.view,
+                    t: self.view_table.clone(),
+                    l: self.log.clone(),
+                    k: self.committed,
+                });
+
+                self.execute_committed();
+
+                // TODO: Send replies to the clients.
+                // We might not know the socket address of the client because we may not be the one that received the request.
+                // The best we can do is wait for the client to query the system and detect that it's last request completed.
+            }
+        }
+    }
+
+    fn execute_committed(&mut self) {
+        while u128::from(self.committed) < (self.executed as u128) && self.executed < self.log.len() {
+            let request = &self.log[self.executed];
+            let reply = Reply {
+                v: self.view,
+                s: request.s,
+                x: self.service.invoke(request.op.as_slice()),
+            };
+
+            self.client_table.set(&request, &reply);
+            self.executed += 1;
         }
     }
 }
 
 pub struct Client {
     configuration: Vec<SocketAddr>,
-    view_number: usize,
+    view: View,
     id: u128,
     requests: u128,
 }
 
 impl Client {
-    // TODO: use uuid v7 to handle client crashes and recovery (must start with higher request number than before crash).
     pub fn new(configuration: Vec<SocketAddr>, id: u128) -> Self {
         Self {
             configuration,
-            view_number: 0,
+            view: Default::default(),
             id,
-            requests: 0,
+            requests: uuid::Uuid::now_v7().as_u128(),
         }
     }
 
     pub fn new_request(&mut self, payload: Vec<u8>) -> (SocketAddr, Request) {
-        let primary = self.view_number % self.configuration.len();
+        let primary = self.view.primary_index(self.configuration.len());
         let request = Request {
             op: payload,
             c: self.id,
             s: self.requests,
-            v: self.view_number,
+            v: self.view,
         };
 
         self.requests += 1;
@@ -318,14 +597,32 @@ impl Client {
     }
 
     pub fn update(&mut self, message: &Message) {
-        self.view_number = message.view_number();
+        self.view = message.view();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
     use super::*;
     use crate::model::Message;
+
+    impl FailureDetector for bool {
+        fn detect(&self) -> bool {
+            *self
+        }
+
+        fn update(&mut self, _: View, _: SocketAddr, _: usize) {
+        }
+    }
+
+    impl IdleDetector for bool {
+        fn detect(&self) -> bool {
+            *self
+        }
+
+        fn tick(&mut self) {}
+    }
 
     #[test]
     fn queue() {
@@ -340,50 +637,36 @@ mod tests {
 
     #[test]
     fn simulate() {
-        let configuration = vec![
-            "127.0.0.1:3001".parse().unwrap(),
-            "127.0.0.1:3002".parse().unwrap(),
-            "127.0.0.1:3003".parse().unwrap(),
-        ];
+        let mut replicas = build_replicas(false);
         let mut network = Network::default();
-        let mut replicas = Vec::with_capacity(configuration.len());
-
-        for (index, address) in configuration.iter().enumerate() {
-            let mut counter = 0usize;
-            let service = move |request: &[u8]| {
-                counter += request.len();
-                counter.to_be_bytes().to_vec()
-            };
-            replicas.push(Replica::new(
-                service,
-                network.bind(*address).unwrap(),
-                configuration.clone(),
-                index,
-            ));
+        for address in replicas.iter().map(Replica::address) {
+            network.bind(address).unwrap();
         }
 
-        let mut client_stream = network.bind("127.0.0.1:4001".parse().unwrap()).unwrap();
-        let mut client = Client::new(configuration.clone(), 1);
+        let client_address = "127.0.0.1:4001".parse().unwrap();
+        let mut client = Client::new(replicas[0].configuration.clone(), 1);
+
+        network.bind(client_address).unwrap();
 
         let payload = b"Hello, World!".to_vec();
         let (primary, request) = client.new_request(payload.clone());
 
-        client_stream
-            .send(primary, Message::Request(request.clone()))
+        network
+            .send(Envelope::new(View::default(), client_address, primary, request.clone()))
             .unwrap();
 
-        replicas[0].poll().unwrap();
-        replicas[1].poll().unwrap();
-        replicas[2].poll().unwrap();
-        replicas[0].poll().unwrap();
-        replicas[0].poll().unwrap();
+        poll(&mut network, &mut replicas[0]);
+        poll(&mut network, &mut replicas[1]);
+        poll(&mut network, &mut replicas[2]);
+        poll(&mut network, &mut replicas[0]);
+        poll(&mut network, &mut replicas[0]);
 
-        let (sender, message) = client_stream.receive().unwrap();
+        let Envelope { from: sender, message, ..} = network.receive(client_address).unwrap();
 
         client.update(&message);
 
-        assert_eq!(client.view_number, replicas[0].view_number);
-        assert_eq!(sender, configuration[0]);
+        assert_eq!(client.view, replicas[0].view);
+        assert_eq!(sender, replicas[0].address());
         assert_eq!(
             message,
             Message::Reply(Reply {
@@ -392,5 +675,78 @@ mod tests {
                 x: payload.len().to_be_bytes().to_vec(),
             })
         );
+    }
+
+    #[test]
+    fn simulate_failure() {
+        let mut replicas = build_replicas(false);
+        let mut network = Network::default();
+        for address in replicas.iter().map(Replica::address) {
+            network.bind(address).unwrap();
+        }
+
+        let client_address = "127.0.0.1:4001".parse().unwrap();
+        let mut client = Client::new(replicas[0].configuration.clone(), 1);
+
+        network.bind(client_address).unwrap();
+
+        let payload = b"Hello, World!".to_vec();
+        let (primary, request) = client.new_request(payload.clone());
+
+        replicas[2].failure_detector = true;
+
+        network
+            .send(Envelope::new(View::default(), client_address, primary, request.clone()))
+            .unwrap();
+
+        poll(&mut network, &mut replicas[0]);
+        poll(&mut network, &mut replicas[1]);
+        poll(&mut network, &mut replicas[0]);
+        poll(&mut network, &mut replicas[1]);
+
+        let Envelope { message, ..} = network.receive(client_address).unwrap();
+
+        client.update(&message);
+
+        // skip prepare
+        network.receive(replicas[2].address()).unwrap();
+        // do view change
+        poll(&mut network, &mut replicas[2]);
+
+        replicas[1].failure_detector = true;
+
+        // do view change
+        poll(&mut network, &mut replicas[1]);
+        // start view change
+        poll(&mut network, &mut replicas[1]);
+
+        replicas[1].failure_detector = false;
+        replicas[2].failure_detector = false;
+
+        poll(&mut network, &mut replicas[2]);
+        poll(&mut network, &mut replicas[0]);
+
+        for replica in &replicas {
+            assert_eq!(replica.view, View::from(1));
+            assert_eq!(replica.status, Status::Normal);
+        }
+    }
+
+    fn build_replicas<FD: FailureDetector + Clone + Debug>(failure_detector: FD) -> Vec<Replica<impl Service, FD, impl IdleDetector>> {
+        ReplicaBuilder::new()
+            .with_replica("127.0.0.1:3001".parse().unwrap())
+            .with_replica("127.0.0.1:3002".parse().unwrap())
+            .with_replica("127.0.0.1:3003".parse().unwrap())
+            .with_commit_queue_threshold(10)
+            .with_prepare_multiplier(2)
+            .with_service(0usize)
+            .with_idle_detector(false)
+            .with_failure_detector(failure_detector)
+            .build()
+            .unwrap()
+    }
+
+    fn poll(network: &mut Network, replica: &mut Replica<impl Service, impl FailureDetector, impl IdleDetector>) {
+        replica.poll(network.receive(replica.address()).ok(), network)
     }
 }

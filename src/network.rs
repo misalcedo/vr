@@ -1,4 +1,4 @@
-use crate::model::Message;
+use crate::model::Envelope;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
@@ -6,16 +6,16 @@ use std::net::SocketAddr;
 use std::sync::mpsc::TryRecvError;
 use std::sync::{mpsc, Arc, RwLock};
 
-type StreamWriter = mpsc::Sender<(SocketAddr, Message)>;
+type Stream = (mpsc::Sender<Envelope>, mpsc::Receiver<Envelope>);
 
 #[derive(Clone, Debug, Default)]
 pub struct Network {
-    outbound: Arc<RwLock<HashMap<SocketAddr, StreamWriter>>>,
+    channels: Arc<RwLock<HashMap<SocketAddr, Stream>>>,
 }
 
 impl Network {
-    pub fn bind(&mut self, address: SocketAddr) -> io::Result<CommunicationStream> {
-        let mut guard = self.outbound.write().unwrap_or_else(|e| {
+    pub fn bind(&mut self, address: SocketAddr) -> io::Result<()> {
+        let mut guard = self.channels.write().unwrap_or_else(|e| {
             let mut guard = e.into_inner();
             *guard = HashMap::new();
             guard
@@ -24,54 +24,69 @@ impl Network {
         match guard.entry(address) {
             Entry::Occupied(_) => Err(io::Error::from(io::ErrorKind::AddrInUse)),
             Entry::Vacant(entry) => {
-                let (outbound, inbound) = mpsc::channel();
-                let network = self.clone();
+                entry.insert(mpsc::channel());
 
-                entry.insert(outbound);
-
-                Ok(CommunicationStream {
-                    address,
-                    inbound,
-                    network,
-                })
+                Ok(())
             }
         }
     }
 
-    pub fn connect(&self, to: SocketAddr) -> io::Result<mpsc::Sender<(SocketAddr, Message)>> {
+    pub fn receive(&mut self, interface: SocketAddr) -> io::Result<Envelope> {
         let guard = self
-            .outbound
+            .channels
             .read()
             .map_err(|_| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
+        let receiver = guard
+            .get(&interface)
+            .map(|(_, receiver)| receiver)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
 
-        guard
-            .get(&to)
-            .cloned()
-            .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))
-    }
-}
-
-#[derive(Debug)]
-pub struct CommunicationStream {
-    address: SocketAddr,
-    inbound: mpsc::Receiver<(SocketAddr, Message)>,
-    network: Network,
-}
-
-impl CommunicationStream {
-    pub fn receive(&mut self) -> io::Result<(SocketAddr, Message)> {
-        self.inbound.try_recv().map_err(|e| match e {
+        receiver.try_recv().map_err(|e| match e {
             TryRecvError::Empty => io::Error::from(io::ErrorKind::WouldBlock),
             TryRecvError::Disconnected => io::Error::from(io::ErrorKind::ConnectionAborted),
         })
     }
 
-    pub fn send<M: Into<Message>>(&mut self, to: SocketAddr, message: M) -> io::Result<()> {
-        let outbound = self.network.connect(to)?;
+    pub fn send(&mut self, envelope: Envelope) -> io::Result<()> {
+        let guard = self
+            .channels
+            .read()
+            .map_err(|_| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
 
-        outbound
-            .send((self.address, message.into()))
+        let sender = guard
+            .get(&envelope.to)
+            .map(|(sender, _)| sender)
+            .cloned()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
+
+        sender
+            .send(envelope)
             .map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))
+    }
+}
+
+/// Represents the communication mechanism between replicas.
+/// Order and delivery to the recipient are not guaranteed.
+///
+/// If a message is undeliverable, the message is returned to sender on a receive call on the Network with the sender and recipient unchanged.
+///
+/// Implementations must provide the invariant that undeliverable messages are returned to sender.
+///
+/// The primary must re-send a prepare if there are X prepares waiting for a prepareOK to a single replica.
+/// This ensures that replicas will either trigger a view change or limit the buffering.
+/// To ensure replicas don't trigger view changes due to unreliable networks (high message drop rates or out of order deliveries),
+/// the replicas must allow a larger number of buffered prepares than the primary does.
+/// One way to ensure this is to define it as a multiplier on the outstanding prepare configuration.
+///
+/// TODO: implement an outbound with return-to-sender semantics.
+// Need to determine what the primary will do in the case of return-to-sender.
+pub trait Outbound {
+    fn send(&mut self, envelope: Envelope);
+}
+
+impl Outbound for Network {
+    fn send(&mut self, envelope: Envelope) {
+        Self::send(self, envelope).unwrap()
     }
 }
 
@@ -79,6 +94,7 @@ impl CommunicationStream {
 mod tests {
     use super::*;
     use crate::model::{Prepare, Request};
+    use crate::stamps::{OpNumber, View};
 
     #[test]
     fn basic() {
@@ -86,22 +102,24 @@ mod tests {
         let a = "127.0.0.1:3001".parse().unwrap();
         let b = "127.0.0.1:3002".parse().unwrap();
 
-        let mut a_stream = network.bind(a).unwrap();
-        let mut b_stream = network.bind(b).unwrap();
+        network.bind(a).unwrap();
+        network.bind(b).unwrap();
 
-        let message = Message::Prepare(Prepare {
-            v: 1,
-            n: 1,
+        let message = Prepare {
+            v: View::from(1),
+            n: OpNumber::from(1),
             m: Request {
                 op: b"Hello, World!".to_vec(),
                 c: 1,
                 s: 1,
-                v: 0,
+                v: Default::default(),
             },
-        });
+            c: Default::default()
+        };
+        let envelope = Envelope::new(View::default(), a, b, message);
 
-        a_stream.send(b, message.clone()).unwrap();
+        network.send(envelope.clone()).unwrap();
 
-        assert_eq!(b_stream.receive().unwrap(), (a, message));
+        assert_eq!(network.receive(b).unwrap(), envelope);
     }
 }

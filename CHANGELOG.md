@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.4.0] - 2024-02-05
+### Changed
+- Rewrote the entire replica and network from scratch modeled after Erlang's mailbox system.
+
+## [0.3.0] - 2024-01-04
+### Added
+- 
+
+## [0.2.0] - 2024-01-04
+### Added
+- 
+
 ## [0.1.0] - 2024-01-04
 ### Added
 - Basic CI setup for automatic tagging and releases.
