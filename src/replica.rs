@@ -20,6 +20,12 @@ enum Status {
     Recovering,
 }
 
+// TODO: end-to-end test of clients making requests, with view change during in-flight requests.
+// The test should verify:
+// - inflight requests survive
+// - only unprepared requests on the old primary are lost on view change
+// - request de-duplication still works after a view change
+// - responses for old requests still sent after a view change
 pub struct Replica<S, H> {
     /// The service code for processing committed client requests.
     service: S,
@@ -222,8 +228,6 @@ where
             );
 
             self.execute_primary(mailbox);
-
-            // TODO: do we need to add uncommitted requests to the client table?
         }
     }
 
@@ -235,6 +239,8 @@ where
         }
     }
 
+    // TODO: Should replicas maintain the client table as well?
+    // Likely yes, otherwise they won't have the necessary information to update on view change.
     fn process_normal_replica(&mut self, mailbox: &mut Mailbox) {
         let next_op = self.op_number.next();
 
@@ -351,6 +357,7 @@ where
         }
     }
 
+    // TODO: add new uncommitted requests to the client table
     fn replace_log(&mut self, log: Vec<Request>) {
         self.log = log;
         self.op_number = OpNumber::new(self.log.len());
