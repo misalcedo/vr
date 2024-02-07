@@ -5,9 +5,8 @@ use std::collections::{HashMap, HashSet};
 use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::Mailbox;
 use crate::model::{
-    Address, ClientIdentifier, ConcurrentRequest, DoViewChange, GroupIdentifier, Message, OpNumber,
-    Payload, Prepare, PrepareOk, ReplicaIdentifier, Reply, Request, RequestIdentifier, StartView,
-    View,
+    Address, ConcurrentRequest, DoViewChange, GroupIdentifier, Message, OpNumber, OutdatedRequest,
+    Payload, Prepare, PrepareOk, ReplicaIdentifier, Reply, Request, StartView, View,
 };
 use crate::service::Service;
 
@@ -130,14 +129,18 @@ where
                                 None => {
                                     // the client resent the latest request.
                                     // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
-                                    todo!("handle resent in-progress requests.")
+                                    // TODO: handle resent in-progress requests.
                                 }
                                 // send back a cached response for latest request from the client.
                                 Some(reply) => sender.send(request.c, self.view, reply),
                             },
-                            Some(Ordering::Greater) => {
-                                sender.send(request.c, self.view, Payload::OutdatedRequest)
-                            }
+                            Some(Ordering::Greater) => sender.send(
+                                request.c,
+                                self.view,
+                                OutdatedRequest {
+                                    s: last_request.request(),
+                                },
+                            ),
                         }
                     }
                 }
@@ -219,6 +222,8 @@ where
             );
 
             self.execute_primary(mailbox);
+
+            // TODO: do we need to add uncommitted requests to the client table?
         }
     }
 
@@ -366,7 +371,7 @@ where
 mod tests {
     use crate::client::Client;
     use crate::health::HealthStatus;
-    use crate::model::GroupIdentifier;
+    use crate::model::{GroupIdentifier, OutdatedRequest};
 
     use super::*;
 
@@ -532,20 +537,15 @@ mod tests {
 
         let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
         let mut client = Client::new(group);
-
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
         let mut mailbox = Mailbox::from(replica.identifier);
 
+        simulate_reply(&mut primary, &mut replica, &mut client, 1);
         simulate_requests(&mut primary, vec![&mut client], operation);
-        let message = prepare_message(&primary, &client, operation);
-        mailbox.deliver(message);
-        replica.poll(&mut mailbox);
-        assert_eq!(mailbox.drain_outbound().count(), 1);
 
-        simulate_requests(&mut primary, vec![&mut client], operation);
-        primary.committed.increment();
-        let message = prepare_message(&primary, &client, operation);
-        mailbox.deliver(message);
+        assert_eq!(replica.service, 0);
+
+        mailbox.deliver(prepare_message(&primary, &client, operation));
         replica.poll(&mut mailbox);
 
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
@@ -643,7 +643,6 @@ mod tests {
 
     #[test]
     fn prepare_ok_primary_skipped() {
-        let times = 2;
         let operation = b"Hi!";
         let group = GroupIdentifier::new(5);
         let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
@@ -678,12 +677,11 @@ mod tests {
         ];
 
         assert_eq!(messages, replies);
-        assert_eq!(primary.service, operation.len() * times);
+        assert_eq!(primary.service, operation.len() * 2);
     }
 
     #[test]
     fn client_concurrent() {
-        let times = 2;
         let operation = b"Hi!";
         let group = GroupIdentifier::new(5);
         let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
@@ -709,6 +707,84 @@ mod tests {
                 concurrent_request_message(&primary, &old_client)
             ]
         );
+    }
+
+    #[test]
+    fn client_resend_in_progress() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
+        let mut client = Client::new(group);
+
+        let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
+
+        assert_eq!(mailbox.drain_outbound().count(), 1);
+
+        mailbox.deliver(client.message(operation));
+        primary.poll(&mut mailbox);
+
+        assert_eq!(mailbox.drain_outbound().count(), 0);
+        assert_eq!(
+            primary
+                .client_table
+                .get(&client.request(operation))
+                .unwrap()
+                .reply(),
+            None
+        );
+    }
+
+    #[test]
+    fn client_resend_finished() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
+        let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
+        let mut client = Client::new(group);
+        let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
+
+        simulate_broadcast(&mut mailbox, vec![&mut replica]);
+        mailbox.deliver(prepare_ok_message(&primary, &replica));
+        primary.poll(&mut mailbox);
+
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
+        assert_eq!(
+            messages,
+            vec![reply_message(&primary, &client, operation, 1)]
+        );
+
+        mailbox.deliver(client.message(operation));
+        primary.poll(&mut mailbox);
+
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
+        assert_eq!(
+            messages,
+            vec![reply_message(&primary, &client, operation, 1)]
+        );
+    }
+
+    #[test]
+    fn client_resend_finished_not_cached() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
+        let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
+        let mut client = Client::new(group);
+        let mut clone = client.clone();
+
+        let mut mailbox = simulate_reply(&mut primary, &mut replica, &mut client, 2);
+
+        mailbox.deliver(clone.new_message(operation));
+        primary.poll(&mut mailbox);
+
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
+        assert_eq!(messages, vec![outdated_request_message(&primary, &client)]);
     }
 
     #[test]
@@ -955,5 +1031,45 @@ mod tests {
                 s: client.last_request(),
             }),
         }
+    }
+
+    fn outdated_request_message<S, H>(primary: &Replica<S, H>, client: &Client) -> Message {
+        Message {
+            from: primary.identifier.into(),
+            to: client.address(),
+            view: primary.view,
+            payload: Payload::OutdatedRequest(OutdatedRequest {
+                s: client.last_request(),
+            }),
+        }
+    }
+
+    fn simulate_reply<S: Service, H: HealthDetector>(
+        primary: &mut Replica<S, H>,
+        replica: &mut Replica<S, H>,
+        client: &mut Client,
+        times: usize,
+    ) -> Mailbox {
+        let operation = b"Hi!";
+        let mut mailbox = Mailbox::from(primary.identifier);
+
+        for i in 1..=times {
+            mailbox.deliver(client.new_message(operation));
+            primary.poll(&mut mailbox);
+
+            simulate_broadcast(&mut mailbox, vec![replica]);
+
+            mailbox.deliver(prepare_ok_message(&primary, &replica));
+            primary.poll(&mut mailbox);
+
+            let messages: Vec<Message> = mailbox.drain_outbound().collect();
+
+            assert_eq!(
+                messages,
+                vec![reply_message(&primary, &client, operation, i)]
+            );
+        }
+
+        mailbox
     }
 }

@@ -43,7 +43,7 @@ pub enum Payload {
     StartView(StartView),
     Ping,
     OutdatedView,
-    OutdatedRequest,
+    OutdatedRequest(OutdatedRequest),
     ConcurrentRequest(ConcurrentRequest),
 }
 
@@ -86,6 +86,12 @@ impl From<StartView> for Payload {
 impl From<ConcurrentRequest> for Payload {
     fn from(value: ConcurrentRequest) -> Self {
         Self::ConcurrentRequest(value)
+    }
+}
+
+impl From<OutdatedRequest> for Payload {
+    fn from(value: OutdatedRequest) -> Self {
+        Self::OutdatedRequest(value)
     }
 }
 
@@ -141,7 +147,13 @@ pub struct StartView {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConcurrentRequest {
-    /// Client-assigned number for the request.
+    /// Client-assigned number for the request in-progress.
+    pub s: RequestIdentifier,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutdatedRequest {
+    /// Client-assigned number for the most recent request processed.
     pub s: RequestIdentifier,
 }
 

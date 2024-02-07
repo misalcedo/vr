@@ -46,7 +46,7 @@ impl Client {
         self.request(payload)
     }
 
-    fn message(&self, payload: &[u8]) -> Message {
+    pub fn message(&self, payload: &[u8]) -> Message {
         Message {
             from: self.identifier.into(),
             to: self.group.primary(self.view).into(),
