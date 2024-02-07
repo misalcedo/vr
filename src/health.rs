@@ -1,4 +1,4 @@
-use crate::new_model::{Message, ReplicaIdentifier, View};
+use crate::model::{Message, ReplicaIdentifier, View};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum HealthStatus {

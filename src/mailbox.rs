@@ -1,4 +1,4 @@
-use crate::new_model::{Address, Message, Payload, ReplicaIdentifier, View};
+use crate::model::{Address, Message, Payload, ReplicaIdentifier, View};
 use std::collections::VecDeque;
 
 #[derive(Debug)]
@@ -108,7 +108,7 @@ impl Mailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::new_model::{ClientIdentifier, GroupIdentifier, Request, View};
+    use crate::model::{ClientIdentifier, GroupIdentifier, Request, View};
 
     #[test]
     fn mailbox() {

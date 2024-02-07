@@ -1,6 +1,6 @@
 use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::Mailbox;
-use crate::new_model::{
+use crate::model::{
     Address, ClientIdentifier, DoViewChange, GroupIdentifier, Message, OpNumber, Payload, Prepare,
     PrepareOk, ReplicaIdentifier, Reply, Request, RequestIdentifier, StartView, View,
 };
@@ -352,7 +352,7 @@ where
 mod tests {
     use super::*;
     use crate::health::HealthStatus;
-    use crate::new_model::GroupIdentifier;
+    use crate::model::GroupIdentifier;
 
     #[test]
     fn request_primary() {

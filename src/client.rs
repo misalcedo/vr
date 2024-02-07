@@ -1,4 +1,4 @@
-use crate::model::{Reply, Request};
+use crate::model::{ClientIdentifier, Reply, Request};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -10,7 +10,7 @@ pub struct LastRequest {
 
 #[derive(Debug)]
 pub struct RequestCache {
-    cache: HashMap<u128, LastRequest>,
+    cache: HashMap<ClientIdentifier, LastRequest>,
 }
 
 impl Default for RequestCache {
@@ -56,10 +56,15 @@ impl PartialOrd<Request> for RequestCache {
     fn partial_cmp(&self, other: &Request) -> Option<Ordering> {
         let last_request = self.cache.get(&other.c)?;
 
-        // ignore cached completed requests.
-        last_request
-            .request
-            .partial_cmp(other)
-            .filter(|o| o != &Ordering::Less || last_request.reply.is_none())
+        if last_request.request.c == other.c {
+            // ignore cached completed requests.
+            last_request
+                .request
+                .s
+                .partial_cmp(&other.s)
+                .filter(|o| o != &Ordering::Less || last_request.reply.is_none())
+        } else {
+            None
+        }
     }
 }

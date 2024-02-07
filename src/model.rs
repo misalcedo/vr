@@ -1,211 +1,248 @@
-use crate::stamps::{OpNumber, View, ViewTable};
-use std::cmp::Ordering;
-use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum Address {
+    Replica(ReplicaIdentifier),
+    Group(GroupIdentifier),
+    Client(ClientIdentifier),
+}
+
+impl From<ReplicaIdentifier> for Address {
+    fn from(value: ReplicaIdentifier) -> Self {
+        Self::Replica(value)
+    }
+}
+
+impl From<GroupIdentifier> for Address {
+    fn from(value: GroupIdentifier) -> Self {
+        Self::Group(value)
+    }
+}
+
+impl From<ClientIdentifier> for Address {
+    fn from(value: ClientIdentifier) -> Self {
+        Self::Client(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Message {
+    pub from: Address,
+    pub to: Address,
+    pub view: View,
+    pub payload: Payload,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Payload {
+    Request(Request),
+    Prepare(Prepare),
+    PrepareOk(PrepareOk),
+    Reply(Reply),
+    DoViewChange(DoViewChange),
+    StartView(StartView),
+    Ping,
+    Outdated,
+}
+
+impl From<Request> for Payload {
+    fn from(value: Request) -> Self {
+        Self::Request(value)
+    }
+}
+
+impl From<Prepare> for Payload {
+    fn from(value: Prepare) -> Self {
+        Self::Prepare(value)
+    }
+}
+
+impl From<PrepareOk> for Payload {
+    fn from(value: PrepareOk) -> Self {
+        Self::PrepareOk(value)
+    }
+}
+
+impl From<Reply> for Payload {
+    fn from(value: Reply) -> Self {
+        Self::Reply(value)
+    }
+}
+
+impl From<DoViewChange> for Payload {
+    fn from(value: DoViewChange) -> Self {
+        Self::DoViewChange(value)
+    }
+}
+
+impl From<StartView> for Payload {
+    fn from(value: StartView) -> Self {
+        Self::StartView(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
-    /// The operation (with its arguments) the client wants to run).
+    /// The operation (with its arguments) the client wants to run.
     pub op: Vec<u8>,
     /// Client id
-    pub c: u128,
+    pub c: ClientIdentifier,
     /// Client-assigned number for the request.
-    pub s: u128,
-    /// View number known to the client.
-    pub v: View,
+    pub s: RequestIdentifier,
 }
 
-impl PartialOrd for Request {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.s.partial_cmp(&other.s).filter(|_| self.c == other.c)
-    }
-}
-
-impl From<Request> for Message {
-    fn from(value: Request) -> Self {
-        Message::Request(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Reply {
-    /// View number.
-    pub v: View,
-    /// The number the client provided in the request.
-    pub s: u128,
-    /// The result of the up-call to the service.
-    pub x: Vec<u8>,
-}
-
-impl From<Reply> for Message {
-    fn from(value: Reply) -> Self {
-        Message::Reply(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Prepare {
-    /// The current view-number.
-    pub v: View,
     /// The op-number assigned to the request.
     pub n: OpNumber,
     /// The message received from the client.
     pub m: Request,
     /// The op-number of the last committed log entry.
-    pub c: OpNumber,
+    pub k: OpNumber,
 }
 
-impl PartialOrd for Prepare {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.v, self.n).partial_cmp(&(other.v, other.n))
-    }
-}
-
-impl Ord for Prepare {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.v, self.n).cmp(&(other.v, other.n))
-    }
-}
-
-impl From<Prepare> for Message {
-    fn from(value: Prepare) -> Self {
-        Message::Prepare(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PrepareOk {
-    /// The current view-number known to the replica.
-    pub v: View,
-    /// The op-number assigned to the accepted prepare message.
+    /// The op-number assigned to the request.
     pub n: OpNumber,
-    /// The index of the replica accepting the prepare message.
-    pub i: usize,
 }
 
-impl From<PrepareOk> for Message {
-    fn from(value: PrepareOk) -> Self {
-        Message::PrepareOk(value)
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Reply {
+    /// The response from the service after executing the operation.
+    pub x: Vec<u8>,
+    /// Client-assigned number for the request.
+    pub s: RequestIdentifier,
 }
 
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Inform {
-    /// The current view-number.
-    pub v: View,
-}
-
-impl From<Inform> for Message {
-    fn from(value: Inform) -> Self {
-        Message::Inform(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Ping {
-    /// The current view-number.
-    pub v: View,
-    /// The op-number of the last committed log entry.
-    pub c: OpNumber,
-}
-
-impl From<Ping> for Message {
-    fn from(value: Ping) -> Self {
-        Message::Ping(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DoViewChange {
-    /// The current view-number of the replica.
-    pub v: View,
-    /// A table of the op-number of the last known request for each view.
-    pub t: ViewTable,
     /// The log of the replica.
     pub l: Vec<Request>,
     /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
-    /// The index of the replica that detected the primary's failure.
-    pub i: usize,
 }
 
-impl PartialOrd for DoViewChange {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.v, self.k).partial_cmp(&(other.v, other.k))
-    }
-}
-
-impl Ord for DoViewChange {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.v, self.k).cmp(&(other.v, other.k))
-    }
-}
-
-impl From<DoViewChange> for Message {
-    fn from(value: DoViewChange) -> Self {
-        Message::DoViewChange(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartView {
-    /// The current view-number.
-    pub v: View,
-    /// A table of the op-number of the last known request for each view.
-    pub t: ViewTable,
-    /// The log of the new primary.
+    /// The log of the replica.
     pub l: Vec<Request>,
-    /// The op-number of the latest committed request known to the primary.
+    /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
 }
 
-impl From<StartView> for Message {
-    fn from(value: StartView) -> Self {
-        Message::StartView(value)
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ReplicaIdentifier(GroupIdentifier, usize);
+
+impl ReplicaIdentifier {
+    pub fn group(&self) -> GroupIdentifier {
+        self.0
+    }
+
+    pub fn primary(&self, view: View) -> Self {
+        self.0.primary(view)
+    }
+
+    pub fn sub_majority(&self) -> usize {
+        self.0.sub_majority()
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Envelope {
-    pub view: View,
-    pub from: SocketAddr,
-    pub to: SocketAddr,
-    pub message: Message,
-}
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct GroupIdentifier(u128, usize);
 
-impl Envelope {
-    pub fn new(view: View, from: SocketAddr, to: SocketAddr, message: impl Into<Message>) -> Self {
-        Self {
-            view,
-            from,
-            to,
-            message: message.into(),
-        }
+impl Default for GroupIdentifier {
+    fn default() -> Self {
+        Self::new(3)
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Message {
-    Request(Request),
-    Prepare(Prepare),
-    PrepareOk(PrepareOk),
-    Reply(Reply),
-    Inform(Inform),
-    Ping(Ping),
-    DoViewChange(DoViewChange),
-    StartView(StartView),
+impl GroupIdentifier {
+    pub fn new(replicas: usize) -> Self {
+        Self(uuid::Uuid::now_v7().as_u128(), replicas)
+    }
+
+    pub fn primary(&self, view: View) -> ReplicaIdentifier {
+        ReplicaIdentifier(*self, (view.0 % (self.1 as u128)) as usize)
+    }
+
+    pub fn replicas(&self) -> impl Iterator<Item = ReplicaIdentifier> {
+        let clone = *self;
+        (0..self.1)
+            .into_iter()
+            .map(move |i| ReplicaIdentifier(clone, i))
+    }
+
+    pub fn sub_majority(&self) -> usize {
+        (self.1 - 1) / 2
+    }
 }
 
-impl Message {
-    pub fn view(&self) -> View {
-        match self {
-            Message::Request(request) => request.v,
-            Message::Prepare(prepare) => prepare.v,
-            Message::PrepareOk(prepare_ok) => prepare_ok.v,
-            Message::Reply(reply) => reply.v,
-            Message::Inform(inform) => inform.v,
-            Message::Ping(ping) => ping.v,
-            Message::DoViewChange(do_view_change) => do_view_change.v,
-            Message::StartView(start_view) => start_view.v,
-        }
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ClientIdentifier(u128);
+
+impl Default for ClientIdentifier {
+    fn default() -> Self {
+        Self(uuid::Uuid::now_v7().as_u128())
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct RequestIdentifier(u128);
+
+impl RequestIdentifier {
+    pub fn increment(&mut self) -> Self {
+        self.0 += 1;
+        *self
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[repr(transparent)]
+pub struct OpNumber(Option<NonZeroUsize>);
+
+impl From<usize> for OpNumber {
+    fn from(value: usize) -> Self {
+        Self(NonZeroUsize::new(value))
+    }
+}
+
+impl From<OpNumber> for usize {
+    fn from(value: OpNumber) -> Self {
+        value.0.map(NonZeroUsize::get).unwrap_or_default() as usize
+    }
+}
+
+impl OpNumber {
+    pub fn increment(&mut self) {
+        self.0 = NonZeroUsize::new(1 + self.0.map(NonZeroUsize::get).unwrap_or(0))
+    }
+
+    pub fn next(&self) -> Self {
+        Self(NonZeroUsize::new(
+            1 + self.0.map(NonZeroUsize::get).unwrap_or(0),
+        ))
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[repr(transparent)]
+pub struct View(u128);
+
+impl View {
+    pub fn increment(&mut self) {
+        self.0 = 1 + self.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sub_majority() {
+        assert_eq!(GroupIdentifier::new(3).sub_majority(), 1);
+        assert_eq!(GroupIdentifier::new(4).sub_majority(), 1);
+        assert_eq!(GroupIdentifier::new(5).sub_majority(), 2);
     }
 }
