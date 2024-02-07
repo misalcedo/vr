@@ -13,7 +13,7 @@ use crate::service::Service;
 use crate::stamps::{OpNumber, View};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub enum Status {
+enum Status {
     #[default]
     Normal,
     ViewChange,
