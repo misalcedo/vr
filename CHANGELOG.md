@@ -23,11 +23,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [0.3.0] - 2024-01-04
 ### Added
-- 
+- Add a client struct and separate message processing by status and role.
 
 ## [0.2.0] - 2024-01-04
 ### Added
-- 
+- Implementation of simplified VR without recovery.
 
 ## [0.1.0] - 2024-01-04
 ### Added
