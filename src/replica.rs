@@ -24,7 +24,7 @@ impl Client {
         }
     }
 
-    pub fn envelope(&mut self, payload: &[u8]) -> Message {
+    pub fn message(&mut self, payload: &[u8]) -> Message {
         Message {
             from: self.identifier.into(),
             to: self.group.primary(self.view).into(),
@@ -140,7 +140,7 @@ where
 
                 None
             }
-            ref envelope @ Message {
+            ref message @ Message {
                 from,
                 payload: Payload::PrepareOk(prepare_ok),
                 ..
@@ -174,7 +174,7 @@ where
 
                         None
                     } else {
-                        Some(envelope.clone())
+                        Some(message.clone())
                     }
                 }
             }
@@ -323,10 +323,10 @@ mod tests {
 
         let mut mailbox = simulate_request(&mut primary, &mut client, operation, 1);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(
-            envelopes,
+            messages,
             vec![prepare_message(&primary, &client, operation)]
         );
         assert_eq!(primary.health_detector, HealthStatus::Normal);
@@ -344,9 +344,9 @@ mod tests {
         primary.health_detector = HealthStatus::Suspect;
         primary.poll(&mut mailbox);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
-        assert_eq!(envelopes, vec![ping_message(&primary)]);
+        assert_eq!(messages, vec![ping_message(&primary)]);
         assert_eq!(primary.health_detector, HealthStatus::Normal);
     }
 
@@ -365,10 +365,10 @@ mod tests {
 
         let mut mailbox = simulate_request(&mut primary, &mut client, operation, 1);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(
-            envelopes,
+            messages,
             vec![Message {
                 from: primary.identifier.into(),
                 to: client.identifier.into(),
@@ -397,9 +397,9 @@ mod tests {
         mailbox.deliver(message);
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
-        assert_eq!(envelopes, vec![prepare_ok_message(&primary, &replica)]);
+        assert_eq!(messages, vec![prepare_ok_message(&primary, &replica)]);
         assert_eq!(replica.op_number, OpNumber::from(1));
     }
 
@@ -444,10 +444,10 @@ mod tests {
         mailbox.deliver(message);
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(
-            envelopes,
+            messages,
             vec![Message {
                 from: replica.identifier.into(),
                 to: primary.identifier.into(),
@@ -481,9 +481,9 @@ mod tests {
         mailbox.deliver(message);
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
-        assert_eq!(envelopes, vec![prepare_ok_message(&primary, &replica)]);
+        assert_eq!(messages, vec![prepare_ok_message(&primary, &replica)]);
         assert_eq!(replica.service, operation.len());
     }
 
@@ -530,9 +530,7 @@ mod tests {
         mailbox.deliver(message);
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
-
-        assert_eq!(envelopes, vec![]);
+        assert_eq!(mailbox.drain_outbound().count(), 0);
     }
 
     #[test]
@@ -549,19 +547,19 @@ mod tests {
 
         simulate_broadcast(&mut mailbox, vec![&mut replica1, &mut replica2]);
 
-        let envelope1 = prepare_ok_message(&primary, &replica1);
-        mailbox.deliver(envelope1);
+        let message1 = prepare_ok_message(&primary, &replica1);
+        mailbox.deliver(message1);
         primary.poll(&mut mailbox);
         assert_eq!(mailbox.drain_outbound().count(), 0);
 
-        let envelope2 = prepare_ok_message(&primary, &replica2);
-        mailbox.deliver(envelope2);
+        let message2 = prepare_ok_message(&primary, &replica2);
+        mailbox.deliver(message2);
         primary.poll(&mut mailbox);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(
-            envelopes,
+            messages,
             vec![reply_message(&primary, &client, operation, 1)]
         );
         assert_eq!(primary.service, operation.len());
@@ -582,14 +580,14 @@ mod tests {
 
         simulate_broadcast(&mut mailbox, vec![&mut replica1, &mut replica2]);
 
-        let envelope1 = prepare_ok_message(&primary, &replica1);
-        let envelope2 = prepare_ok_message(&primary, &replica2);
+        let message1 = prepare_ok_message(&primary, &replica1);
+        let message2 = prepare_ok_message(&primary, &replica2);
 
-        mailbox.deliver(envelope1);
-        mailbox.deliver(envelope2);
+        mailbox.deliver(message1);
+        mailbox.deliver(message2);
         primary.poll(&mut mailbox);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
         // backtrack the request id to build the replies correctly.
         client.request = RequestIdentifier::default();
@@ -600,7 +598,7 @@ mod tests {
             replies.push(reply_message(&primary, &client, operation, i));
         }
 
-        assert_eq!(envelopes, replies);
+        assert_eq!(messages, replies);
         assert_eq!(primary.service, operation.len() * times);
     }
 
@@ -622,15 +620,67 @@ mod tests {
 
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Message> = mailbox.drain_inbound().collect();
+        let messages: Vec<Message> = mailbox.drain_inbound().collect();
 
-        assert_eq!(envelopes, vec![do_view_change_message(&replicas, &replica)]);
+        assert_eq!(messages, vec![do_view_change_message(&replica)]);
     }
 
-    fn do_view_change_message<S, H>(
-        replicas: &[ReplicaIdentifier],
-        replica: &Replica<S, H>,
-    ) -> Message {
+    #[test]
+    fn start_view_primary() {
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut replica = Replica::new(0, HealthStatus::Normal, replicas[2]);
+        let mut primary = Replica::new(0, HealthStatus::Normal, replicas[1]);
+        let mut mailbox = Mailbox::from(replicas[1]);
+
+        primary.view.increment();
+        primary.status = Status::ViewChange;
+
+        replica.view.increment();
+        replica.status = Status::ViewChange;
+        replica.committed.increment();
+        replica.push_request(Request {
+            op: vec![],
+            c: Default::default(),
+            s: Default::default(),
+        });
+
+        mailbox.deliver(do_view_change_message(&primary));
+        mailbox.deliver(do_view_change_message(&replica));
+
+        primary.poll(&mut mailbox);
+
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(mailbox.drain_inbound().count(), 0);
+        assert_eq!(messages, vec![start_view_message(&primary)]);
+        assert_eq!(primary.status, Status::Normal);
+        assert_eq!(primary.log, replica.log);
+        assert_eq!(primary.committed, replica.committed);
+        assert_eq!(primary.op_number, replica.op_number);
+    }
+
+    #[test]
+    fn start_view_primary_no_quorum() {
+        let group = GroupIdentifier::new(5);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, HealthStatus::Normal, replicas[1]);
+        let mut mailbox = Mailbox::from(replicas[1]);
+
+        primary.view.increment();
+        primary.status = Status::ViewChange;
+        mailbox.deliver(do_view_change_message(&primary));
+
+        primary.poll(&mut mailbox);
+
+        assert_eq!(mailbox.drain_inbound().count(), 1);
+        assert_eq!(mailbox.drain_outbound().count(), 0);
+        assert_eq!(primary.status, Status::ViewChange);
+    }
+
+    fn do_view_change_message<S, H>(replica: &Replica<S, H>) -> Message {
         let payload = DoViewChange {
             l: replica.log.clone(),
             k: replica.committed,
@@ -649,13 +699,13 @@ mod tests {
         source: &mut Mailbox,
         replicas: Vec<&mut Replica<S, H>>,
     ) {
-        let envelopes: Vec<Message> = source.drain_outbound().collect();
+        let messages: Vec<Message> = source.drain_outbound().collect();
 
         for replica in replicas {
             let mut mailbox = Mailbox::from(replica.identifier);
 
-            for envelope in envelopes.iter() {
-                mailbox.deliver(envelope.clone());
+            for message in messages.iter() {
+                mailbox.deliver(message.clone());
                 replica.poll(&mut mailbox);
             }
         }
@@ -670,7 +720,7 @@ mod tests {
         let mut mailbox = Mailbox::from(primary.identifier);
 
         for _ in 1..=times {
-            mailbox.deliver(client.envelope(operation));
+            mailbox.deliver(client.message(operation));
             primary.poll(&mut mailbox);
         }
 
@@ -735,6 +785,18 @@ mod tests {
             to: primary.identifier.group().into(),
             view: primary.view,
             payload: Payload::Ping,
+        }
+    }
+
+    fn start_view_message<S, H>(primary: &Replica<S, H>) -> Message {
+        Message {
+            from: primary.identifier.into(),
+            to: primary.identifier.group().into(),
+            view: primary.view,
+            payload: Payload::StartView(StartView {
+                l: primary.log.clone(),
+                k: primary.committed,
+            }),
         }
     }
 }
