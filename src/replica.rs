@@ -28,19 +28,21 @@ impl Client {
     }
 
     pub fn new_message(&mut self, payload: &[u8]) -> Message {
+        self.request.increment();
+
         Message {
             from: self.identifier.into(),
             to: self.group.primary(self.view).into(),
             view: self.view,
-            payload: self.new_request(payload).into(),
+            payload: self.request(payload).into(),
         }
     }
 
-    pub fn new_request(&mut self, payload: &[u8]) -> Request {
+    fn request(&mut self, payload: &[u8]) -> Request {
         Request {
             op: Vec::from(payload),
             c: self.identifier,
-            s: self.request.increment(),
+            s: self.request,
         }
     }
 }
@@ -233,18 +235,15 @@ where
         while self.committed > self.executed && self.executed < length {
             // executed must be incremented after indexing the log to avoid panicking.
             let request = &self.log[usize::from(self.executed)];
-            let reply = self.service.invoke(request.op.as_slice());
+            let payload = self.service.invoke(request.op.as_slice());
+            let reply = Reply {
+                s: request.s,
+                x: payload,
+            };
 
-            mailbox.send(
-                request.c,
-                self.view,
-                Reply {
-                    s: request.s,
-                    x: reply,
-                },
-            );
-
+            self.client_table.set(request, &reply);
             self.executed.increment();
+            mailbox.send(request.c, self.view, reply);
         }
     }
 
@@ -384,6 +383,7 @@ mod tests {
             vec![prepare_message(&primary, &client, operation)]
         );
         assert_eq!(primary.health_detector, HealthStatus::Normal);
+        assert_eq!(primary.client_table.get(&client.request(operation)), None);
     }
 
     #[test]
@@ -617,6 +617,10 @@ mod tests {
             vec![reply_message(&primary, &client, operation, 1)]
         );
         assert_eq!(primary.service, operation.len());
+        assert_eq!(
+            primary.client_table.get(&client.request(operation)),
+            Some(new_reply(&client, operation, 1))
+        );
     }
 
     #[test]
@@ -875,11 +879,14 @@ mod tests {
             from: primary.identifier.into(),
             to: client.identifier.into(),
             view: primary.view,
-            payload: Reply {
-                x: (operation.len() * times).to_be_bytes().to_vec(),
-                s: client.request,
-            }
-            .into(),
+            payload: new_reply(client, operation, times).into(),
+        }
+    }
+
+    fn new_reply(client: &Client, operation: &[u8], times: usize) -> Reply {
+        Reply {
+            x: (operation.len() * times).to_be_bytes().to_vec(),
+            s: client.request,
         }
     }
 

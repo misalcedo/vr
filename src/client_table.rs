@@ -36,9 +36,12 @@ impl ClientTable {
     }
 
     pub fn set(&mut self, request: &Request, reply: &Reply) {
-        self.cache
+        let last_request = self
+            .cache
             .entry(request.c)
-            .and_modify(|l| l.reply = Some(reply.clone()));
+            .or_insert_with(|| LastRequest::new(request.clone()));
+
+        last_request.reply = Some(reply.clone());
     }
 
     pub fn start(&mut self, request: &Request) {
