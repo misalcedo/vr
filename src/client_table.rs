@@ -8,12 +8,21 @@ pub struct LastRequest {
     reply: Option<Reply>,
 }
 
+impl LastRequest {
+    fn new(request: Request) -> Self {
+        Self {
+            request,
+            reply: None,
+        }
+    }
+}
+
 #[derive(Debug)]
-pub struct RequestCache {
+pub struct ClientTable {
     cache: HashMap<ClientIdentifier, LastRequest>,
 }
 
-impl Default for RequestCache {
+impl Default for ClientTable {
     fn default() -> Self {
         Self {
             cache: HashMap::new(),
@@ -21,7 +30,7 @@ impl Default for RequestCache {
     }
 }
 
-impl RequestCache {
+impl ClientTable {
     pub fn get(&mut self, request: &Request) -> Option<Reply> {
         self.cache.get(&request.c)?.reply.as_ref().map(Reply::clone)
     }
@@ -43,7 +52,7 @@ impl RequestCache {
     }
 }
 
-impl PartialEq<Request> for RequestCache {
+impl PartialEq<Request> for ClientTable {
     fn eq(&self, other: &Request) -> bool {
         match self.cache.get(&other.c) {
             None => false,
@@ -52,7 +61,7 @@ impl PartialEq<Request> for RequestCache {
     }
 }
 
-impl PartialOrd<Request> for RequestCache {
+impl PartialOrd<Request> for ClientTable {
     fn partial_cmp(&self, other: &Request) -> Option<Ordering> {
         let last_request = self.cache.get(&other.c)?;
 

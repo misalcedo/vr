@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::Mailbox;
 use crate::model::{
@@ -5,8 +7,8 @@ use crate::model::{
     PrepareOk, ReplicaIdentifier, Reply, Request, RequestIdentifier, StartView, View,
 };
 use crate::service::Service;
-use std::collections::{HashMap, HashSet};
 
+// TODO: Update replica tests so the client can be moved to its own file.
 pub struct Client {
     identifier: ClientIdentifier,
     view: View,
@@ -24,17 +26,20 @@ impl Client {
         }
     }
 
-    pub fn message(&mut self, payload: &[u8]) -> Message {
+    pub fn new_message(&mut self, payload: &[u8]) -> Message {
         Message {
             from: self.identifier.into(),
             to: self.group.primary(self.view).into(),
             view: self.view,
-            payload: Request {
-                op: Vec::from(payload),
-                c: self.identifier,
-                s: self.request.increment(),
-            }
-            .into(),
+            payload: self.new_request(payload).into(),
+        }
+    }
+
+    pub fn new_request(&mut self, payload: &[u8]) -> Request {
+        Request {
+            op: Vec::from(payload),
+            c: self.identifier,
+            s: self.request.increment(),
         }
     }
 }
@@ -350,9 +355,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::health::HealthStatus;
     use crate::model::GroupIdentifier;
+
+    use super::*;
 
     #[test]
     fn request_primary() {
@@ -706,7 +712,7 @@ mod tests {
             messages,
             vec![
                 start_view_message(&primary),
-                reply_message(&primary, &client, &[], 1)
+                reply_message(&primary, &client, &[], 1),
             ]
         );
         assert_eq!(primary.status, Status::Normal);
@@ -814,7 +820,7 @@ mod tests {
         let mut mailbox = Mailbox::from(primary.identifier);
 
         for _ in 1..=times {
-            mailbox.deliver(client.message(operation));
+            mailbox.deliver(client.new_message(operation));
             primary.poll(&mut mailbox);
         }
 
