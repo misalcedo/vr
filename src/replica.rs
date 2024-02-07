@@ -2,7 +2,7 @@ use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::Mailbox;
 use crate::new_model::{
     Address, ClientIdentifier, DoViewChange, GroupIdentifier, Message, OpNumber, Payload, Prepare,
-    PrepareOk, ReplicaIdentifier, Reply, Request, RequestIdentifier, View,
+    PrepareOk, ReplicaIdentifier, Reply, Request, RequestIdentifier, StartView, View,
 };
 use crate::service::Service;
 use std::collections::{HashMap, HashSet};
@@ -190,7 +190,6 @@ where
     fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {
         let mut replicas = HashSet::new();
 
-        let i = self.identifier.sub_majority() + 1;
         mailbox.visit(|message| {
             if let Message {
                 from: Address::Replica(replica),
@@ -201,6 +200,37 @@ where
                 replicas.insert(*replica);
             }
         });
+
+        let quorum = self.identifier.sub_majority() + 1;
+
+        if replicas.len() >= quorum {
+            mailbox.select_all(|_, message| match message {
+                Message {
+                    payload: Payload::DoViewChange(do_view_change),
+                    ..
+                } => {
+                    self.committed = self.committed.max(do_view_change.k);
+
+                    if do_view_change.l.len() > self.log.len() {
+                        self.log = do_view_change.l;
+                        self.op_number = OpNumber::from(self.log.len());
+                    }
+
+                    None
+                }
+                _ => Some(message),
+            });
+
+            self.status = Status::Normal;
+
+            mailbox.broadcast(
+                self.view,
+                StartView {
+                    l: self.log.clone(),
+                    k: self.committed,
+                },
+            );
+        }
     }
 
     fn poll_replica(&mut self, mailbox: &mut Mailbox) {

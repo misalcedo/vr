@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::num::NonZeroUsize;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -41,6 +40,7 @@ pub enum Payload {
     PrepareOk(PrepareOk),
     Reply(Reply),
     DoViewChange(DoViewChange),
+    StartView(StartView),
     Ping,
     Outdated,
 }
@@ -72,6 +72,12 @@ impl From<Reply> for Payload {
 impl From<DoViewChange> for Payload {
     fn from(value: DoViewChange) -> Self {
         Self::DoViewChange(value)
+    }
+}
+
+impl From<StartView> for Payload {
+    fn from(value: StartView) -> Self {
+        Self::StartView(value)
     }
 }
 
@@ -117,16 +123,12 @@ pub struct DoViewChange {
     pub k: OpNumber,
 }
 
-impl PartialOrd for DoViewChange {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.l.len().partial_cmp(&other.l.len())
-    }
-}
-
-impl Ord for DoViewChange {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.l.len().cmp(&other.l.len())
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StartView {
+    /// The log of the replica.
+    pub l: Vec<Request>,
+    /// The op-number of the latest committed request known to the replica.
+    pub k: OpNumber,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
