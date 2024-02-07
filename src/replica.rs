@@ -1,3 +1,4 @@
+use crate::client_table::ClientTable;
 use std::collections::{HashMap, HashSet};
 
 use crate::health::{HealthDetector, HealthStatus};
@@ -72,6 +73,8 @@ pub struct Replica<S, H> {
     committed: OpNumber,
     /// The count of operations executed in the current view.
     executed: OpNumber,
+    /// This records for each client the number of its most recent request, plus, if the request has been executed, the result sent for that request.
+    client_table: ClientTable,
 }
 
 impl<S, H> Replica<S, H>
@@ -84,12 +87,13 @@ where
             service,
             health_detector,
             identifier,
-            view: View::default(),
-            op_number: OpNumber::default(),
+            view: Default::default(),
+            op_number: Default::default(),
             status: Default::default(),
-            log: vec![],
+            log: Default::default(),
             committed: Default::default(),
             executed: Default::default(),
+            client_table: Default::default(),
         }
     }
 
