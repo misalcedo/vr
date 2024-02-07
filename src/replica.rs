@@ -103,8 +103,6 @@ where
                 payload: Payload::Request(request),
                 ..
             } => {
-                // TODO: Test this and ensure the logic is correct.
-                // See https://github.com/misalcedo/vr/blob/main/src/lib.rs#L402
                 let cached_request = self.client_table.get(&request);
 
                 match cached_request {
