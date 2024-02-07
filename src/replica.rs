@@ -321,7 +321,8 @@ where
                 self.identifier.primary(self.view),
                 self.view,
                 Payload::PrepareOk(PrepareOk { n: current }),
-            )
+            );
+            current.increment();
         }
     }
 
@@ -732,6 +733,45 @@ mod tests {
         assert_eq!(mailbox.drain_inbound().count(), 1);
         assert_eq!(mailbox.drain_outbound().count(), 0);
         assert_eq!(primary.status, Status::ViewChange);
+    }
+
+    #[test]
+    fn start_view_replica() {
+        let operation = b"hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut client = Client::new(group);
+        let mut primary = Replica::new(0, HealthStatus::Normal, replicas[1]);
+        let mut replica = Replica::new(0, HealthStatus::Normal, replicas[2]);
+        let mut mailbox = Mailbox::from(replica.identifier);
+
+        primary.view.increment();
+        primary.committed.increment();
+        primary.executed.increment();
+        primary.push_request(Request {
+            op: operation.to_vec(),
+            c: client.identifier,
+            s: client.request.increment(),
+        });
+        primary.push_request(Request {
+            op: operation.to_vec(),
+            c: client.identifier,
+            s: client.request.increment(),
+        });
+
+        replica.status = Status::ViewChange;
+        mailbox.deliver(start_view_message(&primary));
+        replica.poll(&mut mailbox);
+
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(messages, vec![prepare_ok_message(&primary, &replica)]);
+        assert_eq!(replica.status, Status::Normal);
+        assert_eq!(replica.log, primary.log);
+        assert_eq!(replica.op_number, primary.op_number);
+        assert_eq!(replica.executed, OpNumber::default());
+        assert_eq!(replica.committed, primary.committed);
     }
 
     fn do_view_change_message<S, H>(replica: &Replica<S, H>) -> Message {
