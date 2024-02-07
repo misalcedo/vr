@@ -11,7 +11,7 @@ pub enum HealthStatus {
 pub trait HealthDetector {
     fn detect(&mut self, view: View, replica: ReplicaIdentifier) -> HealthStatus;
 
-    fn notify(&mut self, view: View, message: Message);
+    fn notify(&mut self, view: View, replica: ReplicaIdentifier);
 }
 
 #[cfg(test)]
@@ -23,7 +23,9 @@ mod tests {
             *self
         }
 
-        fn notify(&mut self, _: View, _: Message) {}
+        fn notify(&mut self, _: View, _: ReplicaIdentifier) {
+            *self = HealthStatus::Normal;
+        }
     }
 
     #[test]

@@ -37,18 +37,52 @@ impl Mailbox {
         self.inbound.push(Some(envelope));
     }
 
-    pub fn select<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) -> bool {
+    pub fn select<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) {
         for index in 0..self.inbound.len() {
             if let Some(envelope) = self.inbound.get_mut(index).and_then(Option::take) {
                 self.inbound[index] = f(self, envelope);
 
                 if self.inbound[index].is_none() {
-                    return true;
+                    break;
+                }
+            }
+        }
+    }
+
+    pub fn select_all<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) {
+        for index in 0..self.inbound.len() {
+            if let Some(envelope) = self.inbound.get_mut(index).and_then(Option::take) {
+                self.inbound[index] = f(self, envelope);
+            }
+        }
+    }
+
+    // TODO: Should this be select_n_unique to filter by sender and then the filter can ensure the sender is a replica address.
+    pub fn select_n<F: FnMut(&Message) -> bool>(&mut self, n: usize, mut f: F) -> Vec<Message> {
+        let mut messages = Vec::new();
+
+        if self
+            .inbound
+            .iter()
+            .filter_map(Option::as_ref)
+            .filter(|&m| f(m))
+            .count()
+            >= n
+        {
+            for slot in self.inbound.iter_mut() {
+                match slot.take() {
+                    None => continue,
+                    Some(message) if f(&message) => {
+                        messages.push(message);
+                    }
+                    s => {
+                        *slot = s;
+                    }
                 }
             }
         }
 
-        false
+        messages
     }
 
     pub fn send(&mut self, to: impl Into<Address>, view: View, payload: impl Into<Payload>) {
@@ -126,6 +160,86 @@ mod tests {
 
         instance.select(|_, _| None);
         assert!(instance.inbound.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn mailbox_select_all() {
+        let group = GroupIdentifier::default();
+        let client = ClientIdentifier::default();
+        let client_address = Address::from(client);
+        let replica = Address::from(group.replicas().next().unwrap());
+        let view = View::default();
+        let request = Request {
+            op: vec![],
+            c: client,
+            s: Default::default(),
+        };
+        let message = Message {
+            from: client_address,
+            to: replica,
+            view,
+            payload: request.clone().into(),
+        };
+
+        let mut instance = Mailbox::new(replica, Address::from(group));
+
+        instance.inbound = vec![
+            None,
+            Some(message.clone()),
+            Some(message.clone()),
+            Some(Message {
+                from: client_address,
+                to: client_address,
+                view,
+                payload: request.clone().into(),
+            }),
+        ];
+
+        instance.select_all(|_, m| Some(m));
+        assert!(!instance.inbound.iter().all(Option::is_none));
+
+        instance.select_all(|_, m| None);
+        assert!(instance.inbound.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn mailbox_select_n() {
+        let group = GroupIdentifier::default();
+        let client = ClientIdentifier::default();
+        let client_address = Address::from(client);
+        let replica = Address::from(group.replicas().next().unwrap());
+        let view = View::default();
+        let request = Request {
+            op: vec![],
+            c: client,
+            s: Default::default(),
+        };
+        let message = Message {
+            from: client_address,
+            to: replica,
+            view,
+            payload: request.clone().into(),
+        };
+
+        let mut instance = Mailbox::new(replica, Address::from(group));
+
+        instance.inbound = vec![
+            None,
+            Some(message.clone()),
+            Some(message.clone()),
+            Some(Message {
+                from: client_address,
+                to: client_address,
+                view,
+                payload: request.clone().into(),
+            }),
+        ];
+
+        let messages = instance.select_n(3, |m| m.to == replica);
+        assert_eq!(messages, vec![]);
+
+        let messages = instance.select_n(2, |m| m.to == replica);
+        assert_eq!(messages, vec![message.clone(), message.clone()]);
     }
 
     #[test]

@@ -91,11 +91,24 @@ where
     pub fn poll(&mut self, mailbox: &mut Mailbox) {
         let primary = self.identifier.primary(self.view);
 
+        self.inform_outdated(mailbox);
+
         if primary == self.identifier {
             self.poll_primary(mailbox);
         } else {
             self.poll_replica(mailbox);
         }
+    }
+
+    fn inform_outdated(&mut self, mailbox: &mut Mailbox) {
+        mailbox.select_all(|sender, message| {
+            if message.view < self.view {
+                sender.send(message.from, self.view, Payload::Outdated);
+                None
+            } else {
+                Some(message)
+            }
+        });
     }
 
     fn poll_primary(&mut self, mailbox: &mut Mailbox) {
@@ -110,19 +123,12 @@ where
         let mut prepared: HashMap<OpNumber, HashSet<Address>> = HashMap::new();
 
         mailbox.select(|sender, message| match message {
-            _ if message.view > self.view => {
-                todo!("Perform state transfer")
-            }
-            _ if message.view < self.view => {
-                sender.send(message.from, self.view, Payload::Outdated);
-                None
-            }
             Message {
                 payload: Payload::Request(request),
                 ..
             } => {
                 self.push_request(request.clone());
-
+                self.health_detector.notify(self.view, self.identifier);
                 sender.broadcast(
                     self.view,
                     Prepare {
@@ -174,28 +180,33 @@ where
             }
             _ => Some(message),
         });
+
+        if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Suspect {
+            self.health_detector.notify(self.view, self.identifier);
+            mailbox.broadcast(self.view, Payload::Ping);
+        }
     }
 
     fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {
-        mailbox.select(|sender, message| match message {
-            _ if message.view > self.view => {
-                todo!("Perform state transfer")
-            }
-            _ if message.view < self.view => {
-                sender.send(message.from, self.view, Payload::Outdated);
-                None
-            }
-            Message {
-                from: Address::Replica(replica),
-                payload: Payload::DoViewChange(do_view_change),
-                ..
-            } => {
-                if Vec::<()>::new().len() > self.identifier.sub_majority() {}
+        let mut replicas = HashSet::new();
+        let mut messages =
+            mailbox.select_n(
+                self.identifier.sub_majority() + 1,
+                |message| match message {
+                    Message {
+                        from: Address::Replica(replica),
+                        payload: Payload::DoViewChange(_),
+                        ..
+                    } => replicas.insert(*replica),
+                    _ => false,
+                },
+            );
 
-                None
-            }
-            _ => Some(message),
-        });
+        if !messages.is_empty() {
+            messages.drain(..).max_by_key(|m| (m.view, 0));
+
+            todo!("get length of the log")
+        }
     }
 
     fn poll_replica(&mut self, mailbox: &mut Mailbox) {
@@ -210,17 +221,20 @@ where
         let next_op = self.op_number.next();
 
         mailbox.select(|sender, message| match message {
-            _ if message.view > self.view => {
-                todo!("Perform state transfer")
-            }
-            _ if message.view < self.view => {
-                sender.send(message.from, self.view, Payload::Outdated);
+            Message {
+                from: Address::Replica(replica),
+                payload: Payload::Ping,
+                ..
+            } => {
+                self.health_detector.notify(self.view, replica);
                 None
             }
             Message {
+                from: Address::Replica(replica),
                 payload: Payload::Prepare(prepare),
                 ..
             } if next_op == prepare.n => {
+                self.health_detector.notify(self.view, replica);
                 self.push_request(prepare.m);
 
                 let primary = self.identifier.primary(self.view);
@@ -280,6 +294,9 @@ mod tests {
 
         let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
         let mut client = Client::new(group);
+
+        primary.health_detector = HealthStatus::Unhealthy;
+
         let mut mailbox = simulate_request(&mut primary, &mut client, operation, 1);
 
         let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
@@ -288,6 +305,25 @@ mod tests {
             envelopes,
             vec![prepare_message(&primary, &client, operation)]
         );
+        assert_eq!(primary.health_detector, HealthStatus::Normal);
+    }
+
+    #[test]
+    fn request_primary_suspect() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
+        let mut mailbox = Mailbox::from(primary.identifier);
+
+        primary.health_detector = HealthStatus::Suspect;
+        primary.poll(&mut mailbox);
+
+        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(envelopes, vec![ping_message(&primary)]);
+        assert_eq!(primary.health_detector, HealthStatus::Normal);
     }
 
     #[test]
@@ -332,15 +368,34 @@ mod tests {
 
         simulate_request(&mut primary, &mut client, operation, 1);
 
-        let envelope = prepare_message(&primary, &client, operation);
+        let message = prepare_message(&primary, &client, operation);
 
-        mailbox.deliver(envelope);
+        mailbox.deliver(message);
         replica.poll(&mut mailbox);
 
         let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(envelopes, vec![prepare_ok_message(&primary, &replica)]);
         assert_eq!(replica.op_number, OpNumber::from(1));
+    }
+
+    #[test]
+    fn ping_replica() {
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
+        let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
+        let mut mailbox = Mailbox::from(replicas[1]);
+
+        let message = ping_message(&primary);
+
+        mailbox.deliver(message);
+        replica.poll(&mut mailbox);
+
+        assert_eq!(mailbox.drain_outbound().count(), 0);
+        assert_eq!(replica.health_detector, HealthStatus::Normal);
     }
 
     #[test]
@@ -357,12 +412,12 @@ mod tests {
 
         simulate_request(&mut primary, &mut client, operation, 1);
 
-        let envelope = prepare_message(&primary, &client, operation);
+        let message = prepare_message(&primary, &client, operation);
 
         replica.view.increment();
         replica.view.increment();
 
-        mailbox.deliver(envelope);
+        mailbox.deliver(message);
         replica.poll(&mut mailbox);
 
         let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
@@ -391,15 +446,15 @@ mod tests {
         let mut mailbox = Mailbox::from(replicas[1]);
 
         simulate_request(&mut primary, &mut client, operation, 1);
-        let envelope = prepare_message(&primary, &client, operation);
-        mailbox.deliver(envelope);
+        let message = prepare_message(&primary, &client, operation);
+        mailbox.deliver(message);
         replica.poll(&mut mailbox);
         assert_eq!(mailbox.drain_outbound().count(), 1);
 
         simulate_request(&mut primary, &mut client, operation, 1);
         primary.committed.increment();
-        let envelope = prepare_message(&primary, &client, operation);
-        mailbox.deliver(envelope);
+        let message = prepare_message(&primary, &client, operation);
+        mailbox.deliver(message);
         replica.poll(&mut mailbox);
 
         let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
@@ -423,9 +478,9 @@ mod tests {
         simulate_request(&mut primary, &mut client, operation, 2);
         primary.committed.increment();
 
-        let envelope = prepare_message(&primary, &client, operation);
+        let message = prepare_message(&primary, &client, operation);
 
-        mailbox.deliver(envelope);
+        mailbox.deliver(message);
         replica.poll(&mut mailbox);
 
         assert_eq!(mailbox.drain_outbound().count(), 0);
@@ -446,9 +501,9 @@ mod tests {
 
         simulate_request(&mut primary, &mut client, operation, 2);
 
-        let envelope = prepare_message(&primary, &client, operation);
+        let message = prepare_message(&primary, &client, operation);
 
-        mailbox.deliver(envelope);
+        mailbox.deliver(message);
         replica.poll(&mut mailbox);
 
         let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
@@ -647,6 +702,15 @@ mod tests {
                 s: client.request,
             }
             .into(),
+        }
+    }
+
+    fn ping_message<S, H>(primary: &Replica<S, H>) -> Message {
+        Message {
+            from: primary.identifier.into(),
+            to: primary.identifier.group().into(),
+            view: primary.view,
+            payload: Payload::Ping,
         }
     }
 }
