@@ -389,7 +389,14 @@ mod tests {
             vec![prepare_message(&primary, &client, operation)]
         );
         assert_eq!(primary.health_detector, HealthStatus::Normal);
-        assert_eq!(primary.client_table.get(&client.request(operation)), None);
+        assert_eq!(
+            primary
+                .client_table
+                .get(&client.request(operation))
+                .unwrap()
+                .reply(),
+            None
+        );
     }
 
     #[test]
