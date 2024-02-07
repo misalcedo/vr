@@ -1,25 +1,33 @@
-use crate::model::{ClientIdentifier, Reply, Request};
+use crate::model::{ClientIdentifier, Reply, Request, RequestIdentifier};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-#[derive(Debug)]
-pub struct LastRequest {
+#[derive(Debug, Eq, PartialEq)]
+pub struct CachedRequest {
     request: Request,
     reply: Option<Reply>,
 }
 
-impl LastRequest {
+impl CachedRequest {
     fn new(request: Request) -> Self {
         Self {
             request,
             reply: None,
         }
     }
+
+    pub fn request(&self) -> RequestIdentifier {
+        self.request.s
+    }
+
+    pub fn reply(&self) -> Option<Reply> {
+        self.reply.clone()
+    }
 }
 
 #[derive(Debug)]
 pub struct ClientTable {
-    cache: HashMap<ClientIdentifier, LastRequest>,
+    cache: HashMap<ClientIdentifier, CachedRequest>,
 }
 
 impl Default for ClientTable {
@@ -31,15 +39,15 @@ impl Default for ClientTable {
 }
 
 impl ClientTable {
-    pub fn get(&mut self, request: &Request) -> Option<Reply> {
-        self.cache.get(&request.c)?.reply.as_ref().map(Reply::clone)
+    pub fn get(&mut self, request: &Request) -> Option<&CachedRequest> {
+        self.cache.get(&request.c)
     }
 
     pub fn set(&mut self, request: &Request, reply: &Reply) {
         let last_request = self
             .cache
             .entry(request.c)
-            .or_insert_with(|| LastRequest::new(request.clone()));
+            .or_insert_with(|| CachedRequest::new(request.clone()));
 
         last_request.reply = Some(reply.clone());
     }
@@ -47,7 +55,7 @@ impl ClientTable {
     pub fn start(&mut self, request: &Request) {
         self.cache.insert(
             request.c,
-            LastRequest {
+            CachedRequest {
                 request: request.clone(),
                 reply: None,
             },
@@ -55,26 +63,20 @@ impl ClientTable {
     }
 }
 
-impl PartialEq<Request> for ClientTable {
+impl PartialEq<Request> for CachedRequest {
     fn eq(&self, other: &Request) -> bool {
-        match self.cache.get(&other.c) {
-            None => false,
-            Some(last_request) => &last_request.request == other,
-        }
+        &self.request == other
     }
 }
 
-impl PartialOrd<Request> for ClientTable {
+impl PartialOrd<Request> for CachedRequest {
     fn partial_cmp(&self, other: &Request) -> Option<Ordering> {
-        let last_request = self.cache.get(&other.c)?;
-
-        if last_request.request.c == other.c {
+        if self.request.c == other.c {
             // ignore cached completed requests.
-            last_request
-                .request
+            self.request
                 .s
                 .partial_cmp(&other.s)
-                .filter(|o| o != &Ordering::Less || last_request.reply.is_none())
+                .filter(|o| o != &Ordering::Less || self.reply.is_none())
         } else {
             None
         }

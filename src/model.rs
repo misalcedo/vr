@@ -42,7 +42,9 @@ pub enum Payload {
     DoViewChange(DoViewChange),
     StartView(StartView),
     Ping,
-    Outdated,
+    OutdatedView,
+    OutdatedRequest,
+    ConcurrentRequest(ConcurrentRequest),
 }
 
 impl From<Request> for Payload {
@@ -78,6 +80,12 @@ impl From<DoViewChange> for Payload {
 impl From<StartView> for Payload {
     fn from(value: StartView) -> Self {
         Self::StartView(value)
+    }
+}
+
+impl From<ConcurrentRequest> for Payload {
+    fn from(value: ConcurrentRequest) -> Self {
+        Self::ConcurrentRequest(value)
     }
 }
 
@@ -129,6 +137,12 @@ pub struct StartView {
     pub l: Vec<Request>,
     /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConcurrentRequest {
+    /// Client-assigned number for the request.
+    pub s: RequestIdentifier,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

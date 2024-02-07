@@ -1,51 +1,15 @@
-use crate::client_table::ClientTable;
+use crate::client_table::{CachedRequest, ClientTable};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::Mailbox;
 use crate::model::{
-    Address, ClientIdentifier, DoViewChange, GroupIdentifier, Message, OpNumber, Payload, Prepare,
-    PrepareOk, ReplicaIdentifier, Reply, Request, RequestIdentifier, StartView, View,
+    Address, ClientIdentifier, ConcurrentRequest, DoViewChange, GroupIdentifier, Message, OpNumber,
+    Payload, Prepare, PrepareOk, ReplicaIdentifier, Reply, Request, RequestIdentifier, StartView,
+    View,
 };
 use crate::service::Service;
-
-// TODO: Update replica tests so the client can be moved to its own file.
-pub struct Client {
-    identifier: ClientIdentifier,
-    view: View,
-    request: RequestIdentifier,
-    group: GroupIdentifier,
-}
-
-impl Client {
-    pub fn new(group: GroupIdentifier) -> Self {
-        Self {
-            identifier: Default::default(),
-            view: Default::default(),
-            request: Default::default(),
-            group,
-        }
-    }
-
-    pub fn new_message(&mut self, payload: &[u8]) -> Message {
-        self.request.increment();
-
-        Message {
-            from: self.identifier.into(),
-            to: self.group.primary(self.view).into(),
-            view: self.view,
-            payload: self.request(payload).into(),
-        }
-    }
-
-    fn request(&mut self, payload: &[u8]) -> Request {
-        Request {
-            op: Vec::from(payload),
-            c: self.identifier,
-            s: self.request,
-        }
-    }
-}
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -114,7 +78,7 @@ where
     fn inform_outdated(&mut self, mailbox: &mut Mailbox) {
         mailbox.select_all(|sender, message| {
             if message.view < self.view {
-                sender.send(message.from, self.view, Payload::Outdated);
+                sender.send(message.from, self.view, Payload::OutdatedView);
                 None
             } else {
                 Some(message)
@@ -138,16 +102,45 @@ where
                 payload: Payload::Request(request),
                 ..
             } => {
-                self.push_request(request.clone());
-                self.health_detector.notify(self.view, self.identifier);
-                sender.broadcast(
-                    self.view,
-                    Prepare {
-                        n: self.op_number,
-                        m: request,
-                        k: self.committed,
-                    },
-                );
+                // TODO: Test this and ensure the logic is correct.
+                // See https://github.com/misalcedo/vr/blob/main/src/lib.rs#L402
+                let cached_request = self.client_table.get(&request);
+
+                match cached_request {
+                    None => {
+                        // this is the first request from the client.
+                        self.client_table.start(&request);
+                        self.prepare_primary(sender, request);
+                    }
+                    Some(last_request) => {
+                        match last_request.partial_cmp(&request) {
+                            None => {
+                                // got a newer request from the client.
+                                self.client_table.start(&request);
+                                self.prepare_primary(sender, request);
+                            }
+                            Some(Ordering::Less) => sender.send(
+                                request.c,
+                                self.view,
+                                ConcurrentRequest {
+                                    s: last_request.request(),
+                                },
+                            ),
+                            Some(Ordering::Equal) => match last_request.reply() {
+                                None => {
+                                    // the client resent the latest request.
+                                    // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
+                                    todo!("handle resent in-progress requests.")
+                                }
+                                // send back a cached response for latest request from the client.
+                                Some(reply) => sender.send(request.c, self.view, reply),
+                            },
+                            Some(Ordering::Greater) => {
+                                sender.send(request.c, self.view, Payload::OutdatedRequest)
+                            }
+                        }
+                    }
+                }
 
                 None
             }
@@ -226,24 +219,6 @@ where
             );
 
             self.execute_primary(mailbox);
-        }
-    }
-
-    fn execute_primary(&mut self, mailbox: &mut Mailbox) {
-        let length = OpNumber::from(self.log.len());
-
-        while self.committed > self.executed && self.executed < length {
-            // executed must be incremented after indexing the log to avoid panicking.
-            let request = &self.log[usize::from(self.executed)];
-            let payload = self.service.invoke(request.op.as_slice());
-            let reply = Reply {
-                s: request.s,
-                x: payload,
-            };
-
-            self.client_table.set(request, &reply);
-            self.executed.increment();
-            mailbox.send(request.c, self.view, reply);
         }
     }
 
@@ -340,6 +315,37 @@ where
         self.log.push(request);
     }
 
+    fn prepare_primary(&mut self, sender: &mut Mailbox, request: Request) {
+        self.push_request(request.clone());
+        self.health_detector.notify(self.view, self.identifier);
+        sender.broadcast(
+            self.view,
+            Prepare {
+                n: self.op_number,
+                m: request,
+                k: self.committed,
+            },
+        );
+    }
+
+    fn execute_primary(&mut self, mailbox: &mut Mailbox) {
+        let length = OpNumber::from(self.log.len());
+
+        while self.committed > self.executed && self.executed < length {
+            // executed must be incremented after indexing the log to avoid panicking.
+            let request = &self.log[usize::from(self.executed)];
+            let payload = self.service.invoke(request.op.as_slice());
+            let reply = Reply {
+                s: request.s,
+                x: payload,
+            };
+
+            self.client_table.set(request, &reply);
+            self.executed.increment();
+            mailbox.send(request.c, self.view, reply);
+        }
+    }
+
     fn replace_log(&mut self, log: Vec<Request>) {
         self.log = log;
         self.op_number = OpNumber::from(self.log.len());
@@ -358,6 +364,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::client::Client;
     use crate::health::HealthStatus;
     use crate::model::GroupIdentifier;
 
@@ -374,8 +381,7 @@ mod tests {
 
         primary.health_detector = HealthStatus::Unhealthy;
 
-        let mut mailbox = simulate_request(&mut primary, &mut client, operation, 1);
-
+        let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(
@@ -417,7 +423,7 @@ mod tests {
             primary.view.increment();
         }
 
-        let mut mailbox = simulate_request(&mut primary, &mut client, operation, 1);
+        let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
 
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
@@ -425,9 +431,9 @@ mod tests {
             messages,
             vec![Message {
                 from: primary.identifier.into(),
-                to: client.identifier.into(),
+                to: client.address(),
                 view: primary.view,
-                payload: Payload::Outdated,
+                payload: Payload::OutdatedView,
             }]
         );
     }
@@ -442,9 +448,9 @@ mod tests {
         let mut client = Client::new(group);
 
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
-        let mut mailbox = Mailbox::from(replicas[1]);
+        let mut mailbox = Mailbox::from(replica.identifier);
 
-        simulate_request(&mut primary, &mut client, operation, 1);
+        simulate_requests(&mut primary, vec![&mut client], operation);
 
         let message = prepare_message(&primary, &client, operation);
 
@@ -465,7 +471,7 @@ mod tests {
 
         let primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
-        let mut mailbox = Mailbox::from(replicas[1]);
+        let mut mailbox = Mailbox::from(replica.identifier);
 
         let message = ping_message(&primary);
 
@@ -486,9 +492,9 @@ mod tests {
         let mut client = Client::new(group);
 
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
-        let mut mailbox = Mailbox::from(replicas[1]);
+        let mut mailbox = Mailbox::from(replica.identifier);
 
-        simulate_request(&mut primary, &mut client, operation, 1);
+        simulate_requests(&mut primary, vec![&mut client], operation);
 
         let message = prepare_message(&primary, &client, operation);
 
@@ -506,7 +512,7 @@ mod tests {
                 from: replica.identifier.into(),
                 to: primary.identifier.into(),
                 view: replica.view,
-                payload: Payload::Outdated,
+                payload: Payload::OutdatedView,
             }]
         );
     }
@@ -521,15 +527,15 @@ mod tests {
         let mut client = Client::new(group);
 
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
-        let mut mailbox = Mailbox::from(replicas[1]);
+        let mut mailbox = Mailbox::from(replica.identifier);
 
-        simulate_request(&mut primary, &mut client, operation, 1);
+        simulate_requests(&mut primary, vec![&mut client], operation);
         let message = prepare_message(&primary, &client, operation);
         mailbox.deliver(message);
         replica.poll(&mut mailbox);
         assert_eq!(mailbox.drain_outbound().count(), 1);
 
-        simulate_request(&mut primary, &mut client, operation, 1);
+        simulate_requests(&mut primary, vec![&mut client], operation);
         primary.committed.increment();
         let message = prepare_message(&primary, &client, operation);
         mailbox.deliver(message);
@@ -548,15 +554,16 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
 
         let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
-        let mut client = Client::new(group);
+        let mut client1 = Client::new(group);
+        let mut client2 = Client::new(group);
 
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
-        let mut mailbox = Mailbox::from(replicas[1]);
+        let mut mailbox = Mailbox::from(replica.identifier);
 
-        simulate_request(&mut primary, &mut client, operation, 2);
+        simulate_requests(&mut primary, vec![&mut client1, &mut client2], operation);
         primary.committed.increment();
 
-        let message = prepare_message(&primary, &client, operation);
+        let message = prepare_message(&primary, &client2, operation);
 
         mailbox.deliver(message);
         replica.poll(&mut mailbox);
@@ -572,14 +579,15 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
 
         let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
-        let mut client = Client::new(group);
+        let mut client1 = Client::new(group);
+        let mut client2 = Client::new(group);
 
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
-        let mut mailbox = Mailbox::from(replicas[1]);
+        let mut mailbox = Mailbox::from(replica.identifier);
 
-        simulate_request(&mut primary, &mut client, operation, 2);
+        simulate_requests(&mut primary, vec![&mut client1, &mut client2], operation);
 
-        let message = prepare_message(&primary, &client, operation);
+        let message = prepare_message(&primary, &client2, operation);
 
         mailbox.deliver(message);
         replica.poll(&mut mailbox);
@@ -597,7 +605,7 @@ mod tests {
         let mut replica1 = Replica::new(0, HealthStatus::Normal, replicas[1]);
         let mut replica2 = Replica::new(0, HealthStatus::Normal, replicas[2]);
         let mut client = Client::new(group);
-        let mut mailbox = simulate_request(&mut primary, &mut client, operation, 1);
+        let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
 
         simulate_broadcast(&mut mailbox, vec![&mut replica1, &mut replica2]);
 
@@ -618,7 +626,10 @@ mod tests {
         );
         assert_eq!(primary.service, operation.len());
         assert_eq!(
-            primary.client_table.get(&client.request(operation)),
+            primary
+                .client_table
+                .get(&client.request(operation))
+                .and_then(CachedRequest::reply),
             Some(new_reply(&client, operation, 1))
         );
     }
@@ -633,8 +644,14 @@ mod tests {
         let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
         let mut replica1 = Replica::new(0, HealthStatus::Normal, replicas[1]);
         let mut replica2 = Replica::new(0, HealthStatus::Normal, replicas[2]);
-        let mut client = Client::new(group);
-        let mut mailbox = simulate_request(&mut primary, &mut client, operation, times);
+        let mut client1 = Client::new(group);
+        let mut client2 = Client::new(group);
+        let mut mailbox = Mailbox::from(primary.identifier);
+
+        mailbox.deliver(client1.new_message(operation));
+        primary.poll(&mut mailbox);
+        mailbox.deliver(client2.new_message(operation));
+        primary.poll(&mut mailbox);
 
         simulate_broadcast(&mut mailbox, vec![&mut replica1, &mut replica2]);
 
@@ -648,16 +665,43 @@ mod tests {
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
         // backtrack the request id to build the replies correctly.
-        client.request = RequestIdentifier::default();
-        let mut replies = Vec::with_capacity(times);
-
-        for i in 1..=times {
-            client.request.increment();
-            replies.push(reply_message(&primary, &client, operation, i));
-        }
+        let replies = vec![
+            reply_message(&primary, &client1, operation, 1),
+            reply_message(&primary, &client2, operation, 2),
+        ];
 
         assert_eq!(messages, replies);
         assert_eq!(primary.service, operation.len() * times);
+    }
+
+    #[test]
+    fn client_concurrent() {
+        let times = 2;
+        let operation = b"Hi!";
+        let group = GroupIdentifier::new(5);
+        let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
+
+        let mut primary = Replica::new(0, HealthStatus::Normal, replicas[0]);
+        let mut client = Client::new(group);
+        let mut mailbox = Mailbox::from(primary.identifier);
+
+        mailbox.deliver(client.new_message(operation));
+        primary.poll(&mut mailbox);
+
+        let old_client = client.clone();
+
+        mailbox.deliver(client.new_message(operation));
+        primary.poll(&mut mailbox);
+
+        let messages: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(
+            messages,
+            vec![
+                prepare_message(&primary, &old_client, operation),
+                concurrent_request_message(&primary, &old_client)
+            ]
+        );
     }
 
     #[test]
@@ -666,7 +710,7 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
 
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[1]);
-        let mut mailbox = Mailbox::from(replicas[1]);
+        let mut mailbox = Mailbox::from(replica.identifier);
 
         replica.push_request(Request {
             op: vec![],
@@ -691,9 +735,10 @@ mod tests {
         let mut client = Client::new(group);
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[2]);
         let mut primary = Replica::new(0, HealthStatus::Normal, replicas[1]);
-        let mut mailbox = Mailbox::from(replicas[1]);
+        let mut mailbox = Mailbox::from(primary.identifier);
 
-        client.request.increment();
+        // fake a request to increment the count
+        client.new_request(b"");
 
         primary.view.increment();
         primary.status = Status::ViewChange;
@@ -702,11 +747,7 @@ mod tests {
         replica.status = Status::ViewChange;
         replica.committed.increment();
         replica.executed.increment();
-        replica.push_request(Request {
-            op: vec![],
-            c: client.identifier,
-            s: client.request,
-        });
+        replica.push_request(client.request(b""));
 
         mailbox.deliver(do_view_change_message(&primary));
         mailbox.deliver(do_view_change_message(&replica));
@@ -736,7 +777,7 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
 
         let mut primary = Replica::new(0, HealthStatus::Normal, replicas[1]);
-        let mut mailbox = Mailbox::from(replicas[1]);
+        let mut mailbox = Mailbox::from(primary.identifier);
 
         primary.view.increment();
         primary.status = Status::ViewChange;
@@ -763,16 +804,8 @@ mod tests {
         primary.view.increment();
         primary.committed.increment();
         primary.executed.increment();
-        primary.push_request(Request {
-            op: operation.to_vec(),
-            c: client.identifier,
-            s: client.request.increment(),
-        });
-        primary.push_request(Request {
-            op: operation.to_vec(),
-            c: client.identifier,
-            s: client.request.increment(),
-        });
+        primary.push_request(client.new_request(operation));
+        primary.push_request(client.new_request(operation));
 
         replica.status = Status::ViewChange;
         mailbox.deliver(start_view_message(&primary));
@@ -819,15 +852,14 @@ mod tests {
         }
     }
 
-    fn simulate_request<S: Service, H: HealthDetector>(
+    fn simulate_requests<S: Service, H: HealthDetector>(
         primary: &mut Replica<S, H>,
-        client: &mut Client,
+        clients: Vec<&mut Client>,
         operation: &[u8],
-        times: usize,
     ) -> Mailbox {
         let mut mailbox = Mailbox::from(primary.identifier);
 
-        for _ in 1..=times {
+        for client in clients {
             mailbox.deliver(client.new_message(operation));
             primary.poll(&mut mailbox);
         }
@@ -846,11 +878,7 @@ mod tests {
             view: replica.view,
             payload: Prepare {
                 n: replica.op_number,
-                m: Request {
-                    op: Vec::from(operation),
-                    c: client.identifier,
-                    s: client.request,
-                },
+                m: client.request(operation),
                 k: replica.committed,
             }
             .into(),
@@ -877,7 +905,7 @@ mod tests {
     ) -> Message {
         Message {
             from: primary.identifier.into(),
-            to: client.identifier.into(),
+            to: client.address(),
             view: primary.view,
             payload: new_reply(client, operation, times).into(),
         }
@@ -886,7 +914,7 @@ mod tests {
     fn new_reply(client: &Client, operation: &[u8], times: usize) -> Reply {
         Reply {
             x: (operation.len() * times).to_be_bytes().to_vec(),
-            s: client.request,
+            s: client.last_request(),
         }
     }
 
@@ -907,6 +935,17 @@ mod tests {
             payload: Payload::StartView(StartView {
                 l: primary.log.clone(),
                 k: primary.committed,
+            }),
+        }
+    }
+
+    fn concurrent_request_message<S, H>(primary: &Replica<S, H>, client: &Client) -> Message {
+        Message {
+            from: primary.identifier.into(),
+            to: client.address(),
+            view: primary.view,
+            payload: Payload::ConcurrentRequest(ConcurrentRequest {
+                s: client.last_request(),
             }),
         }
     }
