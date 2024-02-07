@@ -106,6 +106,7 @@ pub struct Reply {
     pub s: RequestIdentifier,
 }
 
+// TODO: Use a view table to reduce the bandwidth usage of the view change protocol.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DoViewChange {
     /// The log of the replica.
