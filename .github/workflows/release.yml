@@ -1,4 +1,4 @@
-name: Create a Release
+name: Release a new version
 
 on:
   push:
@@ -10,12 +10,15 @@ permissions:
   contents: write
 
 jobs:
-  tag:
+  release:
     name: Define Tags for version in Cargo.toml
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.7.1
       - name: Create Tag
+        id: tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -25,12 +28,17 @@ jobs:
 
           if [ $(git tag -l $TAG) ]
           then
-            echo "Git tag $TAG already exists."
-          else
-            git config user.name "Add Tag from CI"
-            git config user.email ""
-            git tag $TAG
-            git push --tags
+            echo "::error::Git tag $TAG already exists."
+            exit 1
           fi
+          
+          git config user.name "Add Tag from CI"
+          git config user.email ""
+          git tag $TAG
+          git push --tags
 
           gh release view $TAG &> /dev/null || gh release create $TAG --generate-notes
+      - name: Publish to Crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

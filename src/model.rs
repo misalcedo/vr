@@ -1,211 +1,136 @@
-use std::cmp::Ordering;
-use std::net::SocketAddr;
-use crate::stamps::{OpNumber, View, ViewTable};
+use crate::identifiers::{ClientIdentifier, RequestIdentifier};
+use crate::mailbox::Address;
+use crate::stamps::{OpNumber, View};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Message {
+    pub from: Address,
+    pub to: Address,
+    pub view: View,
+    pub payload: Payload,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Payload {
+    Request(Request),
+    Prepare(Prepare),
+    PrepareOk(PrepareOk),
+    Reply(Reply),
+    DoViewChange(DoViewChange),
+    StartView(StartView),
+    Ping,
+    OutdatedView,
+    OutdatedRequest(OutdatedRequest),
+    ConcurrentRequest(ConcurrentRequest),
+}
+
+impl From<Request> for Payload {
+    fn from(value: Request) -> Self {
+        Self::Request(value)
+    }
+}
+
+impl From<Prepare> for Payload {
+    fn from(value: Prepare) -> Self {
+        Self::Prepare(value)
+    }
+}
+
+impl From<PrepareOk> for Payload {
+    fn from(value: PrepareOk) -> Self {
+        Self::PrepareOk(value)
+    }
+}
+
+impl From<Reply> for Payload {
+    fn from(value: Reply) -> Self {
+        Self::Reply(value)
+    }
+}
+
+impl From<DoViewChange> for Payload {
+    fn from(value: DoViewChange) -> Self {
+        Self::DoViewChange(value)
+    }
+}
+
+impl From<StartView> for Payload {
+    fn from(value: StartView) -> Self {
+        Self::StartView(value)
+    }
+}
+
+impl From<ConcurrentRequest> for Payload {
+    fn from(value: ConcurrentRequest) -> Self {
+        Self::ConcurrentRequest(value)
+    }
+}
+
+impl From<OutdatedRequest> for Payload {
+    fn from(value: OutdatedRequest) -> Self {
+        Self::OutdatedRequest(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
-    /// The operation (with its arguments) the client wants to run).
+    /// The operation (with its arguments) the client wants to run.
     pub op: Vec<u8>,
     /// Client id
-    pub c: u128,
+    pub c: ClientIdentifier,
     /// Client-assigned number for the request.
-    pub s: u128,
-    /// View number known to the client.
-    pub v: View,
+    pub s: RequestIdentifier,
 }
 
-impl PartialOrd for Request {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.s.partial_cmp(&other.s).filter(|_| self.c == other.c)
-    }
-}
-
-impl From<Request> for Message {
-    fn from(value: Request) -> Self {
-        Message::Request(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Reply {
-    /// View number.
-    pub v: View,
-    /// The number the client provided in the request.
-    pub s: u128,
-    /// The result of the up-call to the service.
-    pub x: Vec<u8>,
-}
-
-impl From<Reply> for Message {
-    fn from(value: Reply) -> Self {
-        Message::Reply(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Prepare {
-    /// The current view-number.
-    pub v: View,
     /// The op-number assigned to the request.
     pub n: OpNumber,
     /// The message received from the client.
     pub m: Request,
     /// The op-number of the last committed log entry.
-    pub c: OpNumber,
+    pub k: OpNumber,
 }
 
-impl PartialOrd for Prepare {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.v, self.n).partial_cmp(&(other.v, other.n))
-    }
-}
-
-impl Ord for Prepare {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.v, self.n).cmp(&(other.v, other.n))
-    }
-}
-
-impl From<Prepare> for Message {
-    fn from(value: Prepare) -> Self {
-        Message::Prepare(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PrepareOk {
-    /// The current view-number known to the replica.
-    pub v: View,
-    /// The op-number assigned to the accepted prepare message.
+    /// The op-number assigned to the request.
     pub n: OpNumber,
-    /// The index of the replica accepting the prepare message.
-    pub i: usize,
 }
 
-impl From<PrepareOk> for Message {
-    fn from(value: PrepareOk) -> Self {
-        Message::PrepareOk(value)
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Reply {
+    /// The response from the service after executing the operation.
+    pub x: Vec<u8>,
+    /// Client-assigned number for the request.
+    pub s: RequestIdentifier,
 }
 
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Inform {
-    /// The current view-number.
-    pub v: View,
-}
-
-impl From<Inform> for Message {
-    fn from(value: Inform) -> Self {
-        Message::Inform(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Ping {
-    /// The current view-number.
-    pub v: View,
-    /// The op-number of the last committed log entry.
-    pub c: OpNumber,
-}
-
-impl From<Ping> for Message {
-    fn from(value: Ping) -> Self {
-        Message::Ping(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+// TODO: Use a view table to reduce the bandwidth usage of the view change protocol.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DoViewChange {
-    /// The current view-number of the replica.
-    pub v: View,
-    /// A table of the op-number of the last known request for each view.
-    pub t: ViewTable,
     /// The log of the replica.
     pub l: Vec<Request>,
     /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
-    /// The index of the replica that detected the primary's failure.
-    pub i: usize
 }
 
-impl PartialOrd for DoViewChange {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.v, self.k).partial_cmp(&(other.v, other.k))
-    }
-}
-
-impl Ord for DoViewChange {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.v, self.k).cmp(&(other.v, other.k))
-    }
-}
-
-impl From<DoViewChange> for Message {
-    fn from(value: DoViewChange) -> Self {
-        Message::DoViewChange(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartView {
-    /// The current view-number.
-    pub v: View,
-    /// A table of the op-number of the last known request for each view.
-    pub t: ViewTable,
-    /// The log of the new primary.
+    /// The log of the replica.
     pub l: Vec<Request>,
-    /// The op-number of the latest committed request known to the primary.
+    /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
 }
 
-impl From<StartView> for Message {
-    fn from(value: StartView) -> Self {
-        Message::StartView(value)
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConcurrentRequest {
+    /// Client-assigned number for the request in-progress.
+    pub s: RequestIdentifier,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Envelope {
-    pub view: View,
-    pub from: SocketAddr,
-    pub to: SocketAddr,
-    pub message: Message
-}
-
-impl Envelope {
-    pub fn new(view: View, from: SocketAddr, to: SocketAddr, message: impl Into<Message>) -> Self {
-        Self {
-            view,
-            from,
-            to,
-            message: message.into()
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Message {
-    Request(Request),
-    Prepare(Prepare),
-    PrepareOk(PrepareOk),
-    Reply(Reply),
-    Inform(Inform),
-    Ping(Ping),
-    DoViewChange(DoViewChange),
-    StartView(StartView),
-}
-
-impl Message {
-    pub fn view(&self) -> View {
-        match self {
-            Message::Request(request) => request.v,
-            Message::Prepare(prepare) => prepare.v,
-            Message::PrepareOk(prepare_ok) => prepare_ok.v,
-            Message::Reply(reply) => reply.v,
-            Message::Inform(inform) => inform.v,
-            Message::Ping(ping) => ping.v,
-            Message::DoViewChange(do_view_change) => do_view_change.v,
-            Message::StartView(start_view) => start_view.v,
-        }
-    }
+pub struct OutdatedRequest {
+    /// Client-assigned number for the most recent request processed.
+    pub s: RequestIdentifier,
 }

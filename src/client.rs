@@ -1,54 +1,66 @@
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use crate::model::{Reply, Request};
+use crate::identifiers::{ClientIdentifier, GroupIdentifier, RequestIdentifier};
+use crate::mailbox::Address;
+use crate::model::{Message, Request};
+use crate::stamps::View;
 
-#[derive(Debug)]
-pub struct LastRequest {
-    request: Request,
-    reply: Option<Reply>
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct Client {
+    identifier: ClientIdentifier,
+    view: View,
+    request: RequestIdentifier,
+    group: GroupIdentifier,
 }
 
-#[derive(Debug)]
-pub struct RequestCache {
-    cache: HashMap<u128, LastRequest>
-}
-
-impl Default for RequestCache {
-    fn default() -> Self {
+impl Client {
+    pub fn new(group: GroupIdentifier) -> Self {
         Self {
-            cache: HashMap::new()
+            identifier: Default::default(),
+            view: Default::default(),
+            request: Default::default(),
+            group,
         }
     }
-}
 
-impl RequestCache {
-    pub fn get(&mut self, request: &Request) -> Option<Reply> {
-        self.cache.get(&request.c)?.reply.as_ref().map(Reply::clone)
+    pub fn address(&self) -> Address {
+        self.identifier.into()
     }
 
-    pub fn set(&mut self, request: &Request, reply: &Reply) {
-        self.cache.entry(request.c).and_modify(|l| l.reply = Some(reply.clone()));
+    pub fn identifier(&self) -> ClientIdentifier {
+        self.identifier
     }
 
-    pub fn start(&mut self, request: &Request) {
-        self.cache.insert(request.c, LastRequest { request: request.clone(), reply: None });
+    pub fn view(&self) -> View {
+        self.view
     }
-}
 
-impl PartialEq<Request> for RequestCache {
-    fn eq(&self, other: &Request) -> bool {
-        match self.cache.get(&other.c) {
-            None => false,
-            Some(last_request) => &last_request.request == other
+    pub fn last_request(&self) -> RequestIdentifier {
+        self.request
+    }
+
+    pub fn new_message(&mut self, payload: &[u8]) -> Message {
+        self.request.increment();
+        self.message(payload)
+    }
+
+    pub fn new_request(&mut self, payload: &[u8]) -> Request {
+        self.request.increment();
+        self.request(payload)
+    }
+
+    pub fn message(&self, payload: &[u8]) -> Message {
+        Message {
+            from: self.identifier.into(),
+            to: self.group.primary(self.view).into(),
+            view: self.view,
+            payload: self.request(payload).into(),
         }
     }
-}
 
-impl PartialOrd<Request> for RequestCache {
-    fn partial_cmp(&self, other: &Request) -> Option<Ordering> {
-        let last_request = self.cache.get(&other.c)?;
-
-        // ignore cached completed requests.
-        last_request.request.partial_cmp(other).filter(|o| o != &Ordering::Less || last_request.reply.is_none())
+    pub fn request(&self, payload: &[u8]) -> Request {
+        Request {
+            op: Vec::from(payload),
+            c: self.identifier,
+            s: self.request,
+        }
     }
 }
