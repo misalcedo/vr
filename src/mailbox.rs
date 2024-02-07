@@ -37,6 +37,14 @@ impl Mailbox {
         self.inbound.push(Some(envelope));
     }
 
+    pub fn drain_inbound(&mut self) -> impl Iterator<Item = Message> + '_ {
+        self.inbound.drain(..).filter_map(|o| o)
+    }
+
+    pub fn drain_outbound(&mut self) -> impl Iterator<Item = Message> + '_ {
+        self.outbound.drain(..)
+    }
+
     pub fn select<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) {
         for index in 0..self.inbound.len() {
             if let Some(envelope) = self.inbound.get_mut(index).and_then(Option::take) {
@@ -94,14 +102,6 @@ impl Mailbox {
             view,
             payload,
         });
-    }
-
-    pub fn drain_inbound(&mut self) -> impl Iterator<Item = Message> + '_ {
-        self.inbound.drain(..).filter_map(|o| o)
-    }
-
-    pub fn drain_outbound(&mut self) -> impl Iterator<Item = Message> + '_ {
-        self.outbound.drain(..)
     }
 }
 
