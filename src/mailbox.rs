@@ -1,6 +1,31 @@
-use crate::model::{Address, Message, Payload, ReplicaIdentifier};
+use crate::model::{ClientIdentifier, GroupIdentifier, Message, Payload, ReplicaIdentifier};
 use crate::stamps::View;
 use std::collections::VecDeque;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum Address {
+    Replica(ReplicaIdentifier),
+    Group(GroupIdentifier),
+    Client(ClientIdentifier),
+}
+
+impl From<ReplicaIdentifier> for Address {
+    fn from(value: ReplicaIdentifier) -> Self {
+        Self::Replica(value)
+    }
+}
+
+impl From<GroupIdentifier> for Address {
+    fn from(value: GroupIdentifier) -> Self {
+        Self::Group(value)
+    }
+}
+
+impl From<ClientIdentifier> for Address {
+    fn from(value: ClientIdentifier) -> Self {
+        Self::Client(value)
+    }
+}
 
 #[derive(Debug)]
 pub struct Mailbox {

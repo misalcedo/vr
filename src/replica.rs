@@ -3,10 +3,10 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::health::{HealthDetector, HealthStatus};
-use crate::mailbox::Mailbox;
+use crate::mailbox::{Address, Mailbox};
 use crate::model::{
-    Address, ConcurrentRequest, DoViewChange, Message, OutdatedRequest, Payload, Prepare,
-    PrepareOk, ReplicaIdentifier, Reply, Request, StartView,
+    ConcurrentRequest, DoViewChange, Message, OutdatedRequest, Payload, Prepare, PrepareOk,
+    ReplicaIdentifier, Reply, Request, StartView,
 };
 use crate::service::Service;
 use crate::stamps::{OpNumber, View};

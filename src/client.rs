@@ -1,6 +1,5 @@
-use crate::model::{
-    Address, ClientIdentifier, GroupIdentifier, Message, Request, RequestIdentifier,
-};
+use crate::mailbox::Address;
+use crate::model::{ClientIdentifier, GroupIdentifier, Message, Request, RequestIdentifier};
 use crate::stamps::View;
 
 #[derive(Copy, Clone, Eq, PartialEq)]

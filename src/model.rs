@@ -1,29 +1,5 @@
+use crate::mailbox::Address;
 use crate::stamps::{OpNumber, View};
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum Address {
-    Replica(ReplicaIdentifier),
-    Group(GroupIdentifier),
-    Client(ClientIdentifier),
-}
-
-impl From<ReplicaIdentifier> for Address {
-    fn from(value: ReplicaIdentifier) -> Self {
-        Self::Replica(value)
-    }
-}
-
-impl From<GroupIdentifier> for Address {
-    fn from(value: GroupIdentifier) -> Self {
-        Self::Group(value)
-    }
-}
-
-impl From<ClientIdentifier> for Address {
-    fn from(value: ClientIdentifier) -> Self {
-        Self::Client(value)
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Message {
