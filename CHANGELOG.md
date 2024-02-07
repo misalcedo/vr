@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.5.0] - 2024-02-07
+### Added
+- Added the view change protocol
+
+### Changed
+- Rewrote some of the tests to improve re-usability.
+
+### Removed
+- Dead code of the previous implementation.
+
 ## [0.4.0] - 2024-02-05
 ### Changed
 - Rewrote the entire replica and network from scratch modeled after Erlang's mailbox system.
