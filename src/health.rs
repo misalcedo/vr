@@ -1,4 +1,5 @@
-use crate::model::{Message, ReplicaIdentifier, View};
+use crate::model::ReplicaIdentifier;
+use crate::stamps::View;
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum HealthStatus {
@@ -8,6 +9,7 @@ pub enum HealthStatus {
     Unhealthy,
 }
 
+// TODO: Tests a real implementation of a health detector.
 pub trait HealthDetector {
     fn detect(&mut self, view: View, replica: ReplicaIdentifier) -> HealthStatus;
 

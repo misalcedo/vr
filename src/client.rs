@@ -1,6 +1,7 @@
 use crate::model::{
-    Address, ClientIdentifier, GroupIdentifier, Message, Request, RequestIdentifier, View,
+    Address, ClientIdentifier, GroupIdentifier, Message, Request, RequestIdentifier,
 };
+use crate::stamps::View;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Client {

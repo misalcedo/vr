@@ -1,14 +1,15 @@
-use crate::client_table::{CachedRequest, ClientTable};
+use crate::client_table::ClientTable;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::Mailbox;
 use crate::model::{
-    Address, ConcurrentRequest, DoViewChange, GroupIdentifier, Message, OpNumber, OutdatedRequest,
-    Payload, Prepare, PrepareOk, ReplicaIdentifier, Reply, Request, StartView, View,
+    Address, ConcurrentRequest, DoViewChange, Message, OutdatedRequest, Payload, Prepare,
+    PrepareOk, ReplicaIdentifier, Reply, Request, StartView,
 };
 use crate::service::Service;
+use crate::stamps::{OpNumber, View};
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Status {
@@ -370,6 +371,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::client::Client;
+    use crate::client_table::CachedRequest;
     use crate::health::HealthStatus;
     use crate::model::{GroupIdentifier, OutdatedRequest};
 

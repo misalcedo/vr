@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use crate::stamps::{OpNumber, View};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Address {
@@ -189,7 +189,7 @@ impl GroupIdentifier {
     }
 
     pub fn primary(&self, view: View) -> ReplicaIdentifier {
-        ReplicaIdentifier(*self, (view.0 % (self.1 as u128)) as usize)
+        ReplicaIdentifier(*self, (view.as_u128() % (self.1 as u128)) as usize)
     }
 
     pub fn replicas(&self) -> impl Iterator<Item = ReplicaIdentifier> {
@@ -220,44 +220,6 @@ impl RequestIdentifier {
     pub fn increment(&mut self) -> Self {
         self.0 += 1;
         *self
-    }
-}
-
-#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
-#[repr(transparent)]
-pub struct OpNumber(Option<NonZeroUsize>);
-
-impl From<usize> for OpNumber {
-    fn from(value: usize) -> Self {
-        Self(NonZeroUsize::new(value))
-    }
-}
-
-impl From<OpNumber> for usize {
-    fn from(value: OpNumber) -> Self {
-        value.0.map(NonZeroUsize::get).unwrap_or_default() as usize
-    }
-}
-
-impl OpNumber {
-    pub fn increment(&mut self) {
-        self.0 = NonZeroUsize::new(1 + self.0.map(NonZeroUsize::get).unwrap_or(0))
-    }
-
-    pub fn next(&self) -> Self {
-        Self(NonZeroUsize::new(
-            1 + self.0.map(NonZeroUsize::get).unwrap_or(0),
-        ))
-    }
-}
-
-#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
-#[repr(transparent)]
-pub struct View(u128);
-
-impl View {
-    pub fn increment(&mut self) {
-        self.0 = 1 + self.0;
     }
 }
 
