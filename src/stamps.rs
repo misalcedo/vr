@@ -4,15 +4,13 @@ use std::num::NonZeroUsize;
 #[repr(transparent)]
 pub struct OpNumber(Option<NonZeroUsize>);
 
-impl From<usize> for OpNumber {
-    fn from(value: usize) -> Self {
+impl OpNumber {
+    pub(crate) fn new(value: usize) -> Self {
         Self(NonZeroUsize::new(value))
     }
-}
 
-impl From<OpNumber> for usize {
-    fn from(value: OpNumber) -> Self {
-        value.0.map(NonZeroUsize::get).unwrap_or_default() as usize
+    pub(crate) fn as_usize(&self) -> usize {
+        self.0.map(NonZeroUsize::get).unwrap_or_default()
     }
 }
 

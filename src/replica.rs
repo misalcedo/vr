@@ -335,11 +335,11 @@ where
     }
 
     fn execute_primary(&mut self, mailbox: &mut Mailbox) {
-        let length = OpNumber::from(self.log.len());
+        let length = OpNumber::new(self.log.len());
 
         while self.committed > self.executed && self.executed < length {
             // executed must be incremented after indexing the log to avoid panicking.
-            let request = &self.log[usize::from(self.executed)];
+            let request = &self.log[self.executed.as_usize()];
             let payload = self.service.invoke(request.op.as_slice());
             let reply = Reply {
                 s: request.s,
@@ -354,14 +354,14 @@ where
 
     fn replace_log(&mut self, log: Vec<Request>) {
         self.log = log;
-        self.op_number = OpNumber::from(self.log.len());
+        self.op_number = OpNumber::new(self.log.len());
     }
 
     fn execute_replica(&mut self) {
-        let length = OpNumber::from(self.log.len());
+        let length = OpNumber::new(self.log.len());
         while self.committed > self.executed && self.executed < length {
             // executed must be incremented after indexing the log to avoid panicking.
-            let request = &self.log[usize::from(self.executed)];
+            let request = &self.log[self.executed.as_usize()];
             self.service.invoke(request.op.as_slice());
             self.executed.increment();
         }
@@ -474,7 +474,7 @@ mod tests {
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(messages, vec![prepare_ok_message(&primary, &replica)]);
-        assert_eq!(replica.op_number, OpNumber::from(1));
+        assert_eq!(replica.op_number, OpNumber::new(1));
     }
 
     #[test]
