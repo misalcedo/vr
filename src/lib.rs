@@ -3,6 +3,7 @@
 mod client;
 mod client_table;
 mod health;
+mod identifiers;
 mod mailbox;
 mod model;
 mod replica;

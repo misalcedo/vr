@@ -1,4 +1,4 @@
-use crate::model::ReplicaIdentifier;
+use crate::identifiers::ReplicaIdentifier;
 use crate::stamps::View;
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]

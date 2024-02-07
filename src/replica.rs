@@ -3,10 +3,11 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::health::{HealthDetector, HealthStatus};
+use crate::identifiers::ReplicaIdentifier;
 use crate::mailbox::{Address, Mailbox};
 use crate::model::{
-    ConcurrentRequest, DoViewChange, Message, OutdatedRequest, Payload, Prepare, PrepareOk,
-    ReplicaIdentifier, Reply, Request, StartView,
+    ConcurrentRequest, DoViewChange, Message, OutdatedRequest, Payload, Prepare, PrepareOk, Reply,
+    Request, StartView,
 };
 use crate::service::Service;
 use crate::stamps::{OpNumber, View};
@@ -373,7 +374,8 @@ mod tests {
     use crate::client::Client;
     use crate::client_table::CachedRequest;
     use crate::health::HealthStatus;
-    use crate::model::{GroupIdentifier, OutdatedRequest};
+    use crate::identifiers::GroupIdentifier;
+    use crate::model::OutdatedRequest;
 
     use super::*;
 

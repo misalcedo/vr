@@ -1,4 +1,5 @@
-use crate::model::{ClientIdentifier, GroupIdentifier, Message, Payload, ReplicaIdentifier};
+use crate::identifiers::{ClientIdentifier, GroupIdentifier, ReplicaIdentifier};
+use crate::model::{Message, Payload};
 use crate::stamps::View;
 use std::collections::VecDeque;
 
@@ -134,7 +135,8 @@ impl Mailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ClientIdentifier, GroupIdentifier, Request};
+    use crate::identifiers::{ClientIdentifier, GroupIdentifier};
+    use crate::model::Request;
     use crate::stamps::View;
 
     #[test]

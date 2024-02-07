@@ -1,4 +1,5 @@
-use crate::model::{ClientIdentifier, Reply, Request, RequestIdentifier};
+use crate::identifiers::{ClientIdentifier, RequestIdentifier};
+use crate::model::{Reply, Request};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
