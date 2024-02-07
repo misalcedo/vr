@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.7.1
+      - uses: Swatinem/rust-cache@v2.7.3
       - name: Create Tag
         id: tag
         env:
