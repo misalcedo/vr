@@ -154,23 +154,7 @@ where
 
                     if replication.len() >= self.identifier.sub_majority() {
                         self.committed = self.committed.max(prepare_ok.n);
-
-                        let length = OpNumber::from(self.log.len());
-                        while self.committed > self.executed && self.executed < length {
-                            // executed must be incremented after indexing the log to avoid panicking.
-                            let request = &self.log[usize::from(self.executed)];
-                            let reply = self.service.invoke(request.op.as_slice());
-
-                            sender.send(
-                                request.c,
-                                self.view,
-                                Reply {
-                                    s: request.s,
-                                    x: reply,
-                                },
-                            );
-                            self.executed.increment();
-                        }
+                        self.execute_primary(sender);
 
                         None
                     } else {
@@ -222,7 +206,7 @@ where
             });
 
             self.status = Status::Normal;
-
+            self.health_detector.notify(self.view, self.identifier);
             mailbox.broadcast(
                 self.view,
                 StartView {
@@ -230,6 +214,29 @@ where
                     k: self.committed,
                 },
             );
+
+            self.execute_primary(mailbox);
+        }
+    }
+
+    fn execute_primary(&mut self, mailbox: &mut Mailbox) {
+        let length = OpNumber::from(self.log.len());
+
+        while self.committed > self.executed && self.executed < length {
+            // executed must be incremented after indexing the log to avoid panicking.
+            let request = &self.log[usize::from(self.executed)];
+            let reply = self.service.invoke(request.op.as_slice());
+
+            mailbox.send(
+                request.c,
+                self.view,
+                Reply {
+                    s: request.s,
+                    x: reply,
+                },
+            );
+
+            self.executed.increment();
         }
     }
 
@@ -630,9 +637,12 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.replicas().collect();
 
+        let mut client = Client::new(group);
         let mut replica = Replica::new(0, HealthStatus::Normal, replicas[2]);
         let mut primary = Replica::new(0, HealthStatus::Normal, replicas[1]);
         let mut mailbox = Mailbox::from(replicas[1]);
+
+        client.request.increment();
 
         primary.view.increment();
         primary.status = Status::ViewChange;
@@ -640,10 +650,11 @@ mod tests {
         replica.view.increment();
         replica.status = Status::ViewChange;
         replica.committed.increment();
+        replica.executed.increment();
         replica.push_request(Request {
             op: vec![],
-            c: Default::default(),
-            s: Default::default(),
+            c: client.identifier,
+            s: client.request,
         });
 
         mailbox.deliver(do_view_change_message(&primary));
@@ -654,11 +665,18 @@ mod tests {
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(mailbox.drain_inbound().count(), 0);
-        assert_eq!(messages, vec![start_view_message(&primary)]);
+        assert_eq!(
+            messages,
+            vec![
+                start_view_message(&primary),
+                reply_message(&primary, &client, &[], 1)
+            ]
+        );
         assert_eq!(primary.status, Status::Normal);
         assert_eq!(primary.log, replica.log);
         assert_eq!(primary.committed, replica.committed);
         assert_eq!(primary.op_number, replica.op_number);
+        assert_eq!(primary.executed, replica.executed);
     }
 
     #[test]
