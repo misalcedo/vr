@@ -196,8 +196,7 @@ where
                     self.committed = self.committed.max(do_view_change.k);
 
                     if do_view_change.l.len() > self.log.len() {
-                        self.log = do_view_change.l;
-                        self.op_number = OpNumber::from(self.log.len());
+                        self.replace_log(do_view_change.l);
                     }
 
                     None
@@ -273,13 +272,7 @@ where
 
                 self.committed = self.committed.max(prepare.k);
 
-                let length = OpNumber::from(self.log.len());
-                while self.committed > self.executed && self.executed < length {
-                    // executed must be incremented after indexing the log to avoid panicking.
-                    let request = &self.log[usize::from(self.executed)];
-                    self.service.invoke(request.op.as_slice());
-                    self.executed.increment();
-                }
+                self.execute_replica();
 
                 None
             }
@@ -302,12 +295,55 @@ where
         }
     }
 
-    fn process_view_change_replica(&mut self, mailbox: &mut Mailbox) {}
+    fn process_view_change_replica(&mut self, mailbox: &mut Mailbox) {
+        mailbox.select(|_, message| match message {
+            Message {
+                from: Address::Replica(replica),
+                view,
+                payload: Payload::StartView(start_view),
+                ..
+            } => {
+                self.replace_log(start_view.l);
+                self.view = view;
+                self.status = Status::Normal;
+                self.committed = start_view.k;
+                self.health_detector.notify(self.view, replica);
+
+                None
+            }
+            _ => Some(message),
+        });
+
+        let mut current = self.committed.next();
+
+        while current <= self.op_number {
+            mailbox.send(
+                self.identifier.primary(self.view),
+                self.view,
+                Payload::PrepareOk(PrepareOk { n: current }),
+            )
+        }
+    }
 
     // Push a request to the end of the log and increment the op-number.
     fn push_request(&mut self, request: Request) {
         self.op_number.increment();
         self.log.push(request);
+    }
+
+    fn replace_log(&mut self, log: Vec<Request>) {
+        self.log = log;
+        self.op_number = OpNumber::from(self.log.len());
+    }
+
+    fn execute_replica(&mut self) {
+        let length = OpNumber::from(self.log.len());
+        while self.committed > self.executed && self.executed < length {
+            // executed must be incremented after indexing the log to avoid panicking.
+            let request = &self.log[usize::from(self.executed)];
+            self.service.invoke(request.op.as_slice());
+            self.executed.increment();
+        }
     }
 }
 
