@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::num::NonZeroUsize;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -114,6 +115,18 @@ pub struct DoViewChange {
     pub l: Vec<Request>,
     /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
+}
+
+impl PartialOrd for DoViewChange {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.l.len().partial_cmp(&other.l.len())
+    }
+}
+
+impl Ord for DoViewChange {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.l.len().cmp(&other.l.len())
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

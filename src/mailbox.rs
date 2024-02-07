@@ -57,45 +57,30 @@ impl Mailbox {
         }
     }
 
-    // TODO: Should this be select_n_unique to filter by sender and then the filter can ensure the sender is a replica address.
-    pub fn select_n<F: FnMut(&Message) -> bool>(&mut self, n: usize, mut f: F) -> Vec<Message> {
-        let mut messages = Vec::new();
-
-        if self
-            .inbound
-            .iter()
-            .filter_map(Option::as_ref)
-            .filter(|&m| f(m))
-            .count()
-            >= n
-        {
-            for slot in self.inbound.iter_mut() {
-                match slot.take() {
-                    None => continue,
-                    Some(message) if f(&message) => {
-                        messages.push(message);
-                    }
-                    s => {
-                        *slot = s;
-                    }
-                }
+    pub fn visit<F: FnMut(&Message)>(&mut self, mut f: F) {
+        for slot in self.inbound.iter() {
+            if let Some(envelope) = slot {
+                f(envelope);
             }
         }
-
-        messages
     }
 
     pub fn send(&mut self, to: impl Into<Address>, view: View, payload: impl Into<Payload>) {
         let from = self.address;
         let to = to.into();
         let payload = payload.into();
-
-        self.outbound.push_back(Message {
+        let message = Message {
             from,
             to,
             view,
             payload,
-        });
+        };
+
+        if to == self.address {
+            self.deliver(message);
+        } else {
+            self.outbound.push_back(message);
+        }
     }
 
     pub fn broadcast(&mut self, view: View, payload: impl Into<Payload>) {
@@ -109,6 +94,10 @@ impl Mailbox {
             view,
             payload,
         });
+    }
+
+    pub fn drain_inbound(&mut self) -> impl Iterator<Item = Message> + '_ {
+        self.inbound.drain(..).filter_map(|o| o)
     }
 
     pub fn drain_outbound(&mut self) -> impl Iterator<Item = Message> + '_ {
@@ -203,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_select_n() {
+    fn mailbox_visit() {
         let group = GroupIdentifier::default();
         let client = ClientIdentifier::default();
         let client_address = Address::from(client);
@@ -223,23 +212,11 @@ mod tests {
 
         let mut instance = Mailbox::new(replica, Address::from(group));
 
-        instance.inbound = vec![
-            None,
-            Some(message.clone()),
-            Some(message.clone()),
-            Some(Message {
-                from: client_address,
-                to: client_address,
-                view,
-                payload: request.clone().into(),
-            }),
-        ];
+        instance.inbound = vec![None, Some(message.clone()), Some(message.clone())];
 
-        let messages = instance.select_n(3, |m| m.to == replica);
-        assert_eq!(messages, vec![]);
-
-        let messages = instance.select_n(2, |m| m.to == replica);
-        assert_eq!(messages, vec![message.clone(), message.clone()]);
+        let mut counter = 0;
+        instance.visit(|m| counter += 1);
+        assert_eq!(counter, 2);
     }
 
     #[test]
@@ -284,5 +261,19 @@ mod tests {
         });
         assert!(instance.inbound.iter().all(Option::is_some));
         assert_eq!(instance.inbound.len(), 3);
+    }
+
+    #[test]
+    fn send_self() {
+        let group = GroupIdentifier::default();
+        let replica = Address::from(group.replicas().next().unwrap());
+        let view = View::default();
+
+        let mut instance = Mailbox::new(replica, Address::from(group));
+
+        instance.send(replica, view, Payload::Ping);
+
+        assert!(instance.inbound.iter().all(Option::is_some));
+        assert_eq!(instance.inbound.len(), 1);
     }
 }

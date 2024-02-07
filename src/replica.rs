@@ -189,24 +189,18 @@ where
 
     fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {
         let mut replicas = HashSet::new();
-        let mut messages =
-            mailbox.select_n(
-                self.identifier.sub_majority() + 1,
-                |message| match message {
-                    Message {
-                        from: Address::Replica(replica),
-                        payload: Payload::DoViewChange(_),
-                        ..
-                    } => replicas.insert(*replica),
-                    _ => false,
-                },
-            );
 
-        if !messages.is_empty() {
-            messages.drain(..).max_by_key(|m| (m.view, 0));
-
-            todo!("get length of the log")
-        }
+        let i = self.identifier.sub_majority() + 1;
+        mailbox.visit(|message| {
+            if let Message {
+                from: Address::Replica(replica),
+                payload: Payload::DoViewChange(_),
+                ..
+            } = message
+            {
+                replicas.insert(*replica);
+            }
+        });
     }
 
     fn poll_replica(&mut self, mailbox: &mut Mailbox) {
@@ -598,7 +592,7 @@ mod tests {
 
         replica.poll(&mut mailbox);
 
-        let envelopes: Vec<Message> = mailbox.drain_outbound().collect();
+        let envelopes: Vec<Message> = mailbox.drain_inbound().collect();
 
         assert_eq!(envelopes, vec![do_view_change_message(&replicas, &replica)]);
     }
