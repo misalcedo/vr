@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::driver::Driver;
 use crate::health::HealthDetector;
 use crate::identifiers::{ClientIdentifier, GroupIdentifier, ReplicaIdentifier};
@@ -5,7 +7,6 @@ use crate::mailbox::{Address, Mailbox};
 use crate::model::Message;
 use crate::replica::Replica;
 use crate::service::Service;
-use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct LocalDriver<S, H> {
@@ -88,6 +89,15 @@ impl<S: Service, H: HealthDetector> LocalDriver<S, H> {
             }
         }
     }
+
+    fn is_empty(&self, identifier: ReplicaIdentifier) -> bool {
+        !self.replicas.contains_key(&identifier)
+            || self
+                .mailboxes
+                .get(&identifier.into())
+                .map(Mailbox::is_empty)
+                .unwrap_or_default()
+    }
 }
 
 impl<S: Service + Default, H: HealthDetector + Default> Driver for LocalDriver<S, H> {
@@ -98,6 +108,18 @@ impl<S: Service + Default, H: HealthDetector + Default> Driver for LocalDriver<S
     {
         for replica in replicas {
             self.poll(replica)
+        }
+    }
+
+    fn drive_to_empty<I, II>(&mut self, replicas: II)
+    where
+        I: Iterator<Item = ReplicaIdentifier> + Clone,
+        II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,
+    {
+        let iterator = replicas.into_iter();
+
+        while iterator.clone().any(|r| !self.is_empty(r)) {
+            self.drive(iterator.clone());
         }
     }
 
@@ -141,10 +163,11 @@ impl<S: Service + Default, H: HealthDetector + Default> Driver for LocalDriver<S
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::health::HealthStatus;
     use crate::model::Payload;
     use crate::stamps::View;
+
+    use super::*;
 
     #[test]
     fn take() {
@@ -250,5 +273,31 @@ mod tests {
 
         assert_eq!(replica.identifier(), identifier);
         assert_eq!(messages, vec![]);
+    }
+
+    #[test]
+    fn empty() {
+        let group = GroupIdentifier::new(3);
+        let driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+
+        assert!(driver.is_empty(group.primary(View::default())))
+    }
+
+    #[test]
+    fn not_empty() {
+        let group = GroupIdentifier::new(3);
+        let view = View::default();
+        let identifier = group.replicas(view).last().unwrap();
+        let message = Message {
+            from: group.primary(view).into(),
+            to: identifier.into(),
+            view,
+            payload: Payload::Ping,
+        };
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+
+        driver.deliver(message);
+
+        assert!(!driver.is_empty(identifier))
     }
 }

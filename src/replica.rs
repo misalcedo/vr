@@ -426,6 +426,67 @@ mod tests {
     }
 
     #[test]
+    fn base_case_f_crashed() {
+        let f = 2;
+        let group = GroupIdentifier::new((2 * f) + 1);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+        let mut client = Client::new(group);
+
+        let operation = b"Hello, world!";
+        let primary = group.primary(client.view());
+
+        let request = client.new_message(operation);
+
+        driver.crash(group.replicas(client.view()).take(f));
+        driver.deliver(request);
+        driver.drive_to_empty(group);
+
+        let messages = driver.fetch(client.identifier());
+        let reply = reply_message(&client, operation, 1);
+
+        assert_eq!(messages, vec![reply]);
+
+        let (_, mut mailbox) = driver.take(primary).unwrap();
+        let inbound: Vec<Message> = mailbox.drain_inbound().collect();
+        let outbound: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(inbound, vec![]);
+        assert_eq!(outbound, vec![]);
+    }
+
+    #[test]
+    fn base_case_f_plus_1_crashed() {
+        let f = 2;
+        let group = GroupIdentifier::new((2 * f) + 1);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+        let mut client = Client::new(group);
+
+        let operation = b"Hello, world!";
+        let primary = group.primary(client.view());
+
+        let request = client.new_message(operation);
+
+        driver.crash(group.replicas(client.view()).take(f + 1));
+        driver.deliver(request);
+
+        // A normal request take 4 messages to get a reply: request, prepare, prepareOk, reply.
+        for _ in 0..=4 {
+            driver.drive(group);
+        }
+
+        let messages = driver.fetch(client.identifier());
+
+        assert_eq!(messages, vec![]);
+
+        let (_, mut mailbox) = driver.take(primary).unwrap();
+        let inbound = mailbox.drain_inbound().count();
+        let outbound: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(inbound, f - 1);
+        assert_eq!(outbound, vec![]);
+    }
+
+    #[test]
     fn single_client_concurrent_requests() {
         let group = GroupIdentifier::new(3);
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);

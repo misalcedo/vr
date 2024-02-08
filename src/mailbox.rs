@@ -58,6 +58,10 @@ impl Mailbox {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.inbound.iter().all(Option::is_none)
+    }
+
     pub fn deliver(&mut self, message: Message) {
         // Find an empty slot starting at the end
         for slot in self.inbound.iter_mut().rev() {
@@ -141,6 +145,7 @@ impl Mailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::Client;
     use crate::identifiers::{ClientIdentifier, GroupIdentifier};
     use crate::model::Request;
     use crate::stamps::View;
@@ -310,5 +315,45 @@ mod tests {
 
         assert!(instance.inbound.iter().all(Option::is_some));
         assert_eq!(instance.inbound.len(), 1);
+    }
+
+    #[test]
+    fn empty() {
+        let instance = Mailbox::from(ClientIdentifier::default());
+
+        assert!(instance.is_empty());
+    }
+
+    #[test]
+    fn not_empty() {
+        let group = GroupIdentifier::new(3);
+        let client = Client::new(group);
+        let mut instance = Mailbox::from(client.identifier());
+
+        instance.deliver(Message {
+            from: client.address(),
+            to: group.into(),
+            view: client.view(),
+            payload: Payload::OutdatedView,
+        });
+
+        assert!(!instance.is_empty());
+    }
+
+    #[test]
+    fn empty_slot() {
+        let group = GroupIdentifier::new(3);
+        let client = Client::new(group);
+        let mut instance = Mailbox::from(client.identifier());
+
+        instance.deliver(Message {
+            from: client.address(),
+            to: group.into(),
+            view: client.view(),
+            payload: Payload::OutdatedView,
+        });
+        instance.drain_inbound().count();
+
+        assert!(instance.is_empty());
     }
 }
