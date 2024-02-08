@@ -10,9 +10,11 @@ pub enum HealthStatus {
 }
 
 // TODO: Tests a real implementation of a health detector.
+// TODO: Add a local implementation of a health detector that works with the local driver's crash method.
 pub trait HealthDetector {
     fn detect(&mut self, view: View, replica: ReplicaIdentifier) -> HealthStatus;
 
+    // TODO: Remove this method as the replicas should not be in charge of giving the detector information about the health of other replicas.
     fn notify(&mut self, view: View, replica: ReplicaIdentifier);
 }
 
