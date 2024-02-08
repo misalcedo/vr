@@ -3,7 +3,7 @@ use crate::mailbox::Address;
 use crate::model::{Message, Request};
 use crate::stamps::View;
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct Client {
     identifier: ClientIdentifier,
     view: View,

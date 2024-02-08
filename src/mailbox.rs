@@ -28,7 +28,6 @@ impl From<ClientIdentifier> for Address {
     }
 }
 
-#[derive(Debug)]
 pub struct Mailbox {
     address: Address,
     group: Address,

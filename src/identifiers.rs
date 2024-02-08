@@ -50,7 +50,6 @@ impl GroupIdentifier {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaIterator(GroupIdentifier, usize);
 
 impl Iterator for ReplicaIterator {

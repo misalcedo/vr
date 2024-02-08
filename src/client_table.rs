@@ -3,7 +3,6 @@ use crate::model::{Reply, Request};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-#[derive(Debug, Eq, PartialEq)]
 pub struct CachedRequest {
     request: Request,
     reply: Option<Reply>,
@@ -26,7 +25,6 @@ impl CachedRequest {
     }
 }
 
-#[derive(Debug)]
 pub struct ClientTable {
     cache: HashMap<ClientIdentifier, CachedRequest>,
 }
