@@ -133,7 +133,7 @@ mod tests {
     use super::*;
     use crate::client::Client;
     use crate::health::HealthStatus;
-    use crate::model::Reply;
+    use crate::model::{ConcurrentRequest, Reply};
 
     #[test]
     fn simple() {
@@ -146,9 +146,9 @@ mod tests {
         let primary = group.primary(client.view());
 
         driver.deliver(request);
-        driver.drive(primary);
+        driver.drive(Some(primary));
         driver.drive(group.replicas(client.view()));
-        driver.drive(primary);
+        driver.drive(Some(primary));
 
         let messages = driver.fetch(client.identifier());
         let reply = Message {
@@ -163,5 +163,33 @@ mod tests {
         };
 
         assert_eq!(messages, vec![reply]);
+    }
+
+    #[test]
+    fn concurrent_requests() {
+        let group = GroupIdentifier::new(3);
+        let mut driver: BasicDriver<usize, HealthStatus> = BasicDriver::new(group);
+        let mut client = Client::new(group);
+
+        let operation = b"Hello, world!";
+        let primary = group.primary(client.view());
+        let old_request = client.new_message(operation);
+        let last_request = client.last_request();
+        let new_request = client.new_message(operation);
+
+        driver.deliver(old_request);
+        driver.deliver(new_request);
+        driver.drive(Some(primary));
+        driver.drive(Some(primary));
+
+        let messages = driver.fetch(client.identifier());
+        let response = Message {
+            from: primary.into(),
+            to: client.address(),
+            view: client.view(),
+            payload: ConcurrentRequest { s: last_request }.into(),
+        };
+
+        assert_eq!(messages, vec![response]);
     }
 }

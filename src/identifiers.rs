@@ -17,19 +17,6 @@ impl ReplicaIdentifier {
     }
 }
 
-impl Iterator for ReplicaIdentifier {
-    type Item = Self;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.1 >= self.0 .1 {
-            None
-        } else {
-            self.1 += 1;
-            Some(Self(self.0, self.1 - 1))
-        }
-    }
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct GroupIdentifier(u128, usize);
 
@@ -55,9 +42,7 @@ impl GroupIdentifier {
     pub fn replicas(&self, view: View) -> impl Iterator<Item = ReplicaIdentifier> {
         let primary = self.primary(view);
 
-        ReplicaIdentifier(*self, 0)
-            .into_iter()
-            .filter(move |r| r != &primary)
+        ReplicaIterator(*self, 0).filter(move |r| r != &primary)
     }
 
     pub fn sub_majority(&self) -> usize {
@@ -65,12 +50,28 @@ impl GroupIdentifier {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplicaIterator(GroupIdentifier, usize);
+
+impl Iterator for ReplicaIterator {
+    type Item = ReplicaIdentifier;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.1 >= self.0 .1 {
+            None
+        } else {
+            self.1 += 1;
+            Some(ReplicaIdentifier(self.0, self.1 - 1))
+        }
+    }
+}
+
 impl IntoIterator for GroupIdentifier {
     type Item = ReplicaIdentifier;
-    type IntoIter = ReplicaIdentifier;
+    type IntoIter = ReplicaIterator;
 
     fn into_iter(self) -> Self::IntoIter {
-        ReplicaIdentifier(self, 0)
+        ReplicaIterator(self, 0)
     }
 }
 
