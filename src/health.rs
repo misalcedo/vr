@@ -21,7 +21,7 @@ mod tests {
     use super::*;
 
     impl HealthDetector for HealthStatus {
-        fn detect(&mut self, view: View, replica: ReplicaIdentifier) -> HealthStatus {
+        fn detect(&mut self, _: View, _: ReplicaIdentifier) -> HealthStatus {
             *self
         }
 

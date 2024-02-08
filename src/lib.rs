@@ -2,6 +2,7 @@
 
 mod client;
 mod client_table;
+mod driver;
 mod health;
 mod identifiers;
 mod mailbox;

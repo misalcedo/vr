@@ -17,6 +17,19 @@ impl ReplicaIdentifier {
     }
 }
 
+impl Iterator for ReplicaIdentifier {
+    type Item = Self;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.1 >= self.0 .1 {
+            None
+        } else {
+            self.1 += 1;
+            Some(Self(self.0, self.1 - 1))
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct GroupIdentifier(u128, usize);
 
@@ -31,19 +44,33 @@ impl GroupIdentifier {
         Self(uuid::Uuid::now_v7().as_u128(), replicas)
     }
 
+    pub fn size(&self) -> usize {
+        self.1
+    }
+
     pub fn primary(&self, view: View) -> ReplicaIdentifier {
         ReplicaIdentifier(*self, (view.as_u128() % (self.1 as u128)) as usize)
     }
 
-    pub fn replicas(&self) -> impl Iterator<Item = ReplicaIdentifier> {
-        let clone = *self;
-        (0..self.1)
+    pub fn replicas(&self, view: View) -> impl Iterator<Item = ReplicaIdentifier> {
+        let primary = self.primary(view);
+
+        ReplicaIdentifier(*self, 0)
             .into_iter()
-            .map(move |i| ReplicaIdentifier(clone, i))
+            .filter(move |r| r != &primary)
     }
 
     pub fn sub_majority(&self) -> usize {
         (self.1 - 1) / 2
+    }
+}
+
+impl IntoIterator for GroupIdentifier {
+    type Item = ReplicaIdentifier;
+    type IntoIter = ReplicaIdentifier;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ReplicaIdentifier(self, 0)
     }
 }
 
@@ -75,5 +102,46 @@ mod tests {
         assert_eq!(GroupIdentifier::new(3).sub_majority(), 1);
         assert_eq!(GroupIdentifier::new(4).sub_majority(), 1);
         assert_eq!(GroupIdentifier::new(5).sub_majority(), 2);
+    }
+
+    #[test]
+    fn into_iter() {
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
+
+        assert_eq!(
+            replicas,
+            vec![
+                ReplicaIdentifier(group, 0),
+                ReplicaIdentifier(group, 1),
+                ReplicaIdentifier(group, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn primary() {
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
+
+        let mut view = View::default();
+
+        for i in 0..10 {
+            assert_eq!(group.primary(view), replicas[i % group.size()]);
+            view.increment()
+        }
+    }
+
+    #[test]
+    fn replicas() {
+        let group = GroupIdentifier::new(3);
+
+        let mut view = View::default();
+
+        for _ in 0..10 {
+            let primary = group.primary(view);
+            assert!(group.replicas(view).all(|r| r != primary));
+            view.increment();
+        }
     }
 }

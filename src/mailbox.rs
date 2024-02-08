@@ -42,6 +42,12 @@ impl From<ReplicaIdentifier> for Mailbox {
     }
 }
 
+impl From<ClientIdentifier> for Mailbox {
+    fn from(value: ClientIdentifier) -> Self {
+        Self::new(value.into(), value.into())
+    }
+}
+
 impl Mailbox {
     pub fn new(address: Address, group: Address) -> Self {
         Self {
@@ -52,16 +58,16 @@ impl Mailbox {
         }
     }
 
-    pub fn deliver(&mut self, envelope: Message) {
+    pub fn deliver(&mut self, message: Message) {
         // Find an empty slot starting at the end
         for slot in self.inbound.iter_mut().rev() {
             if slot.is_none() {
-                *slot = Some(envelope);
+                *slot = Some(message);
                 return;
             }
         }
 
-        self.inbound.push(Some(envelope));
+        self.inbound.push(Some(message));
     }
 
     pub fn drain_inbound(&mut self) -> impl Iterator<Item = Message> + '_ {
@@ -74,8 +80,8 @@ impl Mailbox {
 
     pub fn select<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) {
         for index in 0..self.inbound.len() {
-            if let Some(envelope) = self.inbound.get_mut(index).and_then(Option::take) {
-                self.inbound[index] = f(self, envelope);
+            if let Some(message) = self.inbound.get_mut(index).and_then(Option::take) {
+                self.inbound[index] = f(self, message);
 
                 if self.inbound[index].is_none() {
                     break;
@@ -86,16 +92,16 @@ impl Mailbox {
 
     pub fn select_all<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) {
         for index in 0..self.inbound.len() {
-            if let Some(envelope) = self.inbound.get_mut(index).and_then(Option::take) {
-                self.inbound[index] = f(self, envelope);
+            if let Some(message) = self.inbound.get_mut(index).and_then(Option::take) {
+                self.inbound[index] = f(self, message);
             }
         }
     }
 
     pub fn visit<F: FnMut(&Message)>(&mut self, mut f: F) {
         for slot in self.inbound.iter() {
-            if let Some(envelope) = slot {
-                f(envelope);
+            if let Some(message) = slot {
+                f(message);
             }
         }
     }
@@ -144,7 +150,7 @@ mod tests {
         let group = GroupIdentifier::default();
         let client = ClientIdentifier::default();
         let client_address = Address::from(client);
-        let replica = Address::from(group.replicas().next().unwrap());
+        let replica = Address::from(group.into_iter().next().unwrap());
         let view = View::default();
         let request = Request {
             op: vec![],
@@ -185,7 +191,7 @@ mod tests {
         let group = GroupIdentifier::default();
         let client = ClientIdentifier::default();
         let client_address = Address::from(client);
-        let replica = Address::from(group.replicas().next().unwrap());
+        let replica = Address::from(group.into_iter().next().unwrap());
         let view = View::default();
         let request = Request {
             op: vec![],
@@ -216,7 +222,7 @@ mod tests {
         instance.select_all(|_, m| Some(m));
         assert!(!instance.inbound.iter().all(Option::is_none));
 
-        instance.select_all(|_, m| None);
+        instance.select_all(|_, _| None);
         assert!(instance.inbound.iter().all(Option::is_none));
     }
 
@@ -225,7 +231,7 @@ mod tests {
         let group = GroupIdentifier::default();
         let client = ClientIdentifier::default();
         let client_address = Address::from(client);
-        let replica = Address::from(group.replicas().next().unwrap());
+        let replica = Address::from(group.into_iter().next().unwrap());
         let view = View::default();
         let request = Request {
             op: vec![],
@@ -244,7 +250,7 @@ mod tests {
         instance.inbound = vec![None, Some(message.clone()), Some(message.clone())];
 
         let mut counter = 0;
-        instance.visit(|m| counter += 1);
+        instance.visit(|_| counter += 1);
         assert_eq!(counter, 2);
     }
 
@@ -253,7 +259,7 @@ mod tests {
         let group = GroupIdentifier::default();
         let client = ClientIdentifier::default();
         let client_address = Address::from(client);
-        let replica = Address::from(group.replicas().next().unwrap());
+        let replica = Address::from(group.into_iter().next().unwrap());
         let view = View::default();
         let request = Request {
             op: vec![],
@@ -295,7 +301,7 @@ mod tests {
     #[test]
     fn send_self() {
         let group = GroupIdentifier::default();
-        let replica = Address::from(group.replicas().next().unwrap());
+        let replica = Address::from(group.into_iter().next().unwrap());
         let view = View::default();
 
         let mut instance = Mailbox::new(replica, Address::from(group));
