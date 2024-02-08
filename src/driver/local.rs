@@ -142,9 +142,8 @@ impl<S: Service + Default, H: HealthDetector + Default> Driver for LocalDriver<S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::Client;
     use crate::health::HealthStatus;
-    use crate::model::{ConcurrentRequest, Payload, Reply};
+    use crate::model::Payload;
     use crate::stamps::View;
 
     #[test]
@@ -182,60 +181,74 @@ mod tests {
     }
 
     #[test]
-    fn simple() {
+    fn crash_loses_messages() {
         let group = GroupIdentifier::new(3);
-        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
-        let mut client = Client::new(group);
-
-        let operation = b"Hello, world!";
-        let request = client.new_message(operation);
-        let primary = group.primary(client.view());
-
-        driver.deliver(request);
-        driver.drive(Some(primary));
-        driver.drive(group.replicas(client.view()));
-        driver.drive(Some(primary));
-
-        let messages = driver.fetch(client.identifier());
-        let reply = Message {
-            from: primary.into(),
-            to: client.address(),
-            view: client.view(),
-            payload: Reply {
-                x: operation.len().to_be_bytes().to_vec(),
-                s: client.last_request(),
-            }
-            .into(),
+        let identifier = group.into_iter().last().unwrap();
+        let view = View::default();
+        let message = Message {
+            from: group.primary(view).into(),
+            to: identifier.into(),
+            view,
+            payload: Payload::Ping,
         };
 
-        assert_eq!(messages, vec![reply]);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+
+        driver.deliver(message.clone());
+        driver.crash(Some(identifier));
+        driver.deliver(message.clone());
+        driver.recover(Some(identifier));
+
+        let (replica, mut mailbox) = driver.take(identifier).unwrap();
+        let messages: Vec<Message> = mailbox.drain_inbound().collect();
+
+        assert_eq!(replica.identifier(), identifier);
+        assert_eq!(messages, vec![]);
     }
 
     #[test]
-    fn concurrent_requests() {
+    fn deliver_self() {
         let group = GroupIdentifier::new(3);
-        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
-        let mut client = Client::new(group);
-
-        let operation = b"Hello, world!";
-        let primary = group.primary(client.view());
-        let old_request = client.new_message(operation);
-        let last_request = client.last_request();
-        let new_request = client.new_message(operation);
-
-        driver.deliver(old_request);
-        driver.deliver(new_request);
-        driver.drive(Some(primary));
-        driver.drive(Some(primary));
-
-        let messages = driver.fetch(client.identifier());
-        let response = Message {
-            from: primary.into(),
-            to: client.address(),
-            view: client.view(),
-            payload: ConcurrentRequest { s: last_request }.into(),
+        let identifier = group.into_iter().last().unwrap();
+        let view = View::default();
+        let message = Message {
+            from: identifier.into(),
+            to: identifier.into(),
+            view,
+            payload: Payload::Ping,
         };
 
-        assert_eq!(messages, vec![response]);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+
+        driver.deliver(message.clone());
+
+        let (replica, mut mailbox) = driver.take(identifier).unwrap();
+        let messages: Vec<Message> = mailbox.drain_inbound().collect();
+
+        assert_eq!(replica.identifier(), identifier);
+        assert_eq!(messages, vec![message]);
+    }
+
+    #[test]
+    fn deliver_group_excludes_self() {
+        let group = GroupIdentifier::new(3);
+        let identifier = group.into_iter().last().unwrap();
+        let view = View::default();
+        let message = Message {
+            from: identifier.into(),
+            to: group.into(),
+            view,
+            payload: Payload::Ping,
+        };
+
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+
+        driver.deliver(message.clone());
+
+        let (replica, mut mailbox) = driver.take(identifier).unwrap();
+        let messages: Vec<Message> = mailbox.drain_inbound().collect();
+
+        assert_eq!(replica.identifier(), identifier);
+        assert_eq!(messages, vec![]);
     }
 }

@@ -3,6 +3,8 @@ use crate::model::Message;
 
 mod local;
 
+pub use local::LocalDriver;
+
 pub trait Driver {
     fn drive<I, II>(&mut self, replicas: II)
     where

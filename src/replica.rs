@@ -383,6 +383,7 @@ where
 mod tests {
     use crate::client::Client;
     use crate::client_table::CachedRequest;
+    use crate::driver::{Driver, LocalDriver};
     use crate::health::HealthStatus;
     use crate::identifiers::GroupIdentifier;
     use crate::model::OutdatedRequest;
@@ -390,32 +391,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_primary() {
-        let operation = b"Hi!";
+    fn base_case() {
         let group = GroupIdentifier::new(3);
-        let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
-
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let mut client = Client::new(group);
 
-        primary.health_detector = HealthStatus::Unhealthy;
+        let operation = b"Hello, world!";
+        let request = client.new_message(operation);
+        let primary = group.primary(client.view());
 
-        let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
-        let messages: Vec<Message> = mailbox.drain_outbound().collect();
+        driver.deliver(request);
+        driver.drive(Some(primary));
+        driver.drive(group.replicas(client.view()));
+        driver.drive(Some(primary));
 
-        assert_eq!(
-            messages,
-            vec![prepare_message(&primary, &client, operation)]
-        );
-        assert_eq!(primary.health_detector, HealthStatus::Normal);
-        assert_eq!(
-            primary
-                .client_table
-                .get(&client.request(operation))
-                .unwrap()
-                .reply(),
-            None
-        );
+        let messages = driver.fetch(client.identifier());
+        let reply = Message {
+            from: primary.into(),
+            to: client.address(),
+            view: client.view(),
+            payload: Reply {
+                x: operation.len().to_be_bytes().to_vec(),
+                s: client.last_request(),
+            }
+            .into(),
+        };
+
+        assert_eq!(messages, vec![reply]);
+    }
+
+    #[test]
+    fn single_client_concurrent_requests() {
+        let group = GroupIdentifier::new(3);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+        let mut client = Client::new(group);
+
+        let operation = b"Hello, world!";
+        let primary = group.primary(client.view());
+        let old_request = client.new_message(operation);
+        let last_request = client.last_request();
+        let new_request = client.new_message(operation);
+
+        driver.deliver(old_request);
+        driver.deliver(new_request);
+        driver.drive(Some(primary));
+        driver.drive(Some(primary));
+
+        let messages = driver.fetch(client.identifier());
+        let response = Message {
+            from: primary.into(),
+            to: client.address(),
+            view: client.view(),
+            payload: ConcurrentRequest { s: last_request }.into(),
+        };
+
+        assert_eq!(messages, vec![response]);
     }
 
     #[test]
@@ -690,35 +720,6 @@ mod tests {
 
         assert_eq!(messages, replies);
         assert_eq!(primary.service, operation.len() * 2);
-    }
-
-    #[test]
-    fn client_concurrent() {
-        let operation = b"Hi!";
-        let group = GroupIdentifier::new(5);
-        let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
-
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
-        let mut client = Client::new(group);
-        let mut mailbox = Mailbox::from(primary.identifier);
-
-        mailbox.deliver(client.new_message(operation));
-        primary.poll(&mut mailbox);
-
-        let old_client = client.clone();
-
-        mailbox.deliver(client.new_message(operation));
-        primary.poll(&mut mailbox);
-
-        let messages: Vec<Message> = mailbox.drain_outbound().collect();
-
-        assert_eq!(
-            messages,
-            vec![
-                prepare_message(&primary, &old_client, operation),
-                concurrent_request_message(&primary, &old_client)
-            ]
-        );
     }
 
     #[test]
@@ -1030,17 +1031,6 @@ mod tests {
             payload: Payload::StartView(StartView {
                 l: primary.log.clone(),
                 k: primary.committed,
-            }),
-        }
-    }
-
-    fn concurrent_request_message<S, H>(primary: &Replica<S, H>, client: &Client) -> Message {
-        Message {
-            from: primary.identifier.into(),
-            to: client.address(),
-            view: primary.view,
-            payload: Payload::ConcurrentRequest(ConcurrentRequest {
-                s: client.last_request(),
             }),
         }
     }
