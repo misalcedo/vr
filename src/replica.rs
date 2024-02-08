@@ -397,27 +397,32 @@ mod tests {
         let mut client = Client::new(group);
 
         let operation = b"Hello, world!";
-        let request = client.new_message(operation);
         let primary = group.primary(client.view());
 
-        driver.deliver(request);
-        driver.drive(Some(primary));
-        driver.drive(group.replicas(client.view()));
-        driver.drive(Some(primary));
+        for i in 1..=3 {
+            let request = client.new_message(operation);
 
-        let messages = driver.fetch(client.identifier());
-        let reply = Message {
-            from: primary.into(),
-            to: client.address(),
-            view: client.view(),
-            payload: Reply {
-                x: operation.len().to_be_bytes().to_vec(),
-                s: client.last_request(),
-            }
-            .into(),
-        };
+            driver.deliver(request);
+            driver.drive(Some(primary));
+            driver.drive(group.replicas(client.view()));
+            driver.drive(Some(primary));
 
-        assert_eq!(messages, vec![reply]);
+            let messages = driver.fetch(client.identifier());
+
+            // process 2nd prepareOk
+            driver.drive(Some(primary));
+
+            let reply = reply_message(&client, operation, i);
+
+            assert_eq!(messages, vec![reply]);
+        }
+
+        let (_, mut mailbox) = driver.take(primary).unwrap();
+        let inbound: Vec<Message> = mailbox.drain_inbound().collect();
+        let outbound: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(inbound, vec![]);
+        assert_eq!(outbound, vec![]);
     }
 
     #[test]
@@ -669,17 +674,14 @@ mod tests {
 
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
-        assert_eq!(
-            messages,
-            vec![reply_message(&primary, &client, operation, 1)]
-        );
+        assert_eq!(messages, vec![reply_message(&client, operation, 1)]);
         assert_eq!(primary.service, operation.len());
         assert_eq!(
             primary
                 .client_table
                 .get(&client.request(operation))
                 .and_then(CachedRequest::reply),
-            Some(new_reply(&client, operation, 1))
+            Some(reply_payload(&client, operation, 1))
         );
     }
 
@@ -714,8 +716,8 @@ mod tests {
 
         // backtrack the request id to build the replies correctly.
         let replies = vec![
-            reply_message(&primary, &client1, operation, 1),
-            reply_message(&primary, &client2, operation, 2),
+            reply_message(&client1, operation, 1),
+            reply_message(&client2, operation, 2),
         ];
 
         assert_eq!(messages, replies);
@@ -765,19 +767,13 @@ mod tests {
         primary.poll(&mut mailbox);
 
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
-        assert_eq!(
-            messages,
-            vec![reply_message(&primary, &client, operation, 1)]
-        );
+        assert_eq!(messages, vec![reply_message(&client, operation, 1)]);
 
         mailbox.deliver(client.message(operation));
         primary.poll(&mut mailbox);
 
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
-        assert_eq!(
-            messages,
-            vec![reply_message(&primary, &client, operation, 1)]
-        );
+        assert_eq!(messages, vec![reply_message(&client, operation, 1)]);
     }
 
     #[test]
@@ -852,13 +848,13 @@ mod tests {
 
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
+        // Inform the client of the new view so the reply message we assert is correct.
+        client.set_view(primary.view);
+
         assert_eq!(mailbox.drain_inbound().count(), 0);
         assert_eq!(
             messages,
-            vec![
-                start_view_message(&primary),
-                reply_message(&primary, &client, &[], 1),
-            ]
+            vec![start_view_message(&primary), reply_message(&client, &[], 1),]
         );
         assert_eq!(primary.status, Status::Normal);
         assert_eq!(primary.log, replica.log);
@@ -993,21 +989,16 @@ mod tests {
         }
     }
 
-    fn reply_message<S, H>(
-        primary: &Replica<S, H>,
-        client: &Client,
-        operation: &[u8],
-        times: usize,
-    ) -> Message {
+    fn reply_message(client: &Client, operation: &[u8], times: usize) -> Message {
         Message {
-            from: primary.identifier.into(),
+            from: client.primary().into(),
             to: client.address(),
-            view: primary.view,
-            payload: new_reply(client, operation, times).into(),
+            view: client.view(),
+            payload: reply_payload(client, operation, times).into(),
         }
     }
 
-    fn new_reply(client: &Client, operation: &[u8], times: usize) -> Reply {
+    fn reply_payload(client: &Client, operation: &[u8], times: usize) -> Reply {
         Reply {
             x: (operation.len() * times).to_be_bytes().to_vec(),
             s: client.last_request(),
@@ -1066,10 +1057,7 @@ mod tests {
 
             let messages: Vec<Message> = mailbox.drain_outbound().collect();
 
-            assert_eq!(
-                messages,
-                vec![reply_message(&primary, &client, operation, i)]
-            );
+            assert_eq!(messages, vec![reply_message(&client, operation, i)]);
         }
 
         mailbox

@@ -1,4 +1,4 @@
-use crate::identifiers::{ClientIdentifier, GroupIdentifier, RequestIdentifier};
+use crate::identifiers::{ClientIdentifier, GroupIdentifier, ReplicaIdentifier, RequestIdentifier};
 use crate::mailbox::Address;
 use crate::model::{Message, Request};
 use crate::stamps::View;
@@ -29,6 +29,14 @@ impl Client {
         self.identifier
     }
 
+    pub fn primary(&self) -> ReplicaIdentifier {
+        self.group.primary(self.view)
+    }
+
+    pub fn group(&self) -> GroupIdentifier {
+        self.group
+    }
+
     pub fn view(&self) -> View {
         self.view
     }
@@ -50,7 +58,7 @@ impl Client {
     pub fn message(&self, payload: &[u8]) -> Message {
         Message {
             from: self.identifier.into(),
-            to: self.group.primary(self.view).into(),
+            to: self.primary().into(),
             view: self.view,
             payload: self.request(payload).into(),
         }
@@ -62,5 +70,9 @@ impl Client {
             c: self.identifier,
             s: self.request,
         }
+    }
+
+    pub fn set_view(&mut self, view: View) {
+        self.view = view;
     }
 }
