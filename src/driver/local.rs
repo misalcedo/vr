@@ -8,12 +8,12 @@ use crate::service::Service;
 use std::collections::HashMap;
 
 #[derive(Debug)]
-pub struct BasicDriver<S, H> {
+pub struct LocalDriver<S, H> {
     mailboxes: HashMap<Address, Mailbox>,
     replicas: HashMap<ReplicaIdentifier, Replica<S, H>>,
 }
 
-impl<S: Service + Default, H: HealthDetector + Default> BasicDriver<S, H> {
+impl<S: Service + Default, H: HealthDetector + Default> LocalDriver<S, H> {
     pub fn new(group: GroupIdentifier) -> Self {
         let mut mailboxes = HashMap::with_capacity(group.size());
         let mut replicas = HashMap::with_capacity(group.size());
@@ -33,7 +33,7 @@ impl<S: Service + Default, H: HealthDetector + Default> BasicDriver<S, H> {
     }
 }
 
-impl<S: Service, H: HealthDetector> BasicDriver<S, H> {
+impl<S: Service, H: HealthDetector> LocalDriver<S, H> {
     pub fn take(mut self, identifier: ReplicaIdentifier) -> Result<(Replica<S, H>, Mailbox), Self> {
         match (
             self.replicas.remove(&identifier),
@@ -90,7 +90,7 @@ impl<S: Service, H: HealthDetector> BasicDriver<S, H> {
     }
 }
 
-impl<S: Service + Default, H: HealthDetector + Default> Driver for BasicDriver<S, H> {
+impl<S: Service + Default, H: HealthDetector + Default> Driver for LocalDriver<S, H> {
     fn drive<I, II>(&mut self, replicas: II)
     where
         I: Iterator<Item = ReplicaIdentifier>,
@@ -159,7 +159,7 @@ mod tests {
             payload: Payload::Ping,
         };
 
-        let mut driver: BasicDriver<usize, HealthStatus> = BasicDriver::new(group);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
 
         driver.deliver(message.clone());
 
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn take_crashed() {
         let group = GroupIdentifier::new(3);
-        let mut driver: BasicDriver<usize, HealthStatus> = BasicDriver::new(group);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let primary = group.primary(View::default());
 
         driver.crash(Some(primary));
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn simple() {
         let group = GroupIdentifier::new(3);
-        let mut driver: BasicDriver<usize, HealthStatus> = BasicDriver::new(group);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let mut client = Client::new(group);
 
         let operation = b"Hello, world!";
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn concurrent_requests() {
         let group = GroupIdentifier::new(3);
-        let mut driver: BasicDriver<usize, HealthStatus> = BasicDriver::new(group);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let mut client = Client::new(group);
 
         let operation = b"Hello, world!";

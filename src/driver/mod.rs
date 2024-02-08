@@ -1,7 +1,7 @@
 use crate::identifiers::{ClientIdentifier, ReplicaIdentifier};
 use crate::model::Message;
 
-mod basic;
+mod local;
 
 pub trait Driver {
     fn drive<I, II>(&mut self, replicas: II)
