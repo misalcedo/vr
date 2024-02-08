@@ -26,6 +26,7 @@ enum Status {
 // - only unprepared requests on the old primary are lost on view change
 // - request de-duplication still works after a view change
 // - responses for old requests still sent after a view change
+#[derive(Debug)]
 pub struct Replica<S, H> {
     /// The service code for processing committed client requests.
     service: S,
@@ -68,6 +69,10 @@ where
             executed: Default::default(),
             client_table: Default::default(),
         }
+    }
+
+    pub fn identifier(&self) -> ReplicaIdentifier {
+        self.identifier
     }
 
     pub fn poll(&mut self, mailbox: &mut Mailbox) {

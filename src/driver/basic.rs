@@ -7,6 +7,7 @@ use crate::replica::Replica;
 use crate::service::Service;
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct BasicDriver<S, H> {
     mailboxes: HashMap<Address, Mailbox>,
     replicas: HashMap<ReplicaIdentifier, Replica<S, H>>,
@@ -33,7 +34,17 @@ impl<S: Service + Default, H: HealthDetector + Default> BasicDriver<S, H> {
 }
 
 impl<S: Service, H: HealthDetector> BasicDriver<S, H> {
-    pub fn poll(&mut self, identifier: ReplicaIdentifier) {
+    pub fn take(mut self, identifier: ReplicaIdentifier) -> Result<(Replica<S, H>, Mailbox), Self> {
+        match (
+            self.replicas.remove(&identifier),
+            self.mailboxes.remove(&identifier.into()),
+        ) {
+            (Some(replica), Some(mailbox)) => Ok((replica, mailbox)),
+            _ => Err(self),
+        }
+    }
+
+    fn poll(&mut self, identifier: ReplicaIdentifier) {
         let mut messages = Vec::new();
 
         if let (Some(replica), Some(mailbox)) = (
@@ -133,7 +144,42 @@ mod tests {
     use super::*;
     use crate::client::Client;
     use crate::health::HealthStatus;
-    use crate::model::{ConcurrentRequest, Reply};
+    use crate::model::{ConcurrentRequest, Payload, Reply};
+    use crate::stamps::View;
+
+    #[test]
+    fn take() {
+        let group = GroupIdentifier::new(3);
+        let identifier = group.into_iter().last().unwrap();
+        let view = View::default();
+        let message = Message {
+            from: group.primary(view).into(),
+            to: identifier.into(),
+            view,
+            payload: Payload::Ping,
+        };
+
+        let mut driver: BasicDriver<usize, HealthStatus> = BasicDriver::new(group);
+
+        driver.deliver(message.clone());
+
+        let (replica, mut mailbox) = driver.take(identifier).unwrap();
+        let messages: Vec<Message> = mailbox.drain_inbound().collect();
+
+        assert_eq!(replica.identifier(), identifier);
+        assert_eq!(messages, vec![message]);
+    }
+
+    #[test]
+    fn take_crashed() {
+        let group = GroupIdentifier::new(3);
+        let mut driver: BasicDriver<usize, HealthStatus> = BasicDriver::new(group);
+        let primary = group.primary(View::default());
+
+        driver.crash(Some(primary));
+
+        assert!(driver.take(primary).is_err());
+    }
 
     #[test]
     fn simple() {
