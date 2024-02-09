@@ -32,6 +32,56 @@ impl<S: Service + Default, H: HealthDetector + Default> LocalDriver<S, H> {
             replicas,
         }
     }
+
+    pub fn recover<I, II>(&mut self, replicas: II)
+    where
+        I: Iterator<Item = ReplicaIdentifier>,
+        II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,
+    {
+        for replica in replicas {
+            self.mailboxes
+                .entry(replica.into())
+                .or_insert_with(|| Mailbox::from(replica));
+            self.replicas
+                .entry(replica)
+                .or_insert_with(|| Replica::new(replica, Default::default(), Default::default()));
+        }
+    }
+}
+
+impl<S: Service + Default, H: HealthDetector + Clone> LocalDriver<S, H> {
+    pub fn with_health_detector(group: GroupIdentifier, detector: &H) -> Self {
+        let mut mailboxes = HashMap::with_capacity(group.size());
+        let mut replicas = HashMap::with_capacity(group.size());
+
+        for replica in group {
+            mailboxes.insert(replica.into(), Mailbox::from(replica));
+            replicas.insert(
+                replica,
+                Replica::new(replica, Default::default(), detector.clone()),
+            );
+        }
+
+        Self {
+            mailboxes,
+            replicas,
+        }
+    }
+
+    pub fn recover_with_detector<I, II>(&mut self, detector: &H, replicas: II)
+    where
+        I: Iterator<Item = ReplicaIdentifier>,
+        II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,
+    {
+        for replica in replicas {
+            self.mailboxes
+                .entry(replica.into())
+                .or_insert_with(|| Mailbox::from(replica));
+            self.replicas
+                .entry(replica)
+                .or_insert_with(|| Replica::new(replica, Default::default(), detector.clone()));
+        }
+    }
 }
 
 impl<S: Service, H: HealthDetector> LocalDriver<S, H> {
@@ -98,9 +148,31 @@ impl<S: Service, H: HealthDetector> LocalDriver<S, H> {
                 .map(Mailbox::is_empty)
                 .unwrap_or_default()
     }
+
+    pub fn crash<I, II>(&mut self, replicas: II)
+    where
+        I: Iterator<Item = ReplicaIdentifier>,
+        II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,
+    {
+        for replica in replicas {
+            self.mailboxes.remove(&replica.into());
+            self.replicas.remove(&replica);
+        }
+    }
+
+    pub fn deliver(&mut self, message: Message) {
+        self.route(message)
+    }
+
+    pub fn fetch(&mut self, client: ClientIdentifier) -> Vec<Message> {
+        match self.mailboxes.get_mut(&client.into()) {
+            None => Vec::new(),
+            Some(mailbox) => mailbox.drain_inbound().collect(),
+        }
+    }
 }
 
-impl<S: Service + Default, H: HealthDetector + Default> Driver for LocalDriver<S, H> {
+impl<S: Service, H: HealthDetector> Driver for LocalDriver<S, H> {
     fn drive<I, II>(&mut self, replicas: II)
     where
         I: Iterator<Item = ReplicaIdentifier>,
@@ -120,43 +192,6 @@ impl<S: Service + Default, H: HealthDetector + Default> Driver for LocalDriver<S
 
         while iterator.clone().any(|r| !self.is_empty(r)) {
             self.drive(iterator.clone());
-        }
-    }
-
-    fn crash<I, II>(&mut self, replicas: II)
-    where
-        I: Iterator<Item = ReplicaIdentifier>,
-        II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,
-    {
-        for replica in replicas {
-            self.mailboxes.remove(&replica.into());
-            self.replicas.remove(&replica);
-        }
-    }
-
-    fn recover<I, II>(&mut self, replicas: II)
-    where
-        I: Iterator<Item = ReplicaIdentifier>,
-        II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,
-    {
-        for replica in replicas {
-            self.mailboxes
-                .entry(replica.into())
-                .or_insert_with(|| Mailbox::from(replica));
-            self.replicas
-                .entry(replica)
-                .or_insert_with(|| Replica::new(replica, Default::default(), Default::default()));
-        }
-    }
-
-    fn deliver(&mut self, message: Message) {
-        self.route(message)
-    }
-
-    fn fetch(&mut self, client: ClientIdentifier) -> Vec<Message> {
-        match self.mailboxes.get_mut(&client.into()) {
-            None => Vec::new(),
-            Some(mailbox) => mailbox.drain_inbound().collect(),
         }
     }
 }
