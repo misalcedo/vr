@@ -10,3 +10,4 @@ mod model;
 mod replica;
 mod service;
 mod stamps;
+mod state;
