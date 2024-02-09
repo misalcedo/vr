@@ -44,13 +44,13 @@ impl ClientTable {
         self.cache.get(&request.c)
     }
 
-    pub fn set(&mut self, request: &Request, reply: &Reply) {
+    pub fn set(&mut self, request: &Request, reply: Reply) {
         let last_request = self
             .cache
             .entry(request.c)
             .or_insert_with(|| CachedRequest::new(request.clone()));
 
-        last_request.reply = Some(reply.clone());
+        last_request.reply = Some(reply);
     }
 
     pub fn start(&mut self, request: &Request) {

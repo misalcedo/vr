@@ -242,8 +242,6 @@ where
         }
     }
 
-    // TODO: Should replicas maintain the client table as well?
-    // Likely yes, otherwise they won't have the necessary information to update on view change.
     fn process_normal_replica(&mut self, mailbox: &mut Mailbox) {
         let next_op = self.op_number.next();
 
@@ -261,10 +259,9 @@ where
                 self.push_request(prepare.m);
 
                 let primary = self.identifier.primary(self.view);
+
                 sender.send(primary, self.view, PrepareOk { n: self.op_number });
-
                 self.committed = self.committed.max(prepare.k);
-
                 self.execute_replica();
 
                 None
@@ -348,7 +345,7 @@ where
                 x: payload,
             };
 
-            self.client_table.set(request, &reply);
+            self.client_table.set(request, reply.clone());
             self.executed.increment();
             mailbox.send(request.c, self.view, reply);
         }
@@ -365,7 +362,13 @@ where
         while self.committed > self.executed && self.executed < length {
             // executed must be incremented after indexing the log to avoid panicking.
             let request = &self.log[self.executed.as_usize()];
-            self.service.invoke(request.op.as_slice());
+            let payload = self.service.invoke(request.op.as_slice());
+            let reply = Reply {
+                s: request.s,
+                x: payload,
+            };
+
+            self.client_table.set(request, reply);
             self.executed.increment();
         }
     }
