@@ -12,7 +12,6 @@ pub enum HealthStatus {
     Unhealthy,
 }
 
-// TODO: Tests a real implementation of a health detector.
 pub trait HealthDetector {
     fn detect(&mut self, view: View, replica: ReplicaIdentifier) -> HealthStatus;
 }
