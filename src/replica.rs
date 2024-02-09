@@ -222,7 +222,6 @@ where
             });
 
             self.status = Status::Normal;
-            self.health_detector.notify(self.view, self.identifier);
             mailbox.broadcast(
                 self.view,
                 StartView {
@@ -250,19 +249,15 @@ where
 
         mailbox.select(|sender, message| match message {
             Message {
-                from: Address::Replica(replica),
+                from: Address::Replica(_),
                 payload: Payload::Ping,
                 ..
-            } => {
-                self.health_detector.notify(self.view, replica);
-                None
-            }
+            } => None,
             Message {
-                from: Address::Replica(replica),
+                from: Address::Replica(_),
                 payload: Payload::Prepare(prepare),
                 ..
             } if next_op == prepare.n => {
-                self.health_detector.notify(self.view, replica);
                 self.push_request(prepare.m);
 
                 let primary = self.identifier.primary(self.view);
@@ -296,7 +291,7 @@ where
     fn process_view_change_replica(&mut self, mailbox: &mut Mailbox) {
         mailbox.select(|_, message| match message {
             Message {
-                from: Address::Replica(replica),
+                from: Address::Replica(_),
                 view,
                 payload: Payload::StartView(start_view),
                 ..
@@ -305,7 +300,6 @@ where
                 self.view = view;
                 self.status = Status::Normal;
                 self.committed = start_view.k;
-                self.health_detector.notify(self.view, replica);
 
                 None
             }
@@ -332,7 +326,6 @@ where
 
     fn prepare_primary(&mut self, sender: &mut Mailbox, request: Request) {
         self.push_request(request.clone());
-        self.health_detector.notify(self.view, self.identifier);
         sender.broadcast(
             self.view,
             Prepare {
@@ -383,22 +376,11 @@ mod tests {
     use crate::client::Client;
     use crate::client_table::CachedRequest;
     use crate::driver::{Driver, LocalDriver};
-    use crate::health::HealthStatus;
+    use crate::health::{HealthStatus, Suspect};
     use crate::identifiers::GroupIdentifier;
     use crate::model::OutdatedRequest;
 
     use super::*;
-
-    #[derive(Debug, Default)]
-    pub struct Suspect;
-
-    impl HealthDetector for Suspect {
-        fn detect(&mut self, view: View, replica: ReplicaIdentifier) -> HealthStatus {
-            HealthStatus::Suspect
-        }
-
-        fn notify(&mut self, view: View, replica: ReplicaIdentifier) {}
-    }
 
     #[test]
     fn base_case() {
@@ -558,7 +540,7 @@ mod tests {
         let operation = b"Hello, world!";
         let primary = group.primary(client.view());
 
-        for i in 1..=2 {
+        for _ in 1..=2 {
             let request = client.new_message(operation);
 
             driver.deliver(request);

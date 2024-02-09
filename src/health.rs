@@ -13,23 +13,35 @@ pub enum HealthStatus {
 // TODO: Add a local implementation of a health detector that works with the local driver's crash method.
 pub trait HealthDetector {
     fn detect(&mut self, view: View, replica: ReplicaIdentifier) -> HealthStatus;
+}
 
-    fn notify(&mut self, view: View, replica: ReplicaIdentifier);
+impl HealthDetector for HealthStatus {
+    fn detect(&mut self, _: View, _: ReplicaIdentifier) -> HealthStatus {
+        *self
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Suspect;
+
+impl HealthDetector for Suspect {
+    fn detect(&mut self, _: View, _: ReplicaIdentifier) -> HealthStatus {
+        HealthStatus::Suspect
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Unhealthy;
+
+impl HealthDetector for Unhealthy {
+    fn detect(&mut self, _: View, _: ReplicaIdentifier) -> HealthStatus {
+        HealthStatus::Unhealthy
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    impl HealthDetector for HealthStatus {
-        fn detect(&mut self, _: View, _: ReplicaIdentifier) -> HealthStatus {
-            *self
-        }
-
-        fn notify(&mut self, _: View, _: ReplicaIdentifier) {
-            *self = HealthStatus::Normal;
-        }
-    }
 
     #[test]
     fn order() {
