@@ -20,12 +20,6 @@ enum Status {
     Recovering,
 }
 
-// TODO: end-to-end test of clients making requests, with view change during in-flight requests.
-// The test should verify:
-// - inflight requests survive
-// - only unprepared requests on the old primary are lost on view change
-// - request de-duplication still works after a view change
-// - responses for old requests still sent after a view change
 #[derive(Debug)]
 pub struct Replica<S, H> {
     /// The service code for processing committed client requests.
@@ -253,6 +247,7 @@ where
                 payload: Payload::Prepare(prepare),
                 ..
             } if next_op == prepare.n => {
+                self.client_table.start(&prepare.m);
                 self.push_request(prepare.m);
 
                 let primary = self.identifier.primary(self.view);
@@ -379,7 +374,7 @@ mod tests {
     use crate::client::Client;
     use crate::client_table::CachedRequest;
     use crate::driver::{Driver, LocalDriver};
-    use crate::health::{HealthStatus, Suspect};
+    use crate::health::{HealthStatus, LocalHealthDetector, Suspect};
     use crate::identifiers::GroupIdentifier;
     use crate::model::OutdatedRequest;
 
@@ -416,6 +411,134 @@ mod tests {
         let inbound: Vec<Message> = mailbox.drain_inbound().collect();
         let outbound: Vec<Message> = mailbox.drain_outbound().collect();
 
+        assert_eq!(inbound, vec![]);
+        assert_eq!(outbound, vec![]);
+    }
+
+    #[test]
+    fn committed_survive_view_change() {
+        let requests = 3;
+        let group = GroupIdentifier::new(requests);
+        let mut health_detector = LocalHealthDetector::default();
+        let mut driver: LocalDriver<usize, LocalHealthDetector> =
+            LocalDriver::with_health_detector(group, &health_detector);
+        let mut client = Client::new(group);
+        let mut clone = client.clone();
+        let view = View::default();
+
+        let operation = b"Hello, world!";
+        let primary = group.primary(client.view());
+
+        for _ in 1..=requests {
+            let request = client.new_message(operation);
+
+            driver.deliver(request);
+            driver.drive_to_empty(group);
+            driver.fetch(client.identifier());
+        }
+
+        let first_request = clone.new_message(operation);
+        let last_request = client.message(operation);
+
+        // unprepared requests do not survive view changes.
+        let unprepared_request = client.new_message(operation);
+        driver.deliver(unprepared_request.clone());
+
+        driver.crash(Some(primary));
+        health_detector.set_status(primary, HealthStatus::Unhealthy);
+        driver.drive_to_empty(group.replicas(view));
+
+        let (primary, mut mailbox) = driver.take(group.primary(view.next())).unwrap();
+        let inbound: Vec<Message> = mailbox.drain_inbound().collect();
+        let outbound: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(primary.log.len(), requests);
+        assert_eq!(primary.committed, OpNumber::new(requests - 1)); // replicas never learned of last commit
+        assert_eq!(inbound, vec![]);
+        assert_eq!(outbound, vec![]);
+    }
+
+    #[test]
+    fn client_table_survives_view_change() {
+        let requests = 3;
+        let group = GroupIdentifier::new(requests);
+        let mut health_detector = LocalHealthDetector::default();
+        let mut driver: LocalDriver<usize, LocalHealthDetector> =
+            LocalDriver::with_health_detector(group, &health_detector);
+        let mut client = Client::new(group);
+        let mut clone = client.clone();
+        let view = View::default();
+
+        let operation = b"Hello, world!";
+        let primary = group.primary(client.view());
+
+        for _ in 1..=requests {
+            let request = client.new_message(operation);
+
+            driver.deliver(request);
+            driver.drive_to_empty(group);
+            driver.fetch(client.identifier());
+        }
+
+        clone.set_view(view.next());
+        let first_request = clone.new_message(operation);
+
+        driver.crash(Some(primary));
+        health_detector.set_status(primary, HealthStatus::Unhealthy);
+
+        driver.drive_to_empty(group.replicas(view));
+        driver.deliver(client.broadcast(operation));
+        driver.drive_to_empty(group);
+
+        let new_view = driver
+            .fetch(client.identifier())
+            .into_iter()
+            .filter(|m| m.payload == Payload::OutdatedView)
+            .map(|m| m.view)
+            .max()
+            .unwrap_or_default();
+        client.set_view(new_view);
+
+        driver.deliver(first_request);
+        driver.drive_to_empty(group);
+
+        let messages: Vec<OutdatedRequest> = driver
+            .fetch(client.identifier())
+            .into_iter()
+            .map(Message::payload::<OutdatedRequest>)
+            .map(Result::unwrap)
+            .collect();
+
+        assert_eq!(
+            messages,
+            vec![OutdatedRequest {
+                s: client.last_request()
+            }]
+        );
+
+        driver.deliver(client.message(operation));
+        driver.drive_to_empty(group);
+
+        // re-delivers latest reply.
+        let messages: Vec<Message> = driver.fetch(client.identifier());
+        assert_eq!(messages, vec![reply_message(&client, operation, requests)]);
+
+        driver.deliver(client.new_message(operation));
+        driver.drive_to_empty(group);
+
+        // can still process new requests
+        let messages: Vec<Message> = driver.fetch(client.identifier());
+        assert_eq!(
+            messages,
+            vec![reply_message(&client, operation, requests + 1)]
+        );
+
+        let (primary, mut mailbox) = driver.take(group.primary(view.next())).unwrap();
+        let inbound: Vec<Message> = mailbox.drain_inbound().collect();
+        let outbound: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(primary.log.len(), requests + 1);
+        assert_eq!(primary.committed, OpNumber::new(requests + 1));
         assert_eq!(inbound, vec![]);
         assert_eq!(outbound, vec![]);
     }
@@ -530,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn client_resends_outdated_request() {
+    fn client_resends_are_outdated_request() {
         let group = GroupIdentifier::new(3);
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let mut client = Client::new(group);

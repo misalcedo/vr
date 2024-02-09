@@ -39,7 +39,7 @@ impl GroupIdentifier {
         ReplicaIdentifier(*self, (view.as_u128() % (self.1 as u128)) as usize)
     }
 
-    pub fn replicas(&self, view: View) -> impl Iterator<Item = ReplicaIdentifier> {
+    pub fn replicas(&self, view: View) -> impl Iterator<Item = ReplicaIdentifier> + Clone {
         let primary = self.primary(view);
 
         ReplicaIterator(*self, 0).filter(move |r| r != &primary)

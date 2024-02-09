@@ -68,7 +68,7 @@ impl<S: Service + Default, H: HealthDetector + Clone> LocalDriver<S, H> {
         }
     }
 
-    pub fn recover_with_detector<I, II>(&mut self, detector: &H, replicas: II)
+    pub fn recover_with_detector<I, II>(&mut self, replicas: II, detector: &H)
     where
         I: Iterator<Item = ReplicaIdentifier>,
         II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,

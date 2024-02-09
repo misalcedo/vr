@@ -1,5 +1,4 @@
-use crate::identifiers::{ClientIdentifier, ReplicaIdentifier};
-use crate::model::Message;
+use crate::identifiers::ReplicaIdentifier;
 
 mod local;
 

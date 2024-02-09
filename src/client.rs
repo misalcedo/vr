@@ -64,6 +64,15 @@ impl Client {
         }
     }
 
+    pub fn broadcast(&self, payload: &[u8]) -> Message {
+        Message {
+            from: self.identifier.into(),
+            to: self.group.into(),
+            view: self.view,
+            payload: self.request(payload).into(),
+        }
+    }
+
     pub fn request(&self, payload: &[u8]) -> Request {
         Request {
             op: Vec::from(payload),
