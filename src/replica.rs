@@ -184,7 +184,6 @@ where
         });
 
         if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Suspect {
-            self.health_detector.notify(self.view, self.identifier);
             mailbox.broadcast(self.view, Payload::Ping);
         }
     }
@@ -390,6 +389,17 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug, Default)]
+    pub struct Suspect;
+
+    impl HealthDetector for Suspect {
+        fn detect(&mut self, view: View, replica: ReplicaIdentifier) -> HealthStatus {
+            HealthStatus::Suspect
+        }
+
+        fn notify(&mut self, view: View, replica: ReplicaIdentifier) {}
+    }
+
     #[test]
     fn base_case() {
         let group = GroupIdentifier::new(3);
@@ -523,48 +533,52 @@ mod tests {
     }
 
     #[test]
-    fn request_primary_suspect() {
+    fn suspect_primary_sends_pings() {
         let group = GroupIdentifier::new(3);
-        let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
+        let view = View::default();
+        let primary = group.primary(view);
+        let mut driver: LocalDriver<usize, Suspect> = LocalDriver::new(group);
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
-        let mut mailbox = Mailbox::from(primary.identifier);
+        driver.drive(Some(primary));
 
-        primary.health_detector = HealthStatus::Suspect;
-        primary.poll(&mut mailbox);
+        let identifier = group.replicas(view).next().unwrap();
+        let (replica, mut mailbox) = driver.take(identifier).unwrap();
+        let messages: Vec<Message> = mailbox.drain_inbound().collect();
 
-        let messages: Vec<Message> = mailbox.drain_outbound().collect();
-
-        assert_eq!(messages, vec![ping_message(&primary)]);
-        assert_eq!(primary.health_detector, HealthStatus::Normal);
+        assert_eq!(messages, vec![ping_message(&replica)]);
     }
 
     #[test]
-    fn request_primary_outdated() {
-        let operation = b"Hi!";
+    fn client_resends_outdated_request() {
         let group = GroupIdentifier::new(3);
-        let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
-
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let mut client = Client::new(group);
+        let mut clone = client.clone();
 
-        for _ in 1..=replicas.len() {
-            primary.view.increment();
+        let operation = b"Hello, world!";
+        let primary = group.primary(client.view());
+
+        for i in 1..=2 {
+            let request = client.new_message(operation);
+
+            driver.deliver(request);
+            driver.drive_to_empty(group);
+            driver.fetch(client.identifier());
         }
 
-        let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
+        let request = clone.new_message(operation);
 
-        let messages: Vec<Message> = mailbox.drain_outbound().collect();
+        driver.deliver(request);
+        driver.drive_to_empty(group);
 
-        assert_eq!(
-            messages,
-            vec![Message {
-                from: primary.identifier.into(),
-                to: client.address(),
-                view: primary.view,
-                payload: Payload::OutdatedView,
-            }]
-        );
+        let message = driver.fetch(clone.identifier());
+        let (primary, mut mailbox) = driver.take(primary).unwrap();
+        let inbound: Vec<Message> = mailbox.drain_inbound().collect();
+        let outbound: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(inbound, vec![]);
+        assert_eq!(outbound, vec![]);
+        assert_eq!(message, vec![outdated_request_message(&primary, &client)]);
     }
 
     #[test]
@@ -1074,11 +1088,11 @@ mod tests {
         }
     }
 
-    fn ping_message<S, H>(primary: &Replica<S, H>) -> Message {
+    fn ping_message<S, H>(replica: &Replica<S, H>) -> Message {
         Message {
-            from: primary.identifier.into(),
-            to: primary.identifier.group().into(),
-            view: primary.view,
+            from: replica.identifier.primary(replica.view).into(),
+            to: replica.identifier.group().into(),
+            view: replica.view,
             payload: Payload::Ping,
         }
     }
