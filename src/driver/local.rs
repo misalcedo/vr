@@ -90,7 +90,7 @@ impl<S: Service, H: HealthDetector> LocalDriver<S, H> {
         }
     }
 
-    fn is_empty(&self, identifier: ReplicaIdentifier) -> bool {
+    pub fn is_empty(&self, identifier: ReplicaIdentifier) -> bool {
         !self.replicas.contains_key(&identifier)
             || self
                 .mailboxes

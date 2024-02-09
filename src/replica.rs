@@ -471,18 +471,14 @@ mod tests {
         assert_eq!(messages, vec![]);
 
         let (_, mut mailbox) = driver.take(primary).unwrap();
-        let inbound: Vec<Message> = mailbox.drain_inbound().collect();
+        let inbound = mailbox
+            .drain_inbound()
+            .map(Message::payload::<PrepareOk>)
+            .map(Result::unwrap)
+            .count();
         let outbound: Vec<Message> = mailbox.drain_outbound().collect();
 
-        assert_eq!(inbound.len(), f - 1);
-        assert_eq!(
-            inbound
-                .into_iter()
-                .map(Message::payload::<PrepareOk>)
-                .filter_map(Result::ok)
-                .count(),
-            f - 1
-        );
+        assert_eq!(inbound, f - 1);
         assert_eq!(outbound, vec![]);
     }
 
@@ -564,46 +560,47 @@ mod tests {
     }
 
     #[test]
-    fn prepare_replica() {
-        let operation = b"Hi!";
+    fn replica_prepares_next_op() {
         let group = GroupIdentifier::new(3);
-        let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
-
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let mut client = Client::new(group);
 
-        let mut replica = Replica::new(replicas[1], 0, HealthStatus::Normal);
-        let mut mailbox = Mailbox::from(replica.identifier);
+        let operation = b"Hello, world!";
+        let primary = group.primary(client.view());
+        let request = client.new_message(operation);
 
-        simulate_requests(&mut primary, vec![&mut client], operation);
+        driver.deliver(request);
+        driver.drive(Some(primary));
+        driver.drive(group.replicas(client.view()));
 
-        let message = prepare_message(&primary, &client, operation);
+        let (primary, mut mailbox) = driver.take(primary).unwrap();
+        let inbound: Vec<PrepareOk> = mailbox
+            .drain_inbound()
+            .map(Message::payload::<PrepareOk>)
+            .map(Result::unwrap)
+            .collect();
+        let outbound: Vec<Message> = mailbox.drain_outbound().collect();
+        let prepare_ok = PrepareOk {
+            n: primary.op_number,
+        };
 
-        mailbox.deliver(message);
-        replica.poll(&mut mailbox);
-
-        let messages: Vec<Message> = mailbox.drain_outbound().collect();
-
-        assert_eq!(messages, vec![prepare_ok_message(&primary, &replica)]);
-        assert_eq!(replica.op_number, OpNumber::new(1));
+        assert_eq!(inbound, vec![prepare_ok, prepare_ok]);
+        assert_eq!(outbound, vec![]);
     }
 
     #[test]
-    fn ping_replica() {
+    fn replica_discards_ping() {
         let group = GroupIdentifier::new(3);
-        let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
+        let view = View::default();
+        let primary = group.primary(view);
+        let mut driver: LocalDriver<usize, Suspect> = LocalDriver::new(group);
 
-        let primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
-        let mut replica = Replica::new(replicas[1], 0, HealthStatus::Normal);
-        let mut mailbox = Mailbox::from(replica.identifier);
+        driver.drive(Some(primary));
+        driver.drive(group.replicas(view));
 
-        let message = ping_message(&primary);
-
-        mailbox.deliver(message);
-        replica.poll(&mut mailbox);
-
-        assert_eq!(mailbox.drain_outbound().count(), 0);
-        assert_eq!(replica.health_detector, HealthStatus::Normal);
+        for replica in group.replicas(view) {
+            assert!(driver.is_empty(replica));
+        }
     }
 
     #[test]
