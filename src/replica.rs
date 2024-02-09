@@ -140,7 +140,6 @@ where
                                 None => {
                                     // the client resent the latest request.
                                     // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
-                                    // TODO: handle resent in-progress requests.
                                 }
                                 // send back a cached response for latest request from the client.
                                 Some(reply) => sender.send(request.c, self.view, reply),
