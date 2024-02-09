@@ -210,10 +210,8 @@ where
                     payload: Payload::DoViewChange(do_view_change),
                     ..
                 } => {
-                    self.committed = self.committed.max(do_view_change.k);
-
                     if do_view_change.l.len() > self.log.len() {
-                        self.replace_log(do_view_change.l);
+                        self.replace_log(do_view_change.k, do_view_change.l);
                     }
 
                     None
@@ -293,10 +291,9 @@ where
                 payload: Payload::StartView(start_view),
                 ..
             } => {
-                self.replace_log(start_view.l);
                 self.view = view;
                 self.status = Status::Normal;
-                self.committed = start_view.k;
+                self.replace_log(start_view.k, start_view.l);
 
                 None
             }
@@ -351,10 +348,14 @@ where
         }
     }
 
-    // TODO: add new uncommitted requests to the client table
-    fn replace_log(&mut self, log: Vec<Request>) {
+    fn replace_log(&mut self, committed: OpNumber, log: Vec<Request>) {
+        self.committed = committed;
         self.log = log;
         self.op_number = OpNumber::new(self.log.len());
+
+        for in_progress in self.committed.as_usize()..self.op_number.as_usize() {
+            self.client_table.start(&self.log[in_progress])
+        }
     }
 
     fn execute_replica(&mut self) {
