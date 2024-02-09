@@ -10,6 +10,12 @@ pub struct Message {
     pub payload: Payload,
 }
 
+impl Message {
+    pub fn payload<P: TryFrom<Payload, Error = Payload>>(self) -> Result<P, Payload> {
+        P::try_from(self.payload)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Payload {
     Request(Request),
@@ -30,9 +36,31 @@ impl From<Request> for Payload {
     }
 }
 
+impl TryFrom<Payload> for Request {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::Request(r) => Ok(r),
+            _ => Err(value),
+        }
+    }
+}
+
 impl From<Prepare> for Payload {
     fn from(value: Prepare) -> Self {
         Self::Prepare(value)
+    }
+}
+
+impl TryFrom<Payload> for Prepare {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::Prepare(p) => Ok(p),
+            _ => Err(value),
+        }
     }
 }
 
@@ -42,9 +70,31 @@ impl From<PrepareOk> for Payload {
     }
 }
 
+impl TryFrom<Payload> for PrepareOk {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::PrepareOk(p) => Ok(p),
+            _ => Err(value),
+        }
+    }
+}
+
 impl From<Reply> for Payload {
     fn from(value: Reply) -> Self {
         Self::Reply(value)
+    }
+}
+
+impl TryFrom<Payload> for Reply {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::Reply(r) => Ok(r),
+            _ => Err(value),
+        }
     }
 }
 
@@ -54,9 +104,31 @@ impl From<DoViewChange> for Payload {
     }
 }
 
+impl TryFrom<Payload> for DoViewChange {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::DoViewChange(s) => Ok(s),
+            _ => Err(value),
+        }
+    }
+}
+
 impl From<StartView> for Payload {
     fn from(value: StartView) -> Self {
         Self::StartView(value)
+    }
+}
+
+impl TryFrom<Payload> for StartView {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::StartView(s) => Ok(s),
+            _ => Err(value),
+        }
     }
 }
 
@@ -66,9 +138,31 @@ impl From<ConcurrentRequest> for Payload {
     }
 }
 
+impl TryFrom<Payload> for ConcurrentRequest {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::ConcurrentRequest(c) => Ok(c),
+            _ => Err(value),
+        }
+    }
+}
+
 impl From<OutdatedRequest> for Payload {
     fn from(value: OutdatedRequest) -> Self {
         Self::OutdatedRequest(value)
+    }
+}
+
+impl TryFrom<Payload> for OutdatedRequest {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::OutdatedRequest(o) => Ok(o),
+            _ => Err(value),
+        }
     }
 }
 

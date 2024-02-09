@@ -479,10 +479,18 @@ mod tests {
         assert_eq!(messages, vec![]);
 
         let (_, mut mailbox) = driver.take(primary).unwrap();
-        let inbound = mailbox.drain_inbound().count();
+        let inbound: Vec<Message> = mailbox.drain_inbound().collect();
         let outbound: Vec<Message> = mailbox.drain_outbound().collect();
 
-        assert_eq!(inbound, f - 1);
+        assert_eq!(inbound.len(), f - 1);
+        assert_eq!(
+            inbound
+                .into_iter()
+                .map(Message::payload::<PrepareOk>)
+                .filter_map(Result::ok)
+                .count(),
+            f - 1
+        );
         assert_eq!(outbound, vec![]);
     }
 
