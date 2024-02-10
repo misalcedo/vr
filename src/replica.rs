@@ -11,6 +11,7 @@ use crate::model::{
 };
 use crate::service::Service;
 use crate::stamps::{OpNumber, View};
+use crate::state::State;
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 enum Status {
@@ -21,11 +22,13 @@ enum Status {
 }
 
 #[derive(Debug)]
-pub struct Replica<S, H> {
+pub struct Replica<NS, S, HD> {
+    /// Non-volatile state for the replica. When a replica crashes, it must maintain this state.
+    state: NS,
     /// The service code for processing committed client requests.
     service: S,
     /// Detects whether the current primary is failed or idle.
-    health_detector: H,
+    health_detector: HD,
     /// The identifier of this replica within the group.
     identifier: ReplicaIdentifier,
     /// The current view.
@@ -45,17 +48,21 @@ pub struct Replica<S, H> {
     client_table: ClientTable,
 }
 
-impl<S, H> Replica<S, H>
+impl<NS, S, HD> Replica<NS, S, HD>
 where
+    NS: State<(ReplicaIdentifier, View)>,
     S: Service,
-    H: HealthDetector,
+    HD: HealthDetector,
 {
-    pub fn new(identifier: ReplicaIdentifier, service: S, health_detector: H) -> Self {
+    pub fn new(mut state: NS, service: S, health_detector: HD) -> Self {
+        let (identifier, view) = state.load();
+
         Self {
+            state,
             service,
             health_detector,
             identifier,
-            view: Default::default(),
+            view,
             op_number: Default::default(),
             status: Default::default(),
             log: Default::default(),
@@ -65,8 +72,16 @@ where
         }
     }
 
+    pub fn state(self) -> NS {
+        self.state
+    }
+
     pub fn identifier(&self) -> ReplicaIdentifier {
         self.identifier
+    }
+
+    pub fn view(&self) -> View {
+        self.view
     }
 
     pub fn poll(&mut self, mailbox: &mut Mailbox) {
@@ -377,6 +392,7 @@ mod tests {
     use crate::health::{HealthStatus, LocalHealthDetector, Suspect};
     use crate::identifiers::GroupIdentifier;
     use crate::model::OutdatedRequest;
+    use crate::state::LocalState;
 
     use super::*;
 
@@ -436,9 +452,6 @@ mod tests {
             driver.drive_to_empty(group);
             driver.fetch(client.identifier());
         }
-
-        let first_request = clone.new_message(operation);
-        let last_request = client.message(operation);
 
         // unprepared requests do not survive view changes.
         let unprepared_request = client.new_message(operation);
@@ -735,10 +748,18 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[0], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut client = Client::new(group);
 
-        let mut replica = Replica::new(replicas[1], 0, HealthStatus::Normal);
+        let mut replica = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut mailbox = Mailbox::from(replica.identifier);
 
         simulate_requests(&mut primary, vec![&mut client], operation);
@@ -770,9 +791,17 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[0], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut client = Client::new(group);
-        let mut replica = Replica::new(replicas[1], 0, HealthStatus::Normal);
+        let mut replica = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut mailbox = Mailbox::from(replica.identifier);
 
         simulate_reply(&mut primary, &mut replica, &mut client, 1);
@@ -795,11 +824,19 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[0], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut client1 = Client::new(group);
         let mut client2 = Client::new(group);
 
-        let mut replica = Replica::new(replicas[1], 0, HealthStatus::Normal);
+        let mut replica = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut mailbox = Mailbox::from(replica.identifier);
 
         simulate_requests(&mut primary, vec![&mut client1, &mut client2], operation);
@@ -820,11 +857,19 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[0], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut client1 = Client::new(group);
         let mut client2 = Client::new(group);
 
-        let mut replica = Replica::new(replicas[1], 0, HealthStatus::Normal);
+        let mut replica = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut mailbox = Mailbox::from(replica.identifier);
 
         simulate_requests(&mut primary, vec![&mut client1, &mut client2], operation);
@@ -843,9 +888,21 @@ mod tests {
         let group = GroupIdentifier::new(5);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
-        let mut replica1 = Replica::new(replicas[1], 0, HealthStatus::Normal);
-        let mut replica2 = Replica::new(replicas[2], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[0], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
+        let mut replica1 = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
+        let mut replica2 = Replica::new(
+            LocalState::new((replicas[2], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut client = Client::new(group);
         let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
 
@@ -879,9 +936,21 @@ mod tests {
         let group = GroupIdentifier::new(5);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
-        let mut replica1 = Replica::new(replicas[1], 0, HealthStatus::Normal);
-        let mut replica2 = Replica::new(replicas[2], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[0], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
+        let mut replica1 = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
+        let mut replica2 = Replica::new(
+            LocalState::new((replicas[2], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut client1 = Client::new(group);
         let mut client2 = Client::new(group);
         let mut mailbox = Mailbox::from(primary.identifier);
@@ -918,7 +987,11 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[0], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut client = Client::new(group);
 
         let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
@@ -945,8 +1018,16 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
-        let mut replica = Replica::new(replicas[1], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[0], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
+        let mut replica = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut client = Client::new(group);
         let mut mailbox = simulate_requests(&mut primary, vec![&mut client], operation);
 
@@ -970,8 +1051,16 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[0], 0, HealthStatus::Normal);
-        let mut replica = Replica::new(replicas[1], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[0], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
+        let mut replica = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut client = Client::new(group);
         let mut clone = client.clone();
 
@@ -989,7 +1078,11 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut replica = Replica::new(replicas[1], 0, HealthStatus::Normal);
+        let mut replica = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut mailbox = Mailbox::from(replica.identifier);
 
         replica.push_request(Request {
@@ -1013,8 +1106,16 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut client = Client::new(group);
-        let mut replica = Replica::new(replicas[2], 0, HealthStatus::Normal);
-        let mut primary = Replica::new(replicas[1], 0, HealthStatus::Normal);
+        let mut replica = Replica::new(
+            LocalState::new((replicas[2], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
+        let mut primary = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut mailbox = Mailbox::from(primary.identifier);
 
         // fake a request to increment the count
@@ -1056,7 +1157,11 @@ mod tests {
         let group = GroupIdentifier::new(5);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
-        let mut primary = Replica::new(replicas[1], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut mailbox = Mailbox::from(primary.identifier);
 
         primary.view.increment();
@@ -1077,8 +1182,16 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut client = Client::new(group);
-        let mut primary = Replica::new(replicas[1], 0, HealthStatus::Normal);
-        let mut replica = Replica::new(replicas[2], 0, HealthStatus::Normal);
+        let mut primary = Replica::new(
+            LocalState::new((replicas[1], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
+        let mut replica = Replica::new(
+            LocalState::new((replicas[2], View::default())),
+            0,
+            HealthStatus::Normal,
+        );
         let mut mailbox = Mailbox::from(replica.identifier);
 
         primary.view.increment();
@@ -1101,7 +1214,7 @@ mod tests {
         assert_eq!(replica.committed, primary.committed);
     }
 
-    fn do_view_change_message<S, H>(replica: &Replica<S, H>) -> Message {
+    fn do_view_change_message<NS, S, H>(replica: &Replica<NS, S, H>) -> Message {
         let payload = DoViewChange {
             l: replica.log.clone(),
             k: replica.committed,
@@ -1116,9 +1229,9 @@ mod tests {
         }
     }
 
-    fn simulate_broadcast<S: Service, H: HealthDetector>(
+    fn simulate_broadcast<NS: State<(ReplicaIdentifier, View)>, S: Service, H: HealthDetector>(
         source: &mut Mailbox,
-        replicas: Vec<&mut Replica<S, H>>,
+        replicas: Vec<&mut Replica<NS, S, H>>,
     ) {
         let messages: Vec<Message> = source.drain_outbound().collect();
 
@@ -1132,8 +1245,8 @@ mod tests {
         }
     }
 
-    fn simulate_requests<S: Service, H: HealthDetector>(
-        primary: &mut Replica<S, H>,
+    fn simulate_requests<NS: State<(ReplicaIdentifier, View)>, S: Service, H: HealthDetector>(
+        primary: &mut Replica<NS, S, H>,
         clients: Vec<&mut Client>,
         operation: &[u8],
     ) -> Mailbox {
@@ -1147,8 +1260,8 @@ mod tests {
         mailbox
     }
 
-    fn prepare_message<S, H>(
-        replica: &Replica<S, H>,
+    fn prepare_message<NS, S, H>(
+        replica: &Replica<NS, S, H>,
         client: &Client,
         operation: &[u8],
     ) -> Message {
@@ -1165,7 +1278,10 @@ mod tests {
         }
     }
 
-    fn prepare_ok_message<S, H>(primary: &Replica<S, H>, replica: &Replica<S, H>) -> Message {
+    fn prepare_ok_message<NS, S, H>(
+        primary: &Replica<NS, S, H>,
+        replica: &Replica<NS, S, H>,
+    ) -> Message {
         Message {
             from: replica.identifier.into(),
             to: primary.identifier.into(),
@@ -1193,7 +1309,7 @@ mod tests {
         }
     }
 
-    fn ping_message<S, H>(replica: &Replica<S, H>) -> Message {
+    fn ping_message<NS, S, H>(replica: &Replica<NS, S, H>) -> Message {
         Message {
             from: replica.identifier.primary(replica.view).into(),
             to: replica.identifier.group().into(),
@@ -1202,7 +1318,7 @@ mod tests {
         }
     }
 
-    fn start_view_message<S, H>(primary: &Replica<S, H>) -> Message {
+    fn start_view_message<NS, S, H>(primary: &Replica<NS, S, H>) -> Message {
         Message {
             from: primary.identifier.into(),
             to: primary.identifier.group().into(),
@@ -1214,7 +1330,7 @@ mod tests {
         }
     }
 
-    fn outdated_request_message<S, H>(primary: &Replica<S, H>, client: &Client) -> Message {
+    fn outdated_request_message<NS, S, H>(primary: &Replica<NS, S, H>, client: &Client) -> Message {
         Message {
             from: primary.identifier.into(),
             to: client.address(),
@@ -1225,9 +1341,9 @@ mod tests {
         }
     }
 
-    fn simulate_reply<S: Service, H: HealthDetector>(
-        primary: &mut Replica<S, H>,
-        replica: &mut Replica<S, H>,
+    fn simulate_reply<NS: State<(ReplicaIdentifier, View)>, S: Service, H: HealthDetector>(
+        primary: &mut Replica<NS, S, H>,
+        replica: &mut Replica<NS, S, H>,
         client: &mut Client,
         times: usize,
     ) -> Mailbox {

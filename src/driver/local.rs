@@ -7,29 +7,36 @@ use crate::mailbox::{Address, Mailbox};
 use crate::model::Message;
 use crate::replica::Replica;
 use crate::service::Service;
+use crate::stamps::View;
+use crate::state::LocalState;
 
 #[derive(Debug)]
 pub struct LocalDriver<S, H> {
     mailboxes: HashMap<Address, Mailbox>,
-    replicas: HashMap<ReplicaIdentifier, Replica<S, H>>,
+    replicas: HashMap<ReplicaIdentifier, Replica<LocalState<(ReplicaIdentifier, View)>, S, H>>,
+    states: HashMap<ReplicaIdentifier, LocalState<(ReplicaIdentifier, View)>>,
 }
 
 impl<S: Service + Default, H: HealthDetector + Default> LocalDriver<S, H> {
     pub fn new(group: GroupIdentifier) -> Self {
         let mut mailboxes = HashMap::with_capacity(group.size());
         let mut replicas = HashMap::with_capacity(group.size());
+        let view = View::default();
 
         for replica in group {
+            let state = LocalState::new((replica, view));
+
             mailboxes.insert(replica.into(), Mailbox::from(replica));
             replicas.insert(
                 replica,
-                Replica::new(replica, Default::default(), Default::default()),
+                Replica::new(state, Default::default(), Default::default()),
             );
         }
 
         Self {
             mailboxes,
             replicas,
+            states: Default::default(),
         }
     }
 
@@ -39,12 +46,17 @@ impl<S: Service + Default, H: HealthDetector + Default> LocalDriver<S, H> {
         II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,
     {
         for replica in replicas {
+            let state = match self.states.remove(&replica) {
+                None => LocalState::new((replica, View::default())),
+                Some(s) => s,
+            };
+
             self.mailboxes
                 .entry(replica.into())
                 .or_insert_with(|| Mailbox::from(replica));
             self.replicas
                 .entry(replica)
-                .or_insert_with(|| Replica::new(replica, Default::default(), Default::default()));
+                .or_insert_with(|| Replica::new(state, Default::default(), Default::default()));
         }
     }
 }
@@ -53,18 +65,22 @@ impl<S: Service + Default, H: HealthDetector + Clone> LocalDriver<S, H> {
     pub fn with_health_detector(group: GroupIdentifier, detector: &H) -> Self {
         let mut mailboxes = HashMap::with_capacity(group.size());
         let mut replicas = HashMap::with_capacity(group.size());
+        let view = View::default();
 
         for replica in group {
+            let state = LocalState::new((replica, view));
+
             mailboxes.insert(replica.into(), Mailbox::from(replica));
             replicas.insert(
                 replica,
-                Replica::new(replica, Default::default(), detector.clone()),
+                Replica::new(state, Default::default(), detector.clone()),
             );
         }
 
         Self {
             mailboxes,
             replicas,
+            states: Default::default(),
         }
     }
 
@@ -74,18 +90,32 @@ impl<S: Service + Default, H: HealthDetector + Clone> LocalDriver<S, H> {
         II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,
     {
         for replica in replicas {
+            let state = match self.states.remove(&replica) {
+                None => LocalState::new((replica, View::default())),
+                Some(s) => s,
+            };
+
             self.mailboxes
                 .entry(replica.into())
                 .or_insert_with(|| Mailbox::from(replica));
             self.replicas
                 .entry(replica)
-                .or_insert_with(|| Replica::new(replica, Default::default(), detector.clone()));
+                .or_insert_with(|| Replica::new(state, Default::default(), detector.clone()));
         }
     }
 }
 
 impl<S: Service, H: HealthDetector> LocalDriver<S, H> {
-    pub fn take(mut self, identifier: ReplicaIdentifier) -> Result<(Replica<S, H>, Mailbox), Self> {
+    pub fn take(
+        mut self,
+        identifier: ReplicaIdentifier,
+    ) -> Result<
+        (
+            Replica<LocalState<(ReplicaIdentifier, View)>, S, H>,
+            Mailbox,
+        ),
+        Self,
+    > {
         match (
             self.replicas.remove(&identifier),
             self.mailboxes.remove(&identifier.into()),
@@ -156,7 +186,10 @@ impl<S: Service, H: HealthDetector> LocalDriver<S, H> {
     {
         for replica in replicas {
             self.mailboxes.remove(&replica.into());
-            self.replicas.remove(&replica);
+
+            if let Some(state) = self.replicas.remove(&replica).map(Replica::state) {
+                self.states.insert(replica, state);
+            }
         }
     }
 
@@ -201,6 +234,7 @@ mod tests {
     use crate::health::HealthStatus;
     use crate::model::Payload;
     use crate::stamps::View;
+    use crate::state::State;
 
     use super::*;
 
@@ -262,6 +296,27 @@ mod tests {
 
         assert_eq!(replica.identifier(), identifier);
         assert_eq!(messages, vec![]);
+    }
+
+    #[test]
+    fn recover_maintains_state() {
+        let group = GroupIdentifier::new(3);
+        let identifier = group.into_iter().last().unwrap();
+        let view = View::default();
+
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+
+        driver.crash(Some(identifier));
+        driver
+            .states
+            .entry(identifier)
+            .and_modify(|s| s.save((identifier, view.next())));
+        driver.recover(Some(identifier));
+
+        let (replica, _) = driver.take(identifier).unwrap();
+
+        assert_eq!(replica.identifier(), identifier);
+        assert_eq!(replica.view(), view.next());
     }
 
     #[test]
