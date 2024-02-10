@@ -248,6 +248,8 @@ where
             });
 
             self.status = Status::Normal;
+            self.state.save(NonVolatileState::new(self.identifier, self.view));
+
             mailbox.broadcast(
                 self.view,
                 StartView {
@@ -300,6 +302,7 @@ where
         if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Unhealthy {
             self.view.increment();
             self.status = Status::ViewChange;
+            self.state.save(NonVolatileState::new(self.identifier, self.view));
 
             mailbox.send(
                 self.identifier.primary(self.view),
