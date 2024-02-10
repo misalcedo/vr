@@ -75,7 +75,12 @@ where
     pub fn new(mut state: NS, service: S, health_detector: HD) -> Self {
         let saved_state = state.load();
         let identifier = saved_state.identifier;
-        let view = saved_state.latest_view.unwrap_or_default();
+        let status = saved_state.latest_view.map(|_| Status::Recovering).unwrap_or_default();
+        let mut view = saved_state.latest_view.unwrap_or_default();
+
+        if status == Status::Recovering && identifier.is_primary(view) {
+            view.increment();
+        }
 
         Self {
             state,
@@ -88,7 +93,7 @@ where
             committed: Default::default(),
             executed: Default::default(),
             client_table: Default::default(),
-            status: saved_state.latest_view.map(|_| Status::Recovering).unwrap_or_default(),
+            status,
         }
     }
 

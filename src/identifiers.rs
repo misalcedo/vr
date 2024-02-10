@@ -8,6 +8,10 @@ impl ReplicaIdentifier {
         self.0
     }
 
+    pub fn is_primary(&self, view: View) -> bool {
+        *self == self.0.primary(view)
+    }
+
     pub fn primary(&self, view: View) -> Self {
         self.0.primary(view)
     }
