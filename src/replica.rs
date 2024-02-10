@@ -21,6 +21,24 @@ enum Status {
     Recovering,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NonVolatileState {
+    identifier: ReplicaIdentifier,
+    latest_view: Option<View>
+}
+
+impl From<ReplicaIdentifier> for NonVolatileState {
+    fn from(identifier: ReplicaIdentifier) -> Self {
+        Self { identifier, latest_view: None }
+    }
+}
+
+impl NonVolatileState {
+    pub fn new(identifier: ReplicaIdentifier, view: View) -> Self {
+        Self { identifier, latest_view: Some(view) }
+    }
+}
+
 #[derive(Debug)]
 pub struct Replica<NS, S, HD> {
     /// Non-volatile state for the replica. When a replica crashes, it must maintain this state.
@@ -35,8 +53,6 @@ pub struct Replica<NS, S, HD> {
     view: View,
     /// The latest op-number received by this replica.
     op_number: OpNumber,
-    /// The current status, either normal, view-change, or recovering.
-    status: Status,
     /// This is an array containing op-number entries.
     /// The entries contain the requests that have been received so far in their assigned order.
     log: Vec<Request>,
@@ -46,16 +62,20 @@ pub struct Replica<NS, S, HD> {
     executed: OpNumber,
     /// This records for each client the number of its most recent request, plus, if the request has been executed, the result sent for that request.
     client_table: ClientTable,
+    /// The current status, either normal, view-change, or recovering.
+    status: Status,
 }
 
 impl<NS, S, HD> Replica<NS, S, HD>
 where
-    NS: State<(ReplicaIdentifier, View)>,
+    NS: State<NonVolatileState>,
     S: Service,
     HD: HealthDetector,
 {
     pub fn new(mut state: NS, service: S, health_detector: HD) -> Self {
-        let (identifier, view) = state.load();
+        let saved_state = state.load();
+        let identifier = saved_state.identifier;
+        let view = saved_state.latest_view.unwrap_or_default();
 
         Self {
             state,
@@ -64,11 +84,11 @@ where
             identifier,
             view,
             op_number: Default::default(),
-            status: Default::default(),
             log: Default::default(),
             committed: Default::default(),
             executed: Default::default(),
             client_table: Default::default(),
+            status: saved_state.latest_view.map(|_| Status::Recovering).unwrap_or_default(),
         }
     }
 
@@ -439,7 +459,6 @@ mod tests {
         let mut driver: LocalDriver<usize, LocalHealthDetector> =
             LocalDriver::with_health_detector(group, &health_detector);
         let mut client = Client::new(group);
-        let mut clone = client.clone();
         let view = View::default();
 
         let operation = b"Hello, world!";
@@ -749,14 +768,14 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[0], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[0])),
             0,
             HealthStatus::Normal,
         );
         let mut client = Client::new(group);
 
         let mut replica = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
@@ -792,13 +811,13 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[0], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[0])),
             0,
             HealthStatus::Normal,
         );
         let mut client = Client::new(group);
         let mut replica = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
@@ -825,7 +844,7 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[0], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[0])),
             0,
             HealthStatus::Normal,
         );
@@ -833,7 +852,7 @@ mod tests {
         let mut client2 = Client::new(group);
 
         let mut replica = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
@@ -858,7 +877,7 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[0], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[0])),
             0,
             HealthStatus::Normal,
         );
@@ -866,7 +885,7 @@ mod tests {
         let mut client2 = Client::new(group);
 
         let mut replica = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
@@ -889,17 +908,17 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[0], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[0])),
             0,
             HealthStatus::Normal,
         );
         let mut replica1 = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
         let mut replica2 = Replica::new(
-            LocalState::new((replicas[2], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[2])),
             0,
             HealthStatus::Normal,
         );
@@ -937,17 +956,17 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[0], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[0])),
             0,
             HealthStatus::Normal,
         );
         let mut replica1 = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
         let mut replica2 = Replica::new(
-            LocalState::new((replicas[2], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[2])),
             0,
             HealthStatus::Normal,
         );
@@ -988,7 +1007,7 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[0], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[0])),
             0,
             HealthStatus::Normal,
         );
@@ -1019,12 +1038,12 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[0], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[0])),
             0,
             HealthStatus::Normal,
         );
         let mut replica = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
@@ -1052,12 +1071,12 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[0], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[0])),
             0,
             HealthStatus::Normal,
         );
         let mut replica = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
@@ -1079,7 +1098,7 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut replica = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
@@ -1107,12 +1126,12 @@ mod tests {
 
         let mut client = Client::new(group);
         let mut replica = Replica::new(
-            LocalState::new((replicas[2], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[2])),
             0,
             HealthStatus::Normal,
         );
         let mut primary = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
@@ -1158,7 +1177,7 @@ mod tests {
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
 
         let mut primary = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
@@ -1183,12 +1202,12 @@ mod tests {
 
         let mut client = Client::new(group);
         let mut primary = Replica::new(
-            LocalState::new((replicas[1], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[1])),
             0,
             HealthStatus::Normal,
         );
         let mut replica = Replica::new(
-            LocalState::new((replicas[2], View::default())),
+            LocalState::new(NonVolatileState::from(replicas[2])),
             0,
             HealthStatus::Normal,
         );
@@ -1229,7 +1248,7 @@ mod tests {
         }
     }
 
-    fn simulate_broadcast<NS: State<(ReplicaIdentifier, View)>, S: Service, H: HealthDetector>(
+    fn simulate_broadcast<NS: State<NonVolatileState>, S: Service, H: HealthDetector>(
         source: &mut Mailbox,
         replicas: Vec<&mut Replica<NS, S, H>>,
     ) {
@@ -1245,7 +1264,7 @@ mod tests {
         }
     }
 
-    fn simulate_requests<NS: State<(ReplicaIdentifier, View)>, S: Service, H: HealthDetector>(
+    fn simulate_requests<NS: State<NonVolatileState>, S: Service, H: HealthDetector>(
         primary: &mut Replica<NS, S, H>,
         clients: Vec<&mut Client>,
         operation: &[u8],
@@ -1341,7 +1360,7 @@ mod tests {
         }
     }
 
-    fn simulate_reply<NS: State<(ReplicaIdentifier, View)>, S: Service, H: HealthDetector>(
+    fn simulate_reply<NS: State<NonVolatileState>, S: Service, H: HealthDetector>(
         primary: &mut Replica<NS, S, H>,
         replica: &mut Replica<NS, S, H>,
         client: &mut Client,
