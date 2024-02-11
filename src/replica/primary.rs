@@ -23,6 +23,10 @@ where
     HD: HealthDetector,
 {
     fn process_normal(&mut self, mailbox: &mut Mailbox) {
+        // TODO: use the visit pattern here similar to prepare ok in the replica.
+        // Primaries should prioritize committing work over taking on new requests.
+        // Though we may actually want to do both in the same loop.
+        // We already handle multiple messages in a single poll for outdated views.
         let mut prepared: HashMap<OpNumber, HashSet<Address>> = HashMap::new();
 
         mailbox.select(|sender, message| match message {
