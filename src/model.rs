@@ -26,7 +26,6 @@ pub enum Payload {
     StartView(StartView),
     Commit(Commit),
     OutdatedView,
-    OutdatedRequest(OutdatedRequest),
     ConcurrentRequest(ConcurrentRequest),
 }
 
@@ -166,23 +165,6 @@ impl TryFrom<Payload> for ConcurrentRequest {
     }
 }
 
-impl From<OutdatedRequest> for Payload {
-    fn from(value: OutdatedRequest) -> Self {
-        Self::OutdatedRequest(value)
-    }
-}
-
-impl TryFrom<Payload> for OutdatedRequest {
-    type Error = Payload;
-
-    fn try_from(value: Payload) -> Result<Self, Self::Error> {
-        match value {
-            Payload::OutdatedRequest(o) => Ok(o),
-            _ => Err(value),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
     /// The operation (with its arguments) the client wants to run.
@@ -243,11 +225,5 @@ pub struct Commit {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConcurrentRequest {
     /// Client-assigned number for the request in-progress.
-    pub s: RequestIdentifier,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OutdatedRequest {
-    /// Client-assigned number for the most recent request processed.
     pub s: RequestIdentifier,
 }

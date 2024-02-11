@@ -1,8 +1,6 @@
 use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::{Address, Mailbox};
-use crate::model::{
-    Commit, ConcurrentRequest, DoViewChange, Message, OutdatedRequest, Payload, StartView,
-};
+use crate::model::{Commit, ConcurrentRequest, DoViewChange, Message, Payload, StartView};
 use crate::replica::{NonVolatileState, Replica, Role, Status};
 use crate::service::Service;
 use crate::stamps::OpNumber;
@@ -56,13 +54,7 @@ where
                                 // send back a cached response for latest request from the client.
                                 Some(reply) => sender.send(request.c, self.0.view, reply),
                             },
-                            Some(Ordering::Greater) => sender.send(
-                                request.c,
-                                self.0.view,
-                                OutdatedRequest {
-                                    s: last_request.request(),
-                                },
-                            ),
+                            Some(Ordering::Greater) => (), // drop older requests
                         }
                     }
                 }

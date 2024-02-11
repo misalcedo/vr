@@ -4,8 +4,8 @@ use crate::health::{HealthDetector, HealthStatus};
 use crate::identifiers::ReplicaIdentifier;
 use crate::mailbox::Mailbox;
 use crate::model::{
-    ConcurrentRequest, DoViewChange, Message, OutdatedRequest, Payload, Prepare, PrepareOk, Reply,
-    Request, StartView,
+    ConcurrentRequest, DoViewChange, Message, Payload, Prepare, PrepareOk, Reply, Request,
+    StartView,
 };
 use crate::service::Service;
 use crate::stamps::{OpNumber, View};
@@ -209,7 +209,7 @@ mod tests {
     use crate::driver::{Driver, LocalDriver};
     use crate::health::{HealthStatus, LocalHealthDetector, Suspect};
     use crate::identifiers::GroupIdentifier;
-    use crate::model::{Commit, OutdatedRequest};
+    use crate::model::Commit;
     use crate::state::LocalState;
 
     use super::*;
@@ -332,19 +332,7 @@ mod tests {
         driver.deliver(first_request);
         driver.drive_to_empty(group);
 
-        let messages: Vec<OutdatedRequest> = driver
-            .fetch(client.identifier())
-            .into_iter()
-            .map(Message::payload::<OutdatedRequest>)
-            .map(Result::unwrap)
-            .collect();
-
-        assert_eq!(
-            messages,
-            vec![OutdatedRequest {
-                s: client.last_request()
-            }]
-        );
+        assert_eq!(driver.fetch(client.identifier()), vec![]);
 
         driver.deliver(client.message(operation));
         driver.drive_to_empty(group);
@@ -493,26 +481,22 @@ mod tests {
         let primary = group.primary(client.view());
 
         for _ in 1..=2 {
-            let request = client.new_message(operation);
-
-            driver.deliver(request);
+            driver.deliver(client.new_message(operation));
             driver.drive_to_empty(group);
             driver.fetch(client.identifier());
         }
 
-        let request = clone.new_message(operation);
-
-        driver.deliver(request);
+        driver.deliver(clone.new_message(operation));
         driver.drive_to_empty(group);
 
-        let message = driver.fetch(clone.identifier());
+        let messages = driver.fetch(client.identifier());
         let (primary, mut mailbox) = driver.take(primary).unwrap();
         let inbound: Vec<Message> = mailbox.drain_inbound().collect();
         let outbound: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(inbound, vec![]);
         assert_eq!(outbound, vec![]);
-        assert_eq!(message, vec![outdated_request_message(&primary, &client)]);
+        assert_eq!(messages, vec![]);
     }
 
     #[test]
@@ -863,34 +847,6 @@ mod tests {
     }
 
     #[test]
-    fn client_resend_finished_not_cached() {
-        let operation = b"Hi!";
-        let group = GroupIdentifier::new(3);
-        let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
-
-        let mut primary = Replica::new(
-            LocalState::new(NonVolatileState::from(replicas[0])),
-            0,
-            HealthStatus::Normal,
-        );
-        let mut replica = Replica::new(
-            LocalState::new(NonVolatileState::from(replicas[1])),
-            0,
-            HealthStatus::Normal,
-        );
-        let mut client = Client::new(group);
-        let mut clone = client.clone();
-
-        let mut mailbox = simulate_reply(&mut primary, &mut replica, &mut client, 2);
-
-        mailbox.deliver(clone.new_message(operation));
-        primary.poll(&mut mailbox);
-
-        let messages: Vec<Message> = mailbox.drain_outbound().collect();
-        assert_eq!(messages, vec![outdated_request_message(&primary, &client)]);
-    }
-
-    #[test]
     fn do_view_change_replica() {
         let group = GroupIdentifier::new(3);
         let replicas: Vec<ReplicaIdentifier> = group.into_iter().collect();
@@ -1142,17 +1098,6 @@ mod tests {
             payload: Payload::StartView(StartView {
                 l: primary.log.clone(),
                 k: primary.committed,
-            }),
-        }
-    }
-
-    fn outdated_request_message<NS, S, H>(primary: &Replica<NS, S, H>, client: &Client) -> Message {
-        Message {
-            from: primary.identifier.into(),
-            to: client.address(),
-            view: primary.view,
-            payload: Payload::OutdatedRequest(OutdatedRequest {
-                s: client.last_request(),
             }),
         }
     }
