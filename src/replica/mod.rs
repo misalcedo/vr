@@ -2,7 +2,7 @@ use crate::client_table::ClientTable;
 
 use crate::health::{HealthDetector, HealthStatus};
 use crate::identifiers::ReplicaIdentifier;
-use crate::mailbox::{Address, Mailbox};
+use crate::mailbox::Mailbox;
 use crate::model::{
     ConcurrentRequest, DoViewChange, Message, OutdatedRequest, Payload, Prepare, PrepareOk, Reply,
     Request, StartView,
@@ -229,7 +229,7 @@ mod tests {
     use crate::driver::{Driver, LocalDriver};
     use crate::health::{HealthStatus, LocalHealthDetector, Suspect};
     use crate::identifiers::GroupIdentifier;
-    use crate::model::OutdatedRequest;
+    use crate::model::{Commit, OutdatedRequest};
     use crate::state::LocalState;
 
     use super::*;
@@ -499,7 +499,7 @@ mod tests {
         let (replica, mut mailbox) = driver.take(identifier).unwrap();
         let messages: Vec<Message> = mailbox.drain_inbound().collect();
 
-        assert_eq!(messages, vec![ping_message(&replica)]);
+        assert_eq!(messages, vec![commit_message(&replica)]);
     }
 
     #[test]
@@ -1146,12 +1146,15 @@ mod tests {
         }
     }
 
-    fn ping_message<NS, S, H>(replica: &Replica<NS, S, H>) -> Message {
+    fn commit_message<NS, S, H>(replica: &Replica<NS, S, H>) -> Message {
         Message {
             from: replica.identifier.primary(replica.view).into(),
             to: replica.identifier.group().into(),
             view: replica.view,
-            payload: Payload::Ping,
+            payload: Commit {
+                k: replica.committed,
+            }
+            .into(),
         }
     }
 

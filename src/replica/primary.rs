@@ -1,6 +1,6 @@
 use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::{Address, Mailbox};
-use crate::model::{ConcurrentRequest, Message, OutdatedRequest, Payload, StartView};
+use crate::model::{Commit, ConcurrentRequest, Message, OutdatedRequest, Payload, StartView};
 use crate::replica::{NonVolatileState, Replica, Role, Status};
 use crate::service::Service;
 use crate::stamps::OpNumber;
@@ -98,7 +98,12 @@ where
             .detect(self.0.view, self.0.identifier)
             >= HealthStatus::Suspect
         {
-            mailbox.broadcast(self.0.view, Payload::Ping);
+            mailbox.broadcast(
+                self.0.view,
+                Commit {
+                    k: self.0.committed,
+                },
+            );
         }
     }
 

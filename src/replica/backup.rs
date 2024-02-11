@@ -19,7 +19,7 @@ where
         mailbox.select(|sender, message| match message {
             Message {
                 from: Address::Replica(_),
-                payload: Payload::Ping,
+                payload: Payload::Commit(_),
                 ..
             } => None,
             Message {

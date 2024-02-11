@@ -106,13 +106,7 @@ impl<S: Service, H: HealthDetector> LocalDriver<S, H> {
     pub fn take(
         mut self,
         identifier: ReplicaIdentifier,
-    ) -> Result<
-        (
-            Replica<LocalState<NonVolatileState>, S, H>,
-            Mailbox,
-        ),
-        Self,
-    > {
+    ) -> Result<(Replica<LocalState<NonVolatileState>, S, H>, Mailbox), Self> {
         match (
             self.replicas.remove(&identifier),
             self.mailboxes.remove(&identifier.into()),
@@ -229,8 +223,8 @@ impl<S: Service, H: HealthDetector> Driver for LocalDriver<S, H> {
 #[cfg(test)]
 mod tests {
     use crate::health::HealthStatus;
-    use crate::model::Payload;
-    use crate::stamps::View;
+    use crate::model::{Commit, Payload};
+    use crate::stamps::{OpNumber, View};
     use crate::state::State;
 
     use super::*;
@@ -244,7 +238,10 @@ mod tests {
             from: group.primary(view).into(),
             to: identifier.into(),
             view,
-            payload: Payload::Ping,
+            payload: Commit {
+                k: OpNumber::default(),
+            }
+            .into(),
         };
 
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
@@ -278,7 +275,10 @@ mod tests {
             from: group.primary(view).into(),
             to: identifier.into(),
             view,
-            payload: Payload::Ping,
+            payload: Commit {
+                k: OpNumber::default(),
+            }
+            .into(),
         };
 
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
@@ -325,7 +325,10 @@ mod tests {
             from: identifier.into(),
             to: identifier.into(),
             view,
-            payload: Payload::Ping,
+            payload: Commit {
+                k: OpNumber::default(),
+            }
+            .into(),
         };
 
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
@@ -348,7 +351,10 @@ mod tests {
             from: identifier.into(),
             to: group.into(),
             view,
-            payload: Payload::Ping,
+            payload: Commit {
+                k: OpNumber::default(),
+            }
+            .into(),
         };
 
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
@@ -379,7 +385,10 @@ mod tests {
             from: group.primary(view).into(),
             to: identifier.into(),
             view,
-            payload: Payload::Ping,
+            payload: Commit {
+                k: OpNumber::default(),
+            }
+            .into(),
         };
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
 

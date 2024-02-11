@@ -147,8 +147,8 @@ mod tests {
     use super::*;
     use crate::client::Client;
     use crate::identifiers::{ClientIdentifier, GroupIdentifier};
-    use crate::model::Request;
-    use crate::stamps::View;
+    use crate::model::{Commit, Request};
+    use crate::stamps::{OpNumber, View};
 
     #[test]
     fn mailbox() {
@@ -311,7 +311,13 @@ mod tests {
 
         let mut instance = Mailbox::new(replica, Address::from(group));
 
-        instance.send(replica, view, Payload::Ping);
+        instance.send(
+            replica,
+            view,
+            Commit {
+                k: OpNumber::default(),
+            },
+        );
 
         assert!(instance.inbound.iter().all(Option::is_some));
         assert_eq!(instance.inbound.len(), 1);

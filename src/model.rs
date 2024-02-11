@@ -24,7 +24,7 @@ pub enum Payload {
     Reply(Reply),
     DoViewChange(DoViewChange),
     StartView(StartView),
-    Ping,
+    Commit(Commit),
     OutdatedView,
     OutdatedRequest(OutdatedRequest),
     ConcurrentRequest(ConcurrentRequest),
@@ -132,6 +132,23 @@ impl TryFrom<Payload> for StartView {
     }
 }
 
+impl From<Commit> for Payload {
+    fn from(value: Commit) -> Self {
+        Self::Commit(value)
+    }
+}
+
+impl TryFrom<Payload> for Commit {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::Commit(s) => Ok(s),
+            _ => Err(value),
+        }
+    }
+}
+
 impl From<ConcurrentRequest> for Payload {
     fn from(value: ConcurrentRequest) -> Self {
         Self::ConcurrentRequest(value)
@@ -213,6 +230,12 @@ pub struct DoViewChange {
 pub struct StartView {
     /// The log of the replica.
     pub l: Vec<Request>,
+    /// The op-number of the latest committed request known to the replica.
+    pub k: OpNumber,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Commit {
     /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
 }
