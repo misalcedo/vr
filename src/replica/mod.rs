@@ -10,63 +10,13 @@ use crate::state::State;
 use backup::Backup;
 use primary::Primary;
 
+pub use state::NonVolatileState;
+pub use status::Status;
+
 mod backup;
 mod primary;
-
-trait Role {
-    fn process_normal(&mut self, mailbox: &mut Mailbox);
-
-    fn process_view_change(&mut self, mailbox: &mut Mailbox);
-
-    fn process_recovering(&mut self, mailbox: &mut Mailbox);
-}
-
-#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
-enum Status {
-    #[default]
-    Normal,
-    ViewChange,
-    Recovering,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NonVolatileState {
-    identifier: ReplicaIdentifier,
-    latest_view: Option<View>,
-}
-
-impl From<ReplicaIdentifier> for NonVolatileState {
-    fn from(identifier: ReplicaIdentifier) -> Self {
-        Self {
-            identifier,
-            latest_view: None,
-        }
-    }
-}
-
-impl NonVolatileState {
-    pub fn new(identifier: ReplicaIdentifier, view: View) -> Self {
-        Self {
-            identifier,
-            latest_view: Some(view),
-        }
-    }
-
-    fn view(&self) -> View {
-        match self.latest_view {
-            None => View::default(),
-            Some(view) if self.identifier.is_primary(view) => view.next(),
-            Some(view) => view,
-        }
-    }
-
-    fn status(&self) -> Status {
-        match self.latest_view {
-            None => Status::Normal,
-            Some(_) => Status::Recovering,
-        }
-    }
-}
+mod state;
+mod status;
 
 #[derive(Debug)]
 pub struct Replica<NS, S, HD> {
@@ -101,9 +51,8 @@ where
 {
     pub fn new(mut state: NS, service: S, health_detector: HD) -> Self {
         let saved_state = state.load();
-        let identifier = saved_state.identifier;
+        let identifier = saved_state.identifier();
         let view = saved_state.view();
-        let status = saved_state.status();
 
         state.save(NonVolatileState::new(identifier, view));
 
@@ -117,7 +66,7 @@ where
             log: Default::default(),
             committed: Default::default(),
             client_table: Default::default(),
-            status,
+            status: saved_state.status(),
         }
     }
 
@@ -134,21 +83,16 @@ where
     }
 
     pub fn poll(&mut self, mailbox: &mut Mailbox) {
-        let primary = self.identifier.primary(self.view);
-        let status = self.status;
+        let primary = self.identifier == self.identifier.primary(self.view);
 
         self.inform_outdated(mailbox);
 
-        let mut role: Box<dyn Role> = if primary == self.identifier {
-            Box::new(Primary(self))
-        } else {
-            Box::new(Backup(self))
-        };
-
-        match status {
-            Status::Normal => role.process_normal(mailbox),
-            Status::ViewChange => role.process_view_change(mailbox),
-            Status::Recovering => role.process_recovering(mailbox),
+        match self.status {
+            Status::Normal if primary => Primary::process_normal(self, mailbox),
+            Status::Normal => Backup::process_normal(self, mailbox),
+            Status::ViewChange if primary => Primary::process_view_change(self, mailbox),
+            Status::ViewChange => Backup::process_view_change(self, mailbox),
+            Status::Recovering => self.process_recovering(mailbox),
         }
     }
 
@@ -219,6 +163,11 @@ where
                 Payload::PrepareOk(PrepareOk { n: current }),
             );
         }
+    }
+
+    fn save_non_volatile_state(&mut self) {
+        self.state
+            .save(NonVolatileState::new(self.identifier, self.view))
     }
 }
 

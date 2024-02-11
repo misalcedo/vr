@@ -3,16 +3,20 @@ use crate::mailbox::{Address, Mailbox};
 use crate::model::{
     Commit, ConcurrentRequest, DoViewChange, Message, Payload, RecoveryResponse, StartView,
 };
-use crate::replica::{NonVolatileState, Replica, Role, Status};
+use crate::replica::{NonVolatileState, Replica, Status};
 use crate::service::Service;
 use crate::stamps::OpNumber;
 use crate::state::State;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-pub struct Primary<'a, NS, S, HD>(pub &'a mut Replica<NS, S, HD>);
+pub trait Primary {
+    fn process_normal(&mut self, mailbox: &mut Mailbox);
 
-impl<'a, NS, S, HD> Role for Primary<'a, NS, S, HD>
+    fn process_view_change(&mut self, mailbox: &mut Mailbox);
+}
+
+impl<NS, S, HD> Primary for Replica<NS, S, HD>
 where
     NS: State<NonVolatileState>,
     S: Service,
@@ -26,24 +30,24 @@ where
                 payload: Payload::Request(request),
                 ..
             } => {
-                let cached_request = self.0.client_table.get(&request);
+                let cached_request = self.client_table.get(&request);
 
                 match cached_request {
                     None => {
                         // this is the first request from the client.
-                        self.0.client_table.start(&request);
-                        self.0.prepare_primary(sender, request);
+                        self.client_table.start(&request);
+                        self.prepare_primary(sender, request);
                     }
                     Some(last_request) => {
                         match last_request.partial_cmp(&request) {
                             None => {
                                 // got a newer request from the client.
-                                self.0.client_table.start(&request);
-                                self.0.prepare_primary(sender, request);
+                                self.client_table.start(&request);
+                                self.prepare_primary(sender, request);
                             }
                             Some(Ordering::Less) => sender.send(
                                 request.c,
-                                self.0.view,
+                                self.view,
                                 ConcurrentRequest {
                                     s: last_request.request(),
                                 },
@@ -54,7 +58,7 @@ where
                                     // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
                                 }
                                 // send back a cached response for latest request from the client.
-                                Some(reply) => sender.send(request.c, self.0.view, reply),
+                                Some(reply) => sender.send(request.c, self.view, reply),
                             },
                             Some(Ordering::Greater) => (), // drop older requests
                         }
@@ -68,15 +72,15 @@ where
                 payload: Payload::PrepareOk(prepare_ok),
                 ..
             } => {
-                if self.0.committed >= prepare_ok.n {
+                if self.committed >= prepare_ok.n {
                     None
                 } else {
                     let replication = prepared.entry(prepare_ok.n).or_insert_with(HashSet::new);
 
                     replication.insert(from);
 
-                    if replication.len() >= self.0.identifier.sub_majority() {
-                        self.0.execute_committed(prepare_ok.n, Some(sender));
+                    if replication.len() >= self.identifier.sub_majority() {
+                        self.execute_committed(prepare_ok.n, Some(sender));
 
                         None
                     } else {
@@ -90,13 +94,13 @@ where
                 payload: Payload::Recovery,
                 ..
             } => {
-                if view <= self.0.view {
+                if view <= self.view {
                     sender.send(
                         replica,
-                        self.0.view,
+                        self.view,
                         RecoveryResponse {
-                            l: self.0.log.clone(),
-                            k: self.0.committed,
+                            l: self.log.clone(),
+                            k: self.committed,
                         },
                     );
                 }
@@ -106,18 +110,8 @@ where
             _ => Some(message),
         });
 
-        if self
-            .0
-            .health_detector
-            .detect(self.0.view, self.0.identifier)
-            >= HealthStatus::Suspect
-        {
-            mailbox.broadcast(
-                self.0.view,
-                Commit {
-                    k: self.0.committed,
-                },
-            );
+        if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Suspect {
+            mailbox.broadcast(self.view, Commit { k: self.committed });
         }
     }
 
@@ -135,7 +129,7 @@ where
             }
         });
 
-        let quorum = self.0.identifier.sub_majority() + 1;
+        let quorum = self.identifier.sub_majority() + 1;
 
         if replicas.len() >= quorum {
             let mut candidate = DoViewChange {
@@ -159,29 +153,23 @@ where
                 _ => Some(message),
             });
 
-            self.0.replace_log(candidate.l);
-            self.0.status = Status::Normal;
-            self.0
-                .state
-                .save(NonVolatileState::new(self.0.identifier, self.0.view));
+            self.replace_log(candidate.l);
+            self.status = Status::Normal;
+            self.save_non_volatile_state();
 
             mailbox.broadcast(
-                self.0.view,
+                self.view,
                 StartView {
-                    l: self.0.log.clone(),
+                    l: self.log.clone(),
                     k: candidate.k,
                 },
             );
 
-            self.0.execute_committed(candidate.k, Some(mailbox));
+            self.execute_committed(candidate.k, Some(mailbox));
 
-            for in_progress in self.0.committed.as_usize()..self.0.op_number.as_usize() {
-                self.0.client_table.start(&self.0.log[in_progress])
+            for in_progress in self.committed.as_usize()..self.op_number.as_usize() {
+                self.client_table.start(&self.log[in_progress])
             }
         }
-    }
-
-    fn process_recovering(&mut self, _mailbox: &mut Mailbox) {
-        todo!("Primaries don't recover. Only replicas do. Primaries must wait for a view change to recover.")
     }
 }
