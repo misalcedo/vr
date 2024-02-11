@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.6.0] - 2024-02-11
+### Added
+- Support for the recovery protocol.
+- A local driver of the replication group to aid in testing.
+
+### Changed
+- Separated the role-specific logic into sub-modules.
+- Updated backups to discard any message that is not a prepare or commit during normal operation.
+
 ## [0.5.0] - 2024-02-07
 ### Added
 - Added the view change protocol
