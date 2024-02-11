@@ -27,6 +27,8 @@ pub enum Payload {
     Commit(Commit),
     OutdatedView,
     ConcurrentRequest(ConcurrentRequest),
+    Recovery,
+    RecoveryResponse(RecoveryResponse),
 }
 
 impl From<Request> for Payload {
@@ -165,6 +167,23 @@ impl TryFrom<Payload> for ConcurrentRequest {
     }
 }
 
+impl From<RecoveryResponse> for Payload {
+    fn from(value: RecoveryResponse) -> Self {
+        Self::RecoveryResponse(value)
+    }
+}
+
+impl TryFrom<Payload> for RecoveryResponse {
+    type Error = Payload;
+
+    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+        match value {
+            Payload::RecoveryResponse(c) => Ok(c),
+            _ => Err(value),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
     /// The operation (with its arguments) the client wants to run.
@@ -226,4 +245,12 @@ pub struct Commit {
 pub struct ConcurrentRequest {
     /// Client-assigned number for the request in-progress.
     pub s: RequestIdentifier,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryResponse {
+    /// The log of the replica.
+    pub l: Vec<Request>,
+    /// The op-number of the latest committed request known to the replica.
+    pub k: OpNumber,
 }

@@ -3,7 +3,7 @@ use crate::client_table::ClientTable;
 use crate::health::HealthDetector;
 use crate::identifiers::ReplicaIdentifier;
 use crate::mailbox::Mailbox;
-use crate::model::{Payload, Prepare, Reply, Request};
+use crate::model::{Payload, Prepare, PrepareOk, Reply, Request};
 use crate::service::Service;
 use crate::stamps::{OpNumber, View};
 use crate::state::State;
@@ -51,6 +51,21 @@ impl NonVolatileState {
             latest_view: Some(view),
         }
     }
+
+    fn view(&self) -> View {
+        match self.latest_view {
+            None => View::default(),
+            Some(view) if self.identifier.is_primary(view) => view.next(),
+            Some(view) => view,
+        }
+    }
+
+    fn status(&self) -> Status {
+        match self.latest_view {
+            None => Status::Normal,
+            Some(_) => Status::Recovering,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -87,15 +102,10 @@ where
     pub fn new(mut state: NS, service: S, health_detector: HD) -> Self {
         let saved_state = state.load();
         let identifier = saved_state.identifier;
-        let status = saved_state
-            .latest_view
-            .map(|_| Status::Recovering)
-            .unwrap_or_default();
-        let mut view = saved_state.latest_view.unwrap_or_default();
+        let view = saved_state.view();
+        let status = saved_state.status();
 
-        if status == Status::Recovering && identifier.is_primary(view) {
-            view.increment();
-        }
+        state.save(NonVolatileState::new(identifier, view));
 
         Self {
             state,
@@ -197,6 +207,19 @@ where
         self.log = log;
         self.op_number = OpNumber::new(self.log.len());
     }
+
+    fn prepare_ok_uncommitted(&mut self, mailbox: &mut Mailbox) {
+        let mut current = self.committed;
+
+        while current < self.op_number {
+            current.increment();
+            mailbox.send(
+                self.identifier.primary(self.view),
+                self.view,
+                Payload::PrepareOk(PrepareOk { n: current }),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -280,7 +303,7 @@ mod tests {
         let outbound: Vec<Message> = mailbox.drain_outbound().collect();
 
         assert_eq!(primary.log.len(), requests);
-        assert_eq!(primary.committed, OpNumber::new(requests - 1)); // replicas never learned of last commit
+        assert_eq!(primary.committed, OpNumber::new(requests));
         assert_eq!(inbound, vec![]);
         assert_eq!(outbound, vec![]);
     }
@@ -427,6 +450,88 @@ mod tests {
 
         assert_eq!(inbound, f - 1);
         assert_eq!(outbound, vec![]);
+    }
+
+    #[test]
+    fn old_primaries_can_recover() {
+        let requests = 5;
+        let group = GroupIdentifier::new(3);
+        let mut health_detector = LocalHealthDetector::default();
+        let mut driver: LocalDriver<usize, LocalHealthDetector> =
+            LocalDriver::with_health_detector(group, &health_detector);
+        let mut client = Client::new(group);
+
+        let operation = b"Hello, world!";
+        let old_primary = group.primary(client.view());
+
+        driver.crash(Some(old_primary));
+        health_detector.set_status(old_primary, HealthStatus::Unhealthy);
+
+        // view change
+        driver.drive_to_empty(group);
+
+        client.set_view(client.view().next());
+
+        for i in 1..=requests {
+            driver.deliver(client.new_message(operation));
+            driver.drive_to_empty(group);
+
+            assert_eq!(
+                driver.fetch(client.identifier()),
+                vec![reply_message(&client, operation, i)]
+            );
+        }
+
+        driver.recover_with_detector(Some(old_primary), &health_detector);
+        health_detector.set_status(old_primary, HealthStatus::Normal);
+
+        // old primary recovery
+        driver.drive(Some(old_primary));
+        driver.drive_to_empty(group);
+
+        driver.crash(group.replicas(client.view()).last());
+        health_detector.set_status(old_primary, HealthStatus::Unhealthy);
+
+        // old primary now functions as a backup
+        driver.deliver(client.new_message(operation));
+        driver.drive_to_empty(group);
+
+        assert_eq!(
+            driver.fetch(client.identifier()),
+            vec![reply_message(&client, operation, requests + 1)]
+        );
+    }
+
+    #[test]
+    fn replicas_can_recover() {
+        let requests = 5;
+        let group = GroupIdentifier::new(3);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+        let mut client = Client::new(group);
+
+        let operation = b"Hello, world!";
+
+        for i in 1..=requests {
+            driver.deliver(client.new_message(operation));
+            driver.drive_to_empty(group);
+
+            assert_eq!(
+                driver.fetch(client.identifier()),
+                vec![reply_message(&client, operation, i)]
+            );
+        }
+
+        driver.crash(group.replicas(client.view()));
+        driver.recover(group.replicas(client.view()));
+        driver.drive_to_empty(group);
+
+        driver.deliver(client.new_message(operation));
+        driver.drive_to_empty(group);
+
+        assert_eq!(
+            driver.fetch(client.identifier()),
+            vec![reply_message(&client, operation, requests + 1)]
+        );
     }
 
     #[test]

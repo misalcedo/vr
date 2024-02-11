@@ -18,11 +18,6 @@ where
 
         mailbox.select(|sender, message| match message {
             Message {
-                payload: Payload::Request(_),
-                ..
-            } => None,
-            Message {
-                from: Address::Replica(_),
                 payload: Payload::Commit(commit),
                 ..
             } => {
@@ -30,7 +25,6 @@ where
                 None
             }
             Message {
-                from: Address::Replica(_),
                 payload: Payload::Prepare(prepare),
                 ..
             } if next_op == prepare.n => {
@@ -51,7 +45,11 @@ where
                 None
             }
             // TODO: perform state transfer if necessary to get missing information.
-            _ => Some(message),
+            Message {
+                payload: Payload::Prepare(_),
+                ..
+            } => Some(message),
+            _ => None,
         });
 
         if self
@@ -95,19 +93,35 @@ where
             _ => Some(message),
         });
 
-        let mut current = self.0.committed;
-
-        while current < self.0.op_number {
-            current.increment();
-            mailbox.send(
-                self.0.identifier.primary(self.0.view),
-                self.0.view,
-                Payload::PrepareOk(PrepareOk { n: current }),
-            );
-        }
+        self.0.prepare_ok_uncommitted(mailbox);
     }
 
-    fn process_recovering(&mut self, _mailbox: &mut Mailbox) {
-        todo!()
+    fn process_recovering(&mut self, mailbox: &mut Mailbox) {
+        // TODO: Only send this once and then wait for a response (with timeout).
+        mailbox.broadcast(self.0.view, Payload::Recovery);
+        mailbox.select(|sender, message| match message {
+            Message {
+                from: Address::Replica(_),
+                view,
+                payload: Payload::RecoveryResponse(recovery_response),
+                ..
+            } => {
+                if view > self.0.view {
+                    self.0
+                        .state
+                        .save(NonVolatileState::new(self.0.identifier, self.0.view));
+                }
+
+                self.0.view = view;
+                self.0.replace_log(recovery_response.l);
+                self.0.execute_committed(recovery_response.k, None);
+
+                self.0.status = Status::Normal;
+                self.0.prepare_ok_uncommitted(sender);
+
+                None
+            }
+            _ => Some(message),
+        });
     }
 }

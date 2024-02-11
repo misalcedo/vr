@@ -214,6 +214,9 @@ impl<S: Service, H: HealthDetector> Driver for LocalDriver<S, H> {
     {
         let iterator = replicas.into_iter();
 
+        // Always drive the replicas once to kick off processes without an incoming message.
+        self.drive(iterator.clone());
+
         while iterator.clone().any(|r| !self.is_empty(r)) {
             self.drive(iterator.clone());
         }

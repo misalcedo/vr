@@ -1,6 +1,8 @@
 use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::{Address, Mailbox};
-use crate::model::{Commit, ConcurrentRequest, DoViewChange, Message, Payload, StartView};
+use crate::model::{
+    Commit, ConcurrentRequest, DoViewChange, Message, Payload, RecoveryResponse, StartView,
+};
 use crate::replica::{NonVolatileState, Replica, Role, Status};
 use crate::service::Service;
 use crate::stamps::OpNumber;
@@ -82,6 +84,25 @@ where
                     }
                 }
             }
+            Message {
+                from: Address::Replica(replica),
+                view,
+                payload: Payload::Recovery,
+                ..
+            } => {
+                if view <= self.0.view {
+                    sender.send(
+                        replica,
+                        self.0.view,
+                        RecoveryResponse {
+                            l: self.0.log.clone(),
+                            k: self.0.committed,
+                        },
+                    );
+                }
+
+                None
+            }
             _ => Some(message),
         });
 
@@ -161,6 +182,6 @@ where
     }
 
     fn process_recovering(&mut self, _mailbox: &mut Mailbox) {
-        todo!()
+        todo!("Primaries don't recover. Only replicas do. Primaries must wait for a view change to recover.")
     }
 }
