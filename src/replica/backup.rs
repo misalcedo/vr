@@ -18,15 +18,17 @@ where
 
         mailbox.select(|sender, message| match message {
             Message {
-                from: Address::Replica(_),
                 payload: Payload::Request(_),
                 ..
             } => None,
             Message {
                 from: Address::Replica(_),
-                payload: Payload::Commit(_),
+                payload: Payload::Commit(commit),
                 ..
-            } => None,
+            } => {
+                self.0.execute_committed(commit.k, None);
+                None
+            }
             Message {
                 from: Address::Replica(_),
                 payload: Payload::Prepare(prepare),

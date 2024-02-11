@@ -223,7 +223,7 @@ impl<S: Service, H: HealthDetector> Driver for LocalDriver<S, H> {
 #[cfg(test)]
 mod tests {
     use crate::health::HealthStatus;
-    use crate::model::{Commit, Payload};
+    use crate::model::Commit;
     use crate::stamps::{OpNumber, View};
     use crate::state::State;
 

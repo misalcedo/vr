@@ -1,12 +1,9 @@
 use crate::client_table::ClientTable;
 
-use crate::health::{HealthDetector, HealthStatus};
+use crate::health::HealthDetector;
 use crate::identifiers::ReplicaIdentifier;
 use crate::mailbox::Mailbox;
-use crate::model::{
-    ConcurrentRequest, DoViewChange, Message, Payload, Prepare, PrepareOk, Reply, Request,
-    StartView,
-};
+use crate::model::{Payload, Prepare, Reply, Request};
 use crate::service::Service;
 use crate::stamps::{OpNumber, View};
 use crate::state::State;
@@ -209,7 +206,7 @@ mod tests {
     use crate::driver::{Driver, LocalDriver};
     use crate::health::{HealthStatus, LocalHealthDetector, Suspect};
     use crate::identifiers::GroupIdentifier;
-    use crate::model::Commit;
+    use crate::model::{Commit, ConcurrentRequest, DoViewChange, Message, PrepareOk, StartView};
     use crate::state::LocalState;
 
     use super::*;
@@ -302,12 +299,16 @@ mod tests {
         let operation = b"Hello, world!";
         let primary = group.primary(client.view());
 
-        for _ in 1..=requests {
+        for i in 1..=requests {
             let request = client.new_message(operation);
 
             driver.deliver(request);
             driver.drive_to_empty(group);
-            driver.fetch(client.identifier());
+
+            assert_eq!(
+                driver.fetch(client.identifier()),
+                vec![reply_message(&client, operation, i)]
+            );
         }
 
         clone.set_view(view.next());
@@ -316,6 +317,8 @@ mod tests {
         driver.crash(Some(primary));
         health_detector.set_status(primary, HealthStatus::Unhealthy);
 
+        // trigger view change without a message
+        driver.drive(group.replicas(view));
         driver.drive_to_empty(group.replicas(view));
         driver.deliver(client.broadcast(operation));
         driver.drive_to_empty(group);
@@ -471,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn client_resends_are_outdated_request() {
+    fn resent_client_requests_are_dropped() {
         let group = GroupIdentifier::new(3);
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let mut client = Client::new(group);
@@ -490,7 +493,33 @@ mod tests {
         driver.drive_to_empty(group);
 
         let messages = driver.fetch(client.identifier());
-        let (primary, mut mailbox) = driver.take(primary).unwrap();
+        let (_, mut mailbox) = driver.take(primary).unwrap();
+        let inbound: Vec<Message> = mailbox.drain_inbound().collect();
+        let outbound: Vec<Message> = mailbox.drain_outbound().collect();
+
+        assert_eq!(inbound, vec![]);
+        assert_eq!(outbound, vec![]);
+        assert_eq!(messages, vec![]);
+    }
+
+    #[test]
+    fn client_requests_dropped_on_backups() {
+        let group = GroupIdentifier::new(3);
+        let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
+        let mut client = Client::new(group);
+
+        let operation = b"Hello, world!";
+        let replica = group.replicas(client.view()).next().unwrap();
+
+        let mut message = client.new_message(operation);
+
+        message.to = replica.into();
+
+        driver.deliver(message);
+        driver.drive_to_empty(group);
+
+        let messages = driver.fetch(client.identifier());
+        let (_, mut mailbox) = driver.take(replica).unwrap();
         let inbound: Vec<Message> = mailbox.drain_inbound().collect();
         let outbound: Vec<Message> = mailbox.drain_outbound().collect();
 

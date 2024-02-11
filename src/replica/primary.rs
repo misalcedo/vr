@@ -115,12 +115,13 @@ where
         });
 
         let quorum = self.0.identifier.sub_majority() + 1;
-        let mut candidate = DoViewChange {
-            l: Default::default(),
-            k: Default::default(),
-        };
 
         if replicas.len() >= quorum {
+            let mut candidate = DoViewChange {
+                l: Default::default(),
+                k: Default::default(),
+            };
+
             mailbox.select_all(|_, message| match message {
                 Message {
                     payload: Payload::DoViewChange(do_view_change),
