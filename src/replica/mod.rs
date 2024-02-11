@@ -1,6 +1,4 @@
 use crate::client_table::ClientTable;
-use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
 
 use crate::health::{HealthDetector, HealthStatus};
 use crate::identifiers::ReplicaIdentifier;
@@ -12,6 +10,19 @@ use crate::model::{
 use crate::service::Service;
 use crate::stamps::{OpNumber, View};
 use crate::state::State;
+use backup::Backup;
+use primary::Primary;
+
+mod backup;
+mod primary;
+
+trait Role {
+    fn process_normal(&mut self, mailbox: &mut Mailbox);
+
+    fn process_view_change(&mut self, mailbox: &mut Mailbox);
+
+    fn process_recovering(&mut self, mailbox: &mut Mailbox);
+}
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq)]
 enum Status {
@@ -24,18 +35,24 @@ enum Status {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NonVolatileState {
     identifier: ReplicaIdentifier,
-    latest_view: Option<View>
+    latest_view: Option<View>,
 }
 
 impl From<ReplicaIdentifier> for NonVolatileState {
     fn from(identifier: ReplicaIdentifier) -> Self {
-        Self { identifier, latest_view: None }
+        Self {
+            identifier,
+            latest_view: None,
+        }
     }
 }
 
 impl NonVolatileState {
     pub fn new(identifier: ReplicaIdentifier, view: View) -> Self {
-        Self { identifier, latest_view: Some(view) }
+        Self {
+            identifier,
+            latest_view: Some(view),
+        }
     }
 }
 
@@ -75,7 +92,10 @@ where
     pub fn new(mut state: NS, service: S, health_detector: HD) -> Self {
         let saved_state = state.load();
         let identifier = saved_state.identifier;
-        let status = saved_state.latest_view.map(|_| Status::Recovering).unwrap_or_default();
+        let status = saved_state
+            .latest_view
+            .map(|_| Status::Recovering)
+            .unwrap_or_default();
         let mut view = saved_state.latest_view.unwrap_or_default();
 
         if status == Status::Recovering && identifier.is_primary(view) {
@@ -111,13 +131,20 @@ where
 
     pub fn poll(&mut self, mailbox: &mut Mailbox) {
         let primary = self.identifier.primary(self.view);
+        let status = self.status;
 
         self.inform_outdated(mailbox);
 
-        if primary == self.identifier {
-            self.poll_primary(mailbox);
+        let mut role: Box<dyn Role> = if primary == self.identifier {
+            Box::new(Primary(self))
         } else {
-            self.poll_replica(mailbox);
+            Box::new(Backup(self))
+        };
+
+        match status {
+            Status::Normal => role.process_normal(mailbox),
+            Status::ViewChange => role.process_view_change(mailbox),
+            Status::Recovering => role.process_recovering(mailbox),
         }
     }
 
@@ -130,223 +157,6 @@ where
                 Some(message)
             }
         });
-    }
-
-    fn poll_primary(&mut self, mailbox: &mut Mailbox) {
-        match self.status {
-            Status::Normal => self.process_normal_primary(mailbox),
-            Status::ViewChange => self.process_view_change_primary(mailbox),
-            Status::Recovering => (),
-        }
-    }
-
-    fn process_normal_primary(&mut self, mailbox: &mut Mailbox) {
-        let mut prepared: HashMap<OpNumber, HashSet<Address>> = HashMap::new();
-
-        mailbox.select(|sender, message| match message {
-            Message {
-                payload: Payload::Request(request),
-                ..
-            } => {
-                let cached_request = self.client_table.get(&request);
-
-                match cached_request {
-                    None => {
-                        // this is the first request from the client.
-                        self.client_table.start(&request);
-                        self.prepare_primary(sender, request);
-                    }
-                    Some(last_request) => {
-                        match last_request.partial_cmp(&request) {
-                            None => {
-                                // got a newer request from the client.
-                                self.client_table.start(&request);
-                                self.prepare_primary(sender, request);
-                            }
-                            Some(Ordering::Less) => sender.send(
-                                request.c,
-                                self.view,
-                                ConcurrentRequest {
-                                    s: last_request.request(),
-                                },
-                            ),
-                            Some(Ordering::Equal) => match last_request.reply() {
-                                None => {
-                                    // the client resent the latest request.
-                                    // we do not want to re-broadcast here to avoid the client being able to overwhelm the network.
-                                }
-                                // send back a cached response for latest request from the client.
-                                Some(reply) => sender.send(request.c, self.view, reply),
-                            },
-                            Some(Ordering::Greater) => sender.send(
-                                request.c,
-                                self.view,
-                                OutdatedRequest {
-                                    s: last_request.request(),
-                                },
-                            ),
-                        }
-                    }
-                }
-
-                None
-            }
-            ref message @ Message {
-                from,
-                payload: Payload::PrepareOk(prepare_ok),
-                ..
-            } => {
-                if self.committed >= prepare_ok.n {
-                    None
-                } else {
-                    let replication = prepared.entry(prepare_ok.n).or_insert_with(HashSet::new);
-
-                    replication.insert(from);
-
-                    if replication.len() >= self.identifier.sub_majority() {
-                        self.committed = self.committed.max(prepare_ok.n);
-                        self.execute_primary(sender);
-
-                        None
-                    } else {
-                        Some(message.clone())
-                    }
-                }
-            }
-            _ => Some(message),
-        });
-
-        if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Suspect {
-            mailbox.broadcast(self.view, Payload::Ping);
-        }
-    }
-
-    fn process_view_change_primary(&mut self, mailbox: &mut Mailbox) {
-        let mut replicas = HashSet::new();
-
-        mailbox.visit(|message| {
-            if let Message {
-                from: Address::Replica(replica),
-                payload: Payload::DoViewChange(_),
-                ..
-            } = message
-            {
-                replicas.insert(*replica);
-            }
-        });
-
-        let quorum = self.identifier.sub_majority() + 1;
-
-        if replicas.len() >= quorum {
-            mailbox.select_all(|_, message| match message {
-                Message {
-                    payload: Payload::DoViewChange(do_view_change),
-                    ..
-                } => {
-                    if do_view_change.l.len() > self.log.len() {
-                        self.replace_log(do_view_change.k, do_view_change.l);
-                    }
-
-                    None
-                }
-                _ => Some(message),
-            });
-
-            self.status = Status::Normal;
-            self.state.save(NonVolatileState::new(self.identifier, self.view));
-
-            mailbox.broadcast(
-                self.view,
-                StartView {
-                    l: self.log.clone(),
-                    k: self.committed,
-                },
-            );
-
-            self.execute_primary(mailbox);
-        }
-    }
-
-    fn poll_replica(&mut self, mailbox: &mut Mailbox) {
-        match self.status {
-            Status::Normal => self.process_normal_replica(mailbox),
-            Status::ViewChange => self.process_view_change_replica(mailbox),
-            Status::Recovering => (),
-        }
-    }
-
-    fn process_normal_replica(&mut self, mailbox: &mut Mailbox) {
-        let next_op = self.op_number.next();
-
-        mailbox.select(|sender, message| match message {
-            Message {
-                from: Address::Replica(_),
-                payload: Payload::Ping,
-                ..
-            } => None,
-            Message {
-                from: Address::Replica(_),
-                payload: Payload::Prepare(prepare),
-                ..
-            } if next_op == prepare.n => {
-                self.client_table.start(&prepare.m);
-                self.push_request(prepare.m);
-
-                let primary = self.identifier.primary(self.view);
-
-                sender.send(primary, self.view, PrepareOk { n: self.op_number });
-                self.committed = self.committed.max(prepare.k);
-                self.execute_replica();
-
-                None
-            }
-            // TODO: perform state transfer if necessary to get missing information.
-            _ => Some(message),
-        });
-
-        if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Unhealthy {
-            self.view.increment();
-            self.status = Status::ViewChange;
-            self.state.save(NonVolatileState::new(self.identifier, self.view));
-
-            mailbox.send(
-                self.identifier.primary(self.view),
-                self.view,
-                DoViewChange {
-                    l: self.log.clone(),
-                    k: self.committed,
-                },
-            );
-        }
-    }
-
-    fn process_view_change_replica(&mut self, mailbox: &mut Mailbox) {
-        mailbox.select(|_, message| match message {
-            Message {
-                from: Address::Replica(_),
-                view,
-                payload: Payload::StartView(start_view),
-                ..
-            } => {
-                self.view = view;
-                self.status = Status::Normal;
-                self.replace_log(start_view.k, start_view.l);
-
-                None
-            }
-            _ => Some(message),
-        });
-
-        let mut current = self.committed.next();
-
-        while current <= self.op_number {
-            mailbox.send(
-                self.identifier.primary(self.view),
-                self.view,
-                Payload::PrepareOk(PrepareOk { n: current }),
-            );
-            current.increment();
-        }
     }
 
     // Push a request to the end of the log and increment the op-number.
