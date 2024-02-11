@@ -122,7 +122,7 @@ where
 
                 None
             }
-            _ => None,
+            _ => Some(message),
         });
     }
 }

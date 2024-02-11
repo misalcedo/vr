@@ -209,7 +209,7 @@ impl<S: Service, H: HealthDetector> Driver for LocalDriver<S, H> {
 
     fn drive_to_empty<I, II>(&mut self, replicas: II)
     where
-        I: Iterator<Item = ReplicaIdentifier> + Clone,
+        I: Iterator<Item = ReplicaIdentifier> + DoubleEndedIterator + Clone,
         II: IntoIterator<Item = ReplicaIdentifier, IntoIter = I>,
     {
         let iterator = replicas.into_iter();
@@ -218,7 +218,7 @@ impl<S: Service, H: HealthDetector> Driver for LocalDriver<S, H> {
         self.drive(iterator.clone());
 
         while iterator.clone().any(|r| !self.is_empty(r)) {
-            self.drive(iterator.clone());
+            self.drive(iterator.clone().rev());
         }
     }
 }
