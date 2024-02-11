@@ -22,6 +22,7 @@ where
     fn process_normal(&mut self, mailbox: &mut Mailbox) {
         let next_op = self.op_number.next();
 
+        // TODO: Prepare all the ops that we have in order.
         mailbox.select(|sender, message| match message {
             Message {
                 from: Address::Replica(_),
