@@ -1,5 +1,5 @@
 use crate::health::{HealthDetector, HealthStatus};
-use crate::mailbox::Mailbox;
+use crate::mailbox::{Address, Mailbox};
 use crate::model::{DoViewChange, Message, Payload, PrepareOk};
 use crate::replica::{NonVolatileState, Replica, Status};
 use crate::service::Service;
@@ -24,6 +24,7 @@ where
 
         mailbox.select(|sender, message| match message {
             Message {
+                from: Address::Replica(_),
                 payload: Payload::Commit(commit),
                 ..
             } => {
@@ -31,6 +32,7 @@ where
                 None
             }
             Message {
+                from: Address::Replica(_),
                 payload: Payload::Prepare(prepare),
                 ..
             } if next_op == prepare.n => {
@@ -46,6 +48,7 @@ where
             }
             // TODO: perform state transfer if necessary to get missing information.
             Message {
+                from: Address::Replica(_),
                 payload: Payload::Prepare(_),
                 ..
             } => Some(message),

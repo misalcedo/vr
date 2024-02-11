@@ -1,4 +1,5 @@
 use crate::health::{HealthDetector, HealthStatus};
+use crate::identifiers::ReplicaIdentifier;
 use crate::mailbox::{Address, Mailbox};
 use crate::model::{
     Commit, ConcurrentRequest, DoViewChange, Message, Payload, RecoveryResponse, StartView,
@@ -27,10 +28,11 @@ where
         // Primaries should prioritize committing work over taking on new requests.
         // Though we may actually want to do both in the same loop.
         // We already handle multiple messages in a single poll for outdated views.
-        let mut prepared: HashMap<OpNumber, HashSet<Address>> = HashMap::new();
+        let mut prepared: HashMap<OpNumber, HashSet<ReplicaIdentifier>> = HashMap::new();
 
         mailbox.select(|sender, message| match message {
             Message {
+                from: Address::Client(_),
                 payload: Payload::Request(request),
                 ..
             } => {
@@ -72,7 +74,7 @@ where
                 None
             }
             ref message @ Message {
-                from,
+                from: Address::Replica(replica),
                 payload: Payload::PrepareOk(prepare_ok),
                 ..
             } => {
@@ -81,7 +83,7 @@ where
                 } else {
                     let replication = prepared.entry(prepare_ok.n).or_insert_with(HashSet::new);
 
-                    replication.insert(from);
+                    replication.insert(replica);
 
                     if replication.len() >= self.identifier.sub_majority() {
                         self.execute_committed(prepare_ok.n, Some(sender));
