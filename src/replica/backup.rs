@@ -1,5 +1,5 @@
 use crate::health::{HealthDetector, HealthStatus};
-use crate::mailbox::{Address, Mailbox};
+use crate::mailbox::Mailbox;
 use crate::model::{DoViewChange, Message, Payload, PrepareOk};
 use crate::replica::{NonVolatileState, Replica, Status};
 use crate::service::Service;
@@ -69,9 +69,8 @@ where
     }
 
     fn process_view_change(&mut self, mailbox: &mut Mailbox) {
-        mailbox.select(|_, message| match message {
+        mailbox.select(|sender, message| match message {
             Message {
-                from: Address::Replica(_),
                 view,
                 payload: Payload::StartView(start_view),
                 ..
@@ -80,13 +79,12 @@ where
                 self.view = view;
                 self.status = Status::Normal;
                 self.execute_committed(start_view.k, None);
+                self.prepare_ok_uncommitted(sender);
 
                 None
             }
-            _ => Some(message),
+            _ => None,
         });
-
-        self.prepare_ok_uncommitted(mailbox);
     }
 
     fn process_recovering(&mut self, mailbox: &mut Mailbox) {
@@ -94,7 +92,6 @@ where
         mailbox.broadcast(self.view, Payload::Recovery);
         mailbox.select(|sender, message| match message {
             Message {
-                from: Address::Replica(_),
                 view,
                 payload: Payload::RecoveryResponse(recovery_response),
                 ..
@@ -112,7 +109,7 @@ where
 
                 None
             }
-            _ => Some(message),
+            _ => None,
         });
     }
 }

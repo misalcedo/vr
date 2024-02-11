@@ -107,7 +107,7 @@ where
 
                 None
             }
-            _ => Some(message),
+            _ => None,
         });
 
         if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Suspect {
