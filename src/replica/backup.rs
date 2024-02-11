@@ -39,8 +39,7 @@ where
                         n: self.0.op_number,
                     },
                 );
-                self.0.committed = self.0.committed.max(prepare.k);
-                self.0.execute_replica();
+                self.0.execute_committed(prepare.k, None);
 
                 None
             }
@@ -79,24 +78,25 @@ where
                 payload: Payload::StartView(start_view),
                 ..
             } => {
+                self.0.replace_log(start_view.l);
                 self.0.view = view;
                 self.0.status = Status::Normal;
-                self.0.replace_log(start_view.k, start_view.l);
+                self.0.execute_committed(start_view.k, None);
 
                 None
             }
             _ => Some(message),
         });
 
-        let mut current = self.0.committed.next();
+        let mut current = self.0.committed;
 
-        while current <= self.0.op_number {
+        while current < self.0.op_number {
+            current.increment();
             mailbox.send(
                 self.0.identifier.primary(self.0.view),
                 self.0.view,
                 Payload::PrepareOk(PrepareOk { n: current }),
             );
-            current.increment();
         }
     }
 

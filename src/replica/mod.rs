@@ -75,8 +75,6 @@ pub struct Replica<NS, S, HD> {
     log: Vec<Request>,
     /// The last operation number committed in the current view.
     committed: OpNumber,
-    /// The count of operations executed in the current view.
-    executed: OpNumber,
     /// This records for each client the number of its most recent request, plus, if the request has been executed, the result sent for that request.
     client_table: ClientTable,
     /// The current status, either normal, view-change, or recovering.
@@ -111,7 +109,6 @@ where
             op_number: Default::default(),
             log: Default::default(),
             committed: Default::default(),
-            executed: Default::default(),
             client_table: Default::default(),
             status,
         }
@@ -177,48 +174,31 @@ where
         );
     }
 
-    fn execute_primary(&mut self, mailbox: &mut Mailbox) {
-        let length = OpNumber::new(self.log.len());
+    fn execute_committed(&mut self, committed: OpNumber, mut mailbox: Option<&mut Mailbox>) {
+        while self.committed < committed {
+            match self.log.get(self.committed.as_usize()) {
+                None => break,
+                Some(request) => {
+                    let payload = self.service.invoke(request.op.as_slice());
+                    let reply = Reply {
+                        s: request.s,
+                        x: payload,
+                    };
 
-        while self.committed > self.executed && self.executed < length {
-            // executed must be incremented after indexing the log to avoid panicking.
-            let request = &self.log[self.executed.as_usize()];
-            let payload = self.service.invoke(request.op.as_slice());
-            let reply = Reply {
-                s: request.s,
-                x: payload,
-            };
+                    if let Some(mailbox) = mailbox.as_mut() {
+                        mailbox.send(request.c, self.view, reply.clone());
+                    }
 
-            self.client_table.set(request, reply.clone());
-            self.executed.increment();
-            mailbox.send(request.c, self.view, reply);
+                    self.client_table.set(request, reply);
+                    self.committed.increment();
+                }
+            }
         }
     }
 
-    fn replace_log(&mut self, committed: OpNumber, log: Vec<Request>) {
-        self.committed = committed;
+    fn replace_log(&mut self, log: Vec<Request>) {
         self.log = log;
         self.op_number = OpNumber::new(self.log.len());
-
-        for in_progress in self.committed.as_usize()..self.op_number.as_usize() {
-            self.client_table.start(&self.log[in_progress])
-        }
-    }
-
-    fn execute_replica(&mut self) {
-        let length = OpNumber::new(self.log.len());
-        while self.committed > self.executed && self.executed < length {
-            // executed must be incremented after indexing the log to avoid panicking.
-            let request = &self.log[self.executed.as_usize()];
-            let payload = self.service.invoke(request.op.as_slice());
-            let reply = Reply {
-                s: request.s,
-                x: payload,
-            };
-
-            self.client_table.set(request, reply);
-            self.executed.increment();
-        }
     }
 }
 
@@ -964,7 +944,6 @@ mod tests {
         replica.view.increment();
         replica.status = Status::ViewChange;
         replica.committed.increment();
-        replica.executed.increment();
         replica.push_request(client.request(b""));
 
         mailbox.deliver(do_view_change_message(&primary));
@@ -986,7 +965,6 @@ mod tests {
         assert_eq!(primary.log, replica.log);
         assert_eq!(primary.committed, replica.committed);
         assert_eq!(primary.op_number, replica.op_number);
-        assert_eq!(primary.executed, replica.executed);
     }
 
     #[test]
@@ -1033,7 +1011,6 @@ mod tests {
 
         primary.view.increment();
         primary.committed.increment();
-        primary.executed.increment();
         primary.push_request(client.new_request(operation));
         primary.push_request(client.new_request(operation));
 
@@ -1047,7 +1024,6 @@ mod tests {
         assert_eq!(replica.status, Status::Normal);
         assert_eq!(replica.log, primary.log);
         assert_eq!(replica.op_number, primary.op_number);
-        assert_eq!(replica.executed, OpNumber::default());
         assert_eq!(replica.committed, primary.committed);
     }
 

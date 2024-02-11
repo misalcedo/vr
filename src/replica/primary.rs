@@ -1,6 +1,8 @@
 use crate::health::{HealthDetector, HealthStatus};
 use crate::mailbox::{Address, Mailbox};
-use crate::model::{Commit, ConcurrentRequest, Message, OutdatedRequest, Payload, StartView};
+use crate::model::{
+    Commit, ConcurrentRequest, DoViewChange, Message, OutdatedRequest, Payload, StartView,
+};
 use crate::replica::{NonVolatileState, Replica, Role, Status};
 use crate::service::Service;
 use crate::stamps::OpNumber;
@@ -80,8 +82,7 @@ where
                     replication.insert(from);
 
                     if replication.len() >= self.0.identifier.sub_majority() {
-                        self.0.committed = self.0.committed.max(prepare_ok.n);
-                        self.0.execute_primary(sender);
+                        self.0.execute_committed(prepare_ok.n, Some(sender));
 
                         None
                     } else {
@@ -122,6 +123,10 @@ where
         });
 
         let quorum = self.0.identifier.sub_majority() + 1;
+        let mut candidate = DoViewChange {
+            l: Default::default(),
+            k: Default::default(),
+        };
 
         if replicas.len() >= quorum {
             mailbox.select_all(|_, message| match message {
@@ -129,8 +134,10 @@ where
                     payload: Payload::DoViewChange(do_view_change),
                     ..
                 } => {
-                    if do_view_change.l.len() > self.0.log.len() {
-                        self.0.replace_log(do_view_change.k, do_view_change.l);
+                    candidate.k = candidate.k.max(do_view_change.k);
+
+                    if do_view_change.l.len() > candidate.l.len() {
+                        candidate.l = do_view_change.l;
                     }
 
                     None
@@ -138,6 +145,7 @@ where
                 _ => Some(message),
             });
 
+            self.0.replace_log(candidate.l);
             self.0.status = Status::Normal;
             self.0
                 .state
@@ -147,11 +155,15 @@ where
                 self.0.view,
                 StartView {
                     l: self.0.log.clone(),
-                    k: self.0.committed,
+                    k: candidate.k,
                 },
             );
 
-            self.0.execute_primary(mailbox);
+            self.0.execute_committed(candidate.k, Some(mailbox));
+
+            for in_progress in self.0.committed.as_usize()..self.0.op_number.as_usize() {
+                self.0.client_table.start(&self.0.log[in_progress])
+            }
         }
     }
 
