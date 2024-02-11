@@ -3,22 +3,22 @@ use crate::model::{Reply, Request};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct CachedRequest {
-    request: Request,
+    request: RequestIdentifier,
     reply: Option<Reply>,
 }
 
 impl CachedRequest {
-    fn new(request: Request) -> Self {
+    fn new(request: &Request) -> Self {
         Self {
-            request,
+            request: request.s,
             reply: None,
         }
     }
 
     pub fn request(&self) -> RequestIdentifier {
-        self.request.s
+        self.request
     }
 
     pub fn reply(&self) -> Option<Reply> {
@@ -44,42 +44,31 @@ impl ClientTable {
         self.cache.get(&request.c)
     }
 
-    pub fn set(&mut self, request: &Request, reply: &Reply) {
+    pub fn set(&mut self, request: &Request, reply: Reply) {
         let last_request = self
             .cache
             .entry(request.c)
-            .or_insert_with(|| CachedRequest::new(request.clone()));
+            .or_insert_with(|| CachedRequest::new(&request));
 
-        last_request.reply = Some(reply.clone());
+        last_request.reply = Some(reply);
     }
 
     pub fn start(&mut self, request: &Request) {
-        self.cache.insert(
-            request.c,
-            CachedRequest {
-                request: request.clone(),
-                reply: None,
-            },
-        );
+        self.cache.insert(request.c, CachedRequest::new(request));
     }
 }
 
 impl PartialEq<Request> for CachedRequest {
     fn eq(&self, other: &Request) -> bool {
-        &self.request == other
+        self.request == other.s
     }
 }
 
 impl PartialOrd<Request> for CachedRequest {
     fn partial_cmp(&self, other: &Request) -> Option<Ordering> {
-        if self.request.c == other.c {
-            // ignore cached completed requests.
-            self.request
-                .s
-                .partial_cmp(&other.s)
-                .filter(|o| o != &Ordering::Less || self.reply.is_none())
-        } else {
-            None
-        }
+        // ignore cached completed requests.
+        self.request
+            .partial_cmp(&other.s)
+            .filter(|o| o != &Ordering::Less || self.reply.is_none())
     }
 }

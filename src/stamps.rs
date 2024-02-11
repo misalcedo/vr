@@ -35,6 +35,10 @@ impl View {
         self.0 = 1 + self.0;
     }
 
+    pub fn next(&self) -> Self {
+        Self(1 + self.0)
+    }
+
     pub(crate) fn as_u128(&self) -> u128 {
         self.0
     }
