@@ -52,9 +52,17 @@ where
                 payload: Payload::Prepare(_),
                 ..
             } => Some(message),
+            message @ Message {
+                from: Address::Replica(_),
+                view,
+                payload: Payload::DoViewChange(_),
+                ..
+            } if self.identifier == self.identifier.primary(view) => Some(message),
             _ => None,
         });
 
+        // We process unhealthy primary after consuming as many prepare messages as possible.
+        // This ensures we keep the longest log possible into the next view.
         if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Unhealthy {
             self.view.increment();
             self.status = Status::ViewChange;
@@ -74,6 +82,7 @@ where
     fn process_view_change(&mut self, mailbox: &mut Mailbox) {
         mailbox.select(|sender, message| match message {
             Message {
+                from: Address::Replica(_),
                 view,
                 payload: Payload::StartView(start_view),
                 ..
