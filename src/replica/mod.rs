@@ -86,6 +86,7 @@ where
         let primary = self.identifier == self.identifier.primary(self.view);
 
         self.inform_outdated(mailbox);
+        // TODO: handle newer views in messages
 
         match self.status {
             Status::Normal if primary => Primary::process_normal(self, mailbox),

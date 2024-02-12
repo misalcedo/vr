@@ -24,13 +24,27 @@ where
     HD: HealthDetector,
 {
     fn process_normal(&mut self, mailbox: &mut Mailbox) {
-        // TODO: use the visit pattern here similar to prepare ok in the replica.
-        // Primaries should prioritize committing work over taking on new requests.
-        // Though we may actually want to do both in the same loop.
-        // We already handle multiple messages in a single poll for outdated views.
         let mut prepared: HashMap<OpNumber, HashSet<ReplicaIdentifier>> = HashMap::new();
+        let mut committed = self.committed;
 
-        mailbox.select(|sender, message| match message {
+        mailbox.visit(|message| {
+            if let Message {
+                from: Address::Replica(replica),
+                payload: Payload::PrepareOk(prepare_ok),
+                ..
+            } = message
+            {
+                let replication = prepared.entry(prepare_ok.n).or_insert_with(HashSet::new);
+
+                replication.insert(*replica);
+
+                if replication.len() >= self.identifier.sub_majority() {
+                    committed = committed.max(prepare_ok.n);
+                }
+            }
+        });
+
+        mailbox.select_all(|sender, message| match message {
             Message {
                 from: Address::Client(_),
                 payload: Payload::Request(request),
@@ -73,48 +87,36 @@ where
 
                 None
             }
-            ref message @ Message {
-                from: Address::Replica(replica),
+            Message {
+                from: Address::Replica(_),
                 payload: Payload::PrepareOk(prepare_ok),
                 ..
-            } => {
-                if self.committed >= prepare_ok.n {
-                    None
-                } else {
-                    let replication = prepared.entry(prepare_ok.n).or_insert_with(HashSet::new);
-
-                    replication.insert(replica);
-
-                    if replication.len() >= self.identifier.sub_majority() {
-                        self.execute_committed(prepare_ok.n, Some(sender));
-
-                        None
-                    } else {
-                        Some(message.clone())
-                    }
-                }
-            }
+            } if prepare_ok.n <= committed => None,
+            Message {
+                from: Address::Replica(_),
+                payload: Payload::PrepareOk(_),
+                ..
+            } => Some(message),
             Message {
                 from: Address::Replica(replica),
-                view,
                 payload: Payload::Recovery,
                 ..
             } => {
-                if view <= self.view {
-                    sender.send(
-                        replica,
-                        self.view,
-                        RecoveryResponse {
-                            l: self.log.clone(),
-                            k: self.committed,
-                        },
-                    );
-                }
+                sender.send(
+                    replica,
+                    self.view,
+                    RecoveryResponse {
+                        l: self.log.clone(),
+                        k: self.committed,
+                    },
+                );
 
                 None
             }
             _ => None,
         });
+
+        self.execute_committed(committed, Some(mailbox));
 
         if self.health_detector.detect(self.view, self.identifier) >= HealthStatus::Suspect {
             mailbox.broadcast(self.view, Commit { k: self.committed });
@@ -137,45 +139,47 @@ where
 
         let quorum = self.identifier.sub_majority() + 1;
 
-        if replicas.len() >= quorum {
-            let mut candidate = DoViewChange {
-                l: Default::default(),
-                k: Default::default(),
-            };
+        if replicas.len() < quorum {
+            return;
+        }
 
-            mailbox.select_all(|_, message| match message {
-                Message {
-                    payload: Payload::DoViewChange(do_view_change),
-                    ..
-                } => {
-                    candidate.k = candidate.k.max(do_view_change.k);
+        let mut candidate = DoViewChange {
+            l: Default::default(),
+            k: Default::default(),
+        };
 
-                    if do_view_change.l.len() > candidate.l.len() {
-                        candidate.l = do_view_change.l;
-                    }
+        mailbox.select_all(|_, message| match message {
+            Message {
+                payload: Payload::DoViewChange(do_view_change),
+                ..
+            } => {
+                candidate.k = candidate.k.max(do_view_change.k);
 
-                    None
+                if do_view_change.l.len() > candidate.l.len() {
+                    candidate.l = do_view_change.l;
                 }
-                _ => Some(message),
-            });
 
-            self.replace_log(candidate.l);
-            self.status = Status::Normal;
-            self.save_non_volatile_state();
-
-            mailbox.broadcast(
-                self.view,
-                StartView {
-                    l: self.log.clone(),
-                    k: candidate.k,
-                },
-            );
-
-            self.execute_committed(candidate.k, Some(mailbox));
-
-            for in_progress in self.committed.as_usize()..self.op_number.as_usize() {
-                self.client_table.start(&self.log[in_progress])
+                None
             }
+            _ => Some(message),
+        });
+
+        self.replace_log(candidate.l);
+        self.status = Status::Normal;
+        self.save_non_volatile_state();
+
+        mailbox.broadcast(
+            self.view,
+            StartView {
+                l: self.log.clone(),
+                k: candidate.k,
+            },
+        );
+
+        self.execute_committed(candidate.k, Some(mailbox));
+
+        for in_progress in self.committed.as_usize()..self.op_number.as_usize() {
+            self.client_table.start(&self.log[in_progress])
         }
     }
 }
