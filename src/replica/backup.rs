@@ -4,6 +4,8 @@ use crate::model::{DoViewChange, Message, Payload, PrepareOk};
 use crate::replica::{NonVolatileState, Replica, Status};
 use crate::service::Service;
 use crate::state::State;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
 pub trait Backup {
     fn process_normal(&mut self, mailbox: &mut Mailbox);
@@ -20,34 +22,57 @@ where
     HD: HealthDetector,
 {
     fn process_normal(&mut self, mailbox: &mut Mailbox) {
-        let next_op = self.op_number.next();
+        let mut committed = self.committed;
+        let mut operations = BinaryHeap::new();
 
-        // TODO: Prepare all the ops that we have in order.
-        mailbox.select(|sender, message| match message {
+        mailbox.visit(|message| match message {
+            Message {
+                from: Address::Replica(_),
+                payload: Payload::Prepare(prepare),
+                ..
+            } => {
+                operations.push(Reverse(prepare.n));
+                committed = committed.max(prepare.k);
+            }
             Message {
                 from: Address::Replica(_),
                 payload: Payload::Commit(commit),
                 ..
             } => {
-                self.execute_committed(commit.k, None);
-                None
+                committed = committed.max(commit.k);
             }
+            _ => {}
+        });
+
+        let mut preparable = self.op_number;
+        while let Some(Reverse(operation)) = operations.pop() {
+            if operation == preparable.next() {
+                preparable.increment();
+            } else {
+                // TODO: perform state transfer if necessary to get missing information.
+                break;
+            }
+        }
+
+        let primary = self.identifier.primary(self.view);
+
+        mailbox.select_all(|sender, message| match message {
+            Message {
+                from: Address::Replica(_),
+                payload: Payload::Commit(_),
+                ..
+            } => None,
             Message {
                 from: Address::Replica(_),
                 payload: Payload::Prepare(prepare),
                 ..
-            } if next_op == prepare.n => {
+            } if prepare.n <= preparable => {
                 self.client_table.start(&prepare.m);
                 self.push_request(prepare.m);
-
-                let primary = self.identifier.primary(self.view);
-
                 sender.send(primary, self.view, PrepareOk { n: self.op_number });
-                self.execute_committed(prepare.k, None);
 
                 None
             }
-            // TODO: perform state transfer if necessary to get missing information.
             Message {
                 from: Address::Replica(_),
                 payload: Payload::Prepare(_),
@@ -61,6 +86,8 @@ where
             } if self.identifier == self.identifier.primary(view) => Some(message),
             _ => None,
         });
+
+        self.execute_committed(committed, None);
 
         // We process unhealthy primary after consuming as many prepare messages as possible.
         // This ensures we keep the longest log possible into the next view.
