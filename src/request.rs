@@ -1,4 +1,6 @@
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ClientIdentifier(u128);
 
 impl Default for ClientIdentifier {
@@ -7,7 +9,7 @@ impl Default for ClientIdentifier {
     }
 }
 
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct RequestIdentifier(u128);
 
 impl Default for RequestIdentifier {
@@ -18,7 +20,17 @@ impl Default for RequestIdentifier {
 
 impl RequestIdentifier {
     pub fn next(&mut self) -> Self {
-        self.0 += 1;
+        *self = Self::default();
         *self
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Request<T> {
+    /// The operation (with its arguments) the client wants to run.
+    pub op: T,
+    /// Client id
+    pub client: ClientIdentifier,
+    /// Client-assigned number for the request.
+    pub id: RequestIdentifier,
 }
