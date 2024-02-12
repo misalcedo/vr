@@ -22,7 +22,7 @@ mod tests {
     use super::*;
 
     impl Service for usize {
-        fn predict(&mut self, payload: &[u8]) -> Vec<u8> {
+        fn predict(&mut self, _: &[u8]) -> Vec<u8> {
             Vec::new()
         }
 

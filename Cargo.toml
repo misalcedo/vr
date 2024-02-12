@@ -16,5 +16,9 @@ debug = true
 [features]
 default = []
 
+[dev-dependencies]
+postcard = { version = "1.0.8", features = ["alloc"] }
+serde = { version = "1.0.196", features = ["derive"] }
+
 [dependencies]
 uuid = { version = "1.6.1", features = ["v7" ] }
