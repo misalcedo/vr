@@ -266,14 +266,16 @@ mod tests {
         let mut driver: LocalDriver<usize, LocalHealthDetector> =
             LocalDriver::with_health_detector(group, &health_detector);
         let mut client = Client::new(group);
-        let mut clone = client.clone();
         let view = View::default();
 
         let operation = b"Hello, world!";
         let primary = group.primary(client.view());
+        let mut request_ids = Vec::with_capacity(requests);
 
         for i in 1..=requests {
             let request = client.new_message(operation);
+
+            request_ids.push(client.last_request());
 
             driver.deliver(request);
             driver.drive_to_empty(group);
@@ -284,14 +286,9 @@ mod tests {
             );
         }
 
-        clone.set_view(view.next());
-        let first_request = clone.new_message(operation);
-
         driver.crash(Some(primary));
         health_detector.set_status(primary, HealthStatus::Unhealthy);
 
-        // trigger view change without a message
-        driver.drive(group.replicas(view));
         driver.drive_to_empty(group.replicas(view));
         driver.deliver(client.broadcast(operation));
         driver.drive_to_empty(group);
@@ -305,12 +302,14 @@ mod tests {
             .unwrap_or_default();
         client.set_view(new_view);
 
+        let first_request = client.message(operation, Some(request_ids[0]));
+
         driver.deliver(first_request);
         driver.drive_to_empty(group);
 
         assert_eq!(driver.fetch(client.identifier()), vec![]);
 
-        driver.deliver(client.message(operation));
+        driver.deliver(client.message(operation, None));
         driver.drive_to_empty(group);
 
         // re-delivers latest reply.
@@ -533,18 +532,20 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let mut client = Client::new(group);
-        let mut clone = client.clone();
 
         let operation = b"Hello, world!";
         let primary = group.primary(client.view());
+        let mut requests = vec![];
 
         for _ in 1..=2 {
             driver.deliver(client.new_message(operation));
             driver.drive_to_empty(group);
             driver.fetch(client.identifier());
+
+            requests.push(client.last_request());
         }
 
-        driver.deliver(clone.new_message(operation));
+        driver.deliver(client.message(operation, Some(requests[0])));
         driver.drive_to_empty(group);
 
         let messages = driver.fetch(client.identifier());
@@ -809,7 +810,7 @@ mod tests {
         assert_eq!(
             primary
                 .client_table
-                .get(&client.request(operation))
+                .get(&client.request(operation, None))
                 .and_then(CachedRequest::reply),
             Some(reply_payload(&client, operation, 1))
         );
@@ -883,14 +884,14 @@ mod tests {
 
         assert_eq!(mailbox.drain_outbound().count(), 1);
 
-        mailbox.deliver(client.message(operation));
+        mailbox.deliver(client.message(operation, None));
         primary.poll(&mut mailbox);
 
         assert_eq!(mailbox.drain_outbound().count(), 0);
         assert_eq!(
             primary
                 .client_table
-                .get(&client.request(operation))
+                .get(&client.request(operation, None))
                 .unwrap()
                 .reply(),
             None
@@ -923,7 +924,7 @@ mod tests {
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
         assert_eq!(messages, vec![reply_message(&client, operation, 1)]);
 
-        mailbox.deliver(client.message(operation));
+        mailbox.deliver(client.message(operation, None));
         primary.poll(&mut mailbox);
 
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
@@ -984,7 +985,7 @@ mod tests {
         replica.view.increment();
         replica.status = Status::ViewChange;
         replica.committed.increment();
-        replica.push_request(client.request(b""));
+        replica.push_request(client.request(b"", None));
 
         mailbox.deliver(do_view_change_message(&primary));
         mailbox.deliver(do_view_change_message(&replica));
@@ -1124,7 +1125,7 @@ mod tests {
             view: replica.view,
             payload: Prepare {
                 n: replica.op_number,
-                m: client.request(operation),
+                m: client.request(operation, None),
                 k: replica.committed,
             }
             .into(),

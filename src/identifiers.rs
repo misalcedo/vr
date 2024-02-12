@@ -81,8 +81,14 @@ impl Default for ClientIdentifier {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct RequestIdentifier(u128);
+
+impl Default for RequestIdentifier {
+    fn default() -> Self {
+        Self(uuid::Uuid::now_v7().as_u128())
+    }
+}
 
 impl RequestIdentifier {
     pub fn increment(&mut self) -> Self {
