@@ -3,7 +3,6 @@ use crate::mailbox::Address;
 use crate::model::{Message, Request};
 use crate::stamps::View;
 
-#[derive(Clone)]
 pub struct Client {
     identifier: ClientIdentifier,
     view: View,
@@ -47,20 +46,20 @@ impl Client {
 
     pub fn new_message(&mut self, payload: &[u8]) -> Message {
         self.request.increment();
-        self.message(payload)
+        self.message(payload, None)
     }
 
     pub fn new_request(&mut self, payload: &[u8]) -> Request {
         self.request.increment();
-        self.request(payload)
+        self.request(payload, None)
     }
 
-    pub fn message(&self, payload: &[u8]) -> Message {
+    pub fn message(&self, payload: &[u8], request: Option<RequestIdentifier>) -> Message {
         Message {
             from: self.identifier.into(),
             to: self.primary().into(),
             view: self.view,
-            payload: self.request(payload).into(),
+            payload: self.request(payload, request).into(),
         }
     }
 
@@ -69,15 +68,15 @@ impl Client {
             from: self.identifier.into(),
             to: self.group.into(),
             view: self.view,
-            payload: self.request(payload).into(),
+            payload: self.request(payload, None).into(),
         }
     }
 
-    pub fn request(&self, payload: &[u8]) -> Request {
+    pub fn request(&self, payload: &[u8], request: Option<RequestIdentifier>) -> Request {
         Request {
             op: Vec::from(payload),
             c: self.identifier,
-            s: self.request,
+            s: request.unwrap_or(self.request),
         }
     }
 

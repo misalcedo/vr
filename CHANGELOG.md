@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.7.0] - 2024-02-12
+### Added
+- Validation that messages come from the correct type of senders.
+- DoubleEndedIterator implementation for group iterator.
+- Add support for non-determinism to services.
+- Add an example of a basic file system.
+
+## Changed
+- Use select_all in primary and backup to process as many messages as possible.
+- Switch request id to use UUID v7 instead of a counter.
+ 
 ## [0.6.0] - 2024-02-11
 ### Added
 - Support for the recovery protocol.

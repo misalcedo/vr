@@ -3,7 +3,7 @@ use crate::client_table::ClientTable;
 use crate::health::HealthDetector;
 use crate::identifiers::ReplicaIdentifier;
 use crate::mailbox::Mailbox;
-use crate::model::{Payload, Prepare, PrepareOk, Reply, Request};
+use crate::model::{LogEntry, Payload, Prepare, PrepareOk, Reply, Request};
 use crate::service::Service;
 use crate::stamps::{OpNumber, View};
 use crate::state::State;
@@ -34,7 +34,7 @@ pub struct Replica<NS, S, HD> {
     op_number: OpNumber,
     /// This is an array containing op-number entries.
     /// The entries contain the requests that have been received so far in their assigned order.
-    log: Vec<Request>,
+    log: Vec<LogEntry>,
     /// The last operation number committed in the current view.
     committed: OpNumber,
     /// This records for each client the number of its most recent request, plus, if the request has been executed, the result sent for that request.
@@ -86,6 +86,7 @@ where
         let primary = self.identifier == self.identifier.primary(self.view);
 
         self.inform_outdated(mailbox);
+        // TODO: handle newer views in messages
 
         match self.status {
             Status::Normal if primary => Primary::process_normal(self, mailbox),
@@ -108,18 +109,24 @@ where
     }
 
     // Push a request to the end of the log and increment the op-number.
-    fn push_request(&mut self, request: Request) {
+    fn push_log_entry(&mut self, entry: LogEntry) {
         self.op_number.increment();
-        self.log.push(request);
+        self.log.push(entry);
     }
 
     fn prepare_primary(&mut self, sender: &mut Mailbox, request: Request) {
-        self.push_request(request.clone());
+        let prediction = self.service.predict(&request.op);
+        let log_entry = LogEntry {
+            request,
+            prediction,
+        };
+
+        self.push_log_entry(log_entry.clone());
         sender.broadcast(
             self.view,
             Prepare {
                 n: self.op_number,
-                m: request,
+                m: log_entry,
                 k: self.committed,
             },
         );
@@ -129,8 +136,9 @@ where
         while self.committed < committed {
             match self.log.get(self.committed.as_usize()) {
                 None => break,
-                Some(request) => {
-                    let payload = self.service.invoke(request.op.as_slice());
+                Some(entry) => {
+                    let request = &entry.request;
+                    let payload = self.service.invoke(&request.op, &entry.prediction);
                     let reply = Reply {
                         s: request.s,
                         x: payload,
@@ -147,7 +155,7 @@ where
         }
     }
 
-    fn replace_log(&mut self, log: Vec<Request>) {
+    fn replace_log(&mut self, log: Vec<LogEntry>) {
         self.log = log;
         self.op_number = OpNumber::new(self.log.len());
     }
@@ -265,14 +273,16 @@ mod tests {
         let mut driver: LocalDriver<usize, LocalHealthDetector> =
             LocalDriver::with_health_detector(group, &health_detector);
         let mut client = Client::new(group);
-        let mut clone = client.clone();
         let view = View::default();
 
         let operation = b"Hello, world!";
         let primary = group.primary(client.view());
+        let mut request_ids = Vec::with_capacity(requests);
 
         for i in 1..=requests {
             let request = client.new_message(operation);
+
+            request_ids.push(client.last_request());
 
             driver.deliver(request);
             driver.drive_to_empty(group);
@@ -283,14 +293,9 @@ mod tests {
             );
         }
 
-        clone.set_view(view.next());
-        let first_request = clone.new_message(operation);
-
         driver.crash(Some(primary));
         health_detector.set_status(primary, HealthStatus::Unhealthy);
 
-        // trigger view change without a message
-        driver.drive(group.replicas(view));
         driver.drive_to_empty(group.replicas(view));
         driver.deliver(client.broadcast(operation));
         driver.drive_to_empty(group);
@@ -304,12 +309,14 @@ mod tests {
             .unwrap_or_default();
         client.set_view(new_view);
 
+        let first_request = client.message(operation, Some(request_ids[0]));
+
         driver.deliver(first_request);
         driver.drive_to_empty(group);
 
         assert_eq!(driver.fetch(client.identifier()), vec![]);
 
-        driver.deliver(client.message(operation));
+        driver.deliver(client.message(operation, None));
         driver.drive_to_empty(group);
 
         // re-delivers latest reply.
@@ -532,18 +539,20 @@ mod tests {
         let group = GroupIdentifier::new(3);
         let mut driver: LocalDriver<usize, HealthStatus> = LocalDriver::new(group);
         let mut client = Client::new(group);
-        let mut clone = client.clone();
 
         let operation = b"Hello, world!";
         let primary = group.primary(client.view());
+        let mut requests = vec![];
 
         for _ in 1..=2 {
             driver.deliver(client.new_message(operation));
             driver.drive_to_empty(group);
             driver.fetch(client.identifier());
+
+            requests.push(client.last_request());
         }
 
-        driver.deliver(clone.new_message(operation));
+        driver.deliver(client.message(operation, Some(requests[0])));
         driver.drive_to_empty(group);
 
         let messages = driver.fetch(client.identifier());
@@ -808,7 +817,7 @@ mod tests {
         assert_eq!(
             primary
                 .client_table
-                .get(&client.request(operation))
+                .get(&client.request(operation, None))
                 .and_then(CachedRequest::reply),
             Some(reply_payload(&client, operation, 1))
         );
@@ -882,14 +891,14 @@ mod tests {
 
         assert_eq!(mailbox.drain_outbound().count(), 1);
 
-        mailbox.deliver(client.message(operation));
+        mailbox.deliver(client.message(operation, None));
         primary.poll(&mut mailbox);
 
         assert_eq!(mailbox.drain_outbound().count(), 0);
         assert_eq!(
             primary
                 .client_table
-                .get(&client.request(operation))
+                .get(&client.request(operation, None))
                 .unwrap()
                 .reply(),
             None
@@ -922,7 +931,7 @@ mod tests {
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
         assert_eq!(messages, vec![reply_message(&client, operation, 1)]);
 
-        mailbox.deliver(client.message(operation));
+        mailbox.deliver(client.message(operation, None));
         primary.poll(&mut mailbox);
 
         let messages: Vec<Message> = mailbox.drain_outbound().collect();
@@ -941,11 +950,14 @@ mod tests {
         );
         let mut mailbox = Mailbox::from(replica.identifier);
 
-        replica.push_request(Request {
-            op: vec![],
-            c: Default::default(),
-            s: Default::default(),
-        });
+        replica.push_log_entry(
+            Request {
+                op: vec![],
+                c: Default::default(),
+                s: Default::default(),
+            }
+            .into(),
+        );
         replica.committed.increment();
         replica.health_detector = HealthStatus::Unhealthy;
 
@@ -983,7 +995,7 @@ mod tests {
         replica.view.increment();
         replica.status = Status::ViewChange;
         replica.committed.increment();
-        replica.push_request(client.request(b""));
+        replica.push_log_entry(client.request(b"", None).into());
 
         mailbox.deliver(do_view_change_message(&primary));
         mailbox.deliver(do_view_change_message(&replica));
@@ -1050,8 +1062,8 @@ mod tests {
 
         primary.view.increment();
         primary.committed.increment();
-        primary.push_request(client.new_request(operation));
-        primary.push_request(client.new_request(operation));
+        primary.push_log_entry(client.new_request(operation).into());
+        primary.push_log_entry(client.new_request(operation).into());
 
         replica.status = Status::ViewChange;
         mailbox.deliver(start_view_message(&primary));
@@ -1123,7 +1135,7 @@ mod tests {
             view: replica.view,
             payload: Prepare {
                 n: replica.op_number,
-                m: client.request(operation),
+                m: client.request(operation, None).into(),
                 k: replica.committed,
             }
             .into(),

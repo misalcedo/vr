@@ -1,4 +1,5 @@
 use crate::stamps::View;
+use std::cmp::Ordering;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ReplicaIdentifier(GroupIdentifier, usize);
@@ -14,6 +15,12 @@ impl ReplicaIdentifier {
 
     pub fn sub_majority(&self) -> usize {
         self.0.sub_majority()
+    }
+}
+
+impl PartialOrd for ReplicaIdentifier {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.1.partial_cmp(&other.1).filter(|_| self.0 == other.0)
     }
 }
 
@@ -39,10 +46,13 @@ impl GroupIdentifier {
         ReplicaIdentifier(*self, (view.as_u128() % (self.1 as u128)) as usize)
     }
 
-    pub fn replicas(&self, view: View) -> impl Iterator<Item = ReplicaIdentifier> + Clone {
+    pub fn replicas(
+        &self,
+        view: View,
+    ) -> impl Iterator<Item = ReplicaIdentifier> + DoubleEndedIterator + Clone {
         let primary = self.primary(view);
 
-        ReplicaIterator(*self, 0).filter(move |r| r != &primary)
+        self.clone().into_iter().filter(move |r| r != &primary)
     }
 
     pub fn sub_majority(&self) -> usize {
@@ -50,28 +60,15 @@ impl GroupIdentifier {
     }
 }
 
-#[derive(Clone)]
-pub struct ReplicaIterator(GroupIdentifier, usize);
-
-impl Iterator for ReplicaIterator {
-    type Item = ReplicaIdentifier;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.1 >= self.0 .1 {
-            None
-        } else {
-            self.1 += 1;
-            Some(ReplicaIdentifier(self.0, self.1 - 1))
-        }
-    }
-}
-
 impl IntoIterator for GroupIdentifier {
     type Item = ReplicaIdentifier;
-    type IntoIter = ReplicaIterator;
+    type IntoIter = std::vec::IntoIter<ReplicaIdentifier>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ReplicaIterator(self, 0)
+        let replicas: Vec<ReplicaIdentifier> =
+            (0..self.1).map(|i| ReplicaIdentifier(self, i)).collect();
+
+        replicas.into_iter()
     }
 }
 
@@ -84,8 +81,14 @@ impl Default for ClientIdentifier {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct RequestIdentifier(u128);
+
+impl Default for RequestIdentifier {
+    fn default() -> Self {
+        Self(uuid::Uuid::now_v7().as_u128())
+    }
+}
 
 impl RequestIdentifier {
     pub fn increment(&mut self) -> Self {
@@ -116,6 +119,21 @@ mod tests {
                 ReplicaIdentifier(group, 0),
                 ReplicaIdentifier(group, 1),
                 ReplicaIdentifier(group, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn reversed() {
+        let group = GroupIdentifier::new(3);
+        let replicas: Vec<ReplicaIdentifier> = group.into_iter().rev().collect();
+
+        assert_eq!(
+            replicas,
+            vec![
+                ReplicaIdentifier(group, 2),
+                ReplicaIdentifier(group, 1),
+                ReplicaIdentifier(group, 0)
             ]
         );
     }
