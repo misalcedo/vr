@@ -1,4 +1,4 @@
-use crate::identifiers::{ClientIdentifier, RequestIdentifier};
+use crate::request::{ClientIdentifier, RequestIdentifier};
 use crate::mailbox::Address;
 use crate::stamps::{OpNumber, View};
 

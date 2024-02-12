@@ -1,6 +1,7 @@
-use crate::identifiers::{ClientIdentifier, GroupIdentifier, ReplicaIdentifier, RequestIdentifier};
+use crate::identifiers::{GroupIdentifier, ReplicaIdentifier};
 use crate::mailbox::Address;
 use crate::model::{Message, Request};
+use crate::request::{ClientIdentifier, RequestIdentifier};
 use crate::stamps::View;
 
 pub struct Client {
@@ -45,12 +46,12 @@ impl Client {
     }
 
     pub fn new_message(&mut self, payload: &[u8]) -> Message {
-        self.request.increment();
+        self.request.next();
         self.message(payload, None)
     }
 
     pub fn new_request(&mut self, payload: &[u8]) -> Request {
-        self.request.increment();
+        self.request.next();
         self.request(payload, None)
     }
 

@@ -2,10 +2,11 @@ use std::collections::HashMap;
 
 use crate::driver::Driver;
 use crate::health::HealthDetector;
-use crate::identifiers::{ClientIdentifier, GroupIdentifier, ReplicaIdentifier};
+use crate::identifiers::{GroupIdentifier, ReplicaIdentifier};
 use crate::mailbox::{Address, Mailbox};
 use crate::model::Message;
 use crate::replica::{NonVolatileState, Replica};
+use crate::request::ClientIdentifier;
 use crate::service::Service;
 use crate::state::LocalState;
 
