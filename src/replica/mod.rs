@@ -3,7 +3,7 @@ use crate::client_table::ClientTable;
 use crate::health::HealthDetector;
 use crate::identifiers::ReplicaIdentifier;
 use crate::mailbox::Mailbox;
-use crate::model::{Payload, Prepare, PrepareOk, Reply, Request};
+use crate::model::{LogEntry, Payload, Prepare, PrepareOk, Reply, Request};
 use crate::service::Service;
 use crate::stamps::{OpNumber, View};
 use crate::state::State;
@@ -34,7 +34,7 @@ pub struct Replica<NS, S, HD> {
     op_number: OpNumber,
     /// This is an array containing op-number entries.
     /// The entries contain the requests that have been received so far in their assigned order.
-    log: Vec<Request>,
+    log: Vec<LogEntry>,
     /// The last operation number committed in the current view.
     committed: OpNumber,
     /// This records for each client the number of its most recent request, plus, if the request has been executed, the result sent for that request.
@@ -109,18 +109,24 @@ where
     }
 
     // Push a request to the end of the log and increment the op-number.
-    fn push_request(&mut self, request: Request) {
+    fn push_log_entry(&mut self, entry: LogEntry) {
         self.op_number.increment();
-        self.log.push(request);
+        self.log.push(entry);
     }
 
     fn prepare_primary(&mut self, sender: &mut Mailbox, request: Request) {
-        self.push_request(request.clone());
+        let prediction = self.service.predict(&request.op);
+        let log_entry = LogEntry {
+            request,
+            prediction,
+        };
+
+        self.push_log_entry(log_entry.clone());
         sender.broadcast(
             self.view,
             Prepare {
                 n: self.op_number,
-                m: request,
+                m: log_entry,
                 k: self.committed,
             },
         );
@@ -130,8 +136,9 @@ where
         while self.committed < committed {
             match self.log.get(self.committed.as_usize()) {
                 None => break,
-                Some(request) => {
-                    let payload = self.service.invoke(request.op.as_slice());
+                Some(entry) => {
+                    let request = &entry.request;
+                    let payload = self.service.invoke(&request.op, &entry.prediction);
                     let reply = Reply {
                         s: request.s,
                         x: payload,
@@ -148,7 +155,7 @@ where
         }
     }
 
-    fn replace_log(&mut self, log: Vec<Request>) {
+    fn replace_log(&mut self, log: Vec<LogEntry>) {
         self.log = log;
         self.op_number = OpNumber::new(self.log.len());
     }
@@ -943,11 +950,14 @@ mod tests {
         );
         let mut mailbox = Mailbox::from(replica.identifier);
 
-        replica.push_request(Request {
-            op: vec![],
-            c: Default::default(),
-            s: Default::default(),
-        });
+        replica.push_log_entry(
+            Request {
+                op: vec![],
+                c: Default::default(),
+                s: Default::default(),
+            }
+            .into(),
+        );
         replica.committed.increment();
         replica.health_detector = HealthStatus::Unhealthy;
 
@@ -985,7 +995,7 @@ mod tests {
         replica.view.increment();
         replica.status = Status::ViewChange;
         replica.committed.increment();
-        replica.push_request(client.request(b"", None));
+        replica.push_log_entry(client.request(b"", None).into());
 
         mailbox.deliver(do_view_change_message(&primary));
         mailbox.deliver(do_view_change_message(&replica));
@@ -1052,8 +1062,8 @@ mod tests {
 
         primary.view.increment();
         primary.committed.increment();
-        primary.push_request(client.new_request(operation));
-        primary.push_request(client.new_request(operation));
+        primary.push_log_entry(client.new_request(operation).into());
+        primary.push_log_entry(client.new_request(operation).into());
 
         replica.status = Status::ViewChange;
         mailbox.deliver(start_view_message(&primary));
@@ -1125,7 +1135,7 @@ mod tests {
             view: replica.view,
             payload: Prepare {
                 n: replica.op_number,
-                m: client.request(operation, None),
+                m: client.request(operation, None).into(),
                 k: replica.committed,
             }
             .into(),

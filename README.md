@@ -3,7 +3,11 @@ A Rust-based implementation of the viewstamped replication consensus protocol.
 
 ## Concurrency
 The basic protocol assumes a single concurrent request per client.
-Client applications can achieve higher concurrency by utilizing multiple client identifiers for a single client application instance. 
+Client applications can achieve higher concurrency by utilizing multiple client identifiers for a single client application instance.
+
+## Non-determinism
+Supports non-determinism by querying the service from the primary for a predicted value and passing that value on prepare to all replicas.
+Currently, there is no support for other solutions mentioned in the literature such as sending a predict message, waiting for `f` responses and deterministically merging the values.
 
 ## Links
 - [Viewstamped Replication](https://pmg.csail.mit.edu/papers/vr.pdf)

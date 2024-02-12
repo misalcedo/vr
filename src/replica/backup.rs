@@ -67,8 +67,8 @@ where
                 payload: Payload::Prepare(prepare),
                 ..
             } if prepare.n <= preparable => {
-                self.client_table.start(&prepare.m);
-                self.push_request(prepare.m);
+                self.client_table.start(&prepare.m.request);
+                self.push_log_entry(prepare.m);
                 sender.send(primary, self.view, PrepareOk { n: self.op_number });
 
                 None

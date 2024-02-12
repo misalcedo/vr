@@ -198,8 +198,8 @@ pub struct Request {
 pub struct Prepare {
     /// The op-number assigned to the request.
     pub n: OpNumber,
-    /// The message received from the client.
-    pub m: Request,
+    /// The message received from the client along with a prediction for supporting non-deterministic behavior.
+    pub m: LogEntry,
     /// The op-number of the last committed log entry.
     pub k: OpNumber,
 }
@@ -222,7 +222,7 @@ pub struct Reply {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DoViewChange {
     /// The log of the replica.
-    pub l: Vec<Request>,
+    pub l: Vec<LogEntry>,
     /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
 }
@@ -230,7 +230,7 @@ pub struct DoViewChange {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartView {
     /// The log of the replica.
-    pub l: Vec<Request>,
+    pub l: Vec<LogEntry>,
     /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
 }
@@ -250,7 +250,25 @@ pub struct ConcurrentRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryResponse {
     /// The log of the replica.
-    pub l: Vec<Request>,
+    pub l: Vec<LogEntry>,
     /// The op-number of the latest committed request known to the replica.
     pub k: OpNumber,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogEntry {
+    /// The operation (with its arguments) the client wants to run.
+    pub request: Request,
+
+    /// Prediction of non-deterministic values done at the primary.
+    pub prediction: Vec<u8>,
+}
+
+impl From<Request> for LogEntry {
+    fn from(request: Request) -> Self {
+        Self {
+            request,
+            prediction: vec![],
+        }
+    }
 }

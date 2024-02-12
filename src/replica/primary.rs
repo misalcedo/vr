@@ -179,7 +179,7 @@ where
         self.execute_committed(candidate.k, Some(mailbox));
 
         for in_progress in self.committed.as_usize()..self.op_number.as_usize() {
-            self.client_table.start(&self.log[in_progress])
+            self.client_table.start(&self.log[in_progress].request)
         }
     }
 }
