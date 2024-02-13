@@ -8,11 +8,11 @@ use std::ops::Rem;
 #[repr(transparent)]
 pub struct View(u128);
 
-impl Rem<Configuration> for View {
+impl Rem<View> for Configuration {
     type Output = usize;
 
-    fn rem(self, rhs: Configuration) -> Self::Output {
-        (self.0 % (rhs.replicas() as u128)) as usize
+    fn rem(self, rhs: View) -> Self::Output {
+        (rhs.0 % (self.replicas() as u128)) as usize
     }
 }
 
