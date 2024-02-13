@@ -1,26 +1,16 @@
-use std::cmp::Ordering;
-use serde::{Deserialize, Serialize};
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Configuration {
-    index: usize,
     replicas: usize,
     group: Group,
 }
 
-impl PartialOrd for Configuration {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.index.partial_cmp(&other.index).filter(|_| self.group == other.group)
-    }
-}
-
 impl Configuration {
-    fn new(index: usize, replicas: usize, group: Group) -> Self {
-        Self { index, replicas, group }
+    fn new(replicas: usize, group: Group) -> Self {
+        Self { replicas, group }
     }
 
-    pub fn index(&self) -> usize {
-        self.index
+    pub fn replicas(&self) -> usize {
+        self.replicas
     }
 
     pub fn group(&self) -> Group {
@@ -36,7 +26,7 @@ impl Configuration {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Group(u128);
 
 impl Default for Group {

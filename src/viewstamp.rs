@@ -1,5 +1,5 @@
-use std::ops::Rem;
 use crate::configuration::Configuration;
+use std::ops::Rem;
 
 #[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[repr(transparent)]
@@ -9,10 +9,9 @@ impl Rem<Configuration> for View {
     type Output = usize;
 
     fn rem(self, rhs: Configuration) -> Self::Output {
-        (self.0 % (rhs.index() as u128)) as usize
+        (self.0 % (rhs.replicas() as u128)) as usize
     }
 }
-
 
 impl View {
     pub fn increment(&mut self) {

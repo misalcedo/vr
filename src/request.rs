@@ -26,11 +26,19 @@ impl RequestIdentifier {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Request<T> {
+pub struct Request<R> {
     /// The operation (with its arguments) the client wants to run.
-    pub op: T,
+    pub op: R,
     /// Client id
     pub client: ClientIdentifier,
     /// Client-assigned number for the request.
     pub id: RequestIdentifier,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Reply<R> {
+    /// The response from the service after executing the operation.
+    pub x: R,
+    /// Client-assigned number for the request.
+    pub s: RequestIdentifier,
 }

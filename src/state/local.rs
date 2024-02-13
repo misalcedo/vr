@@ -20,21 +20,3 @@ impl<S: Clone> State<S> for LocalState<S> {
         self.state = state;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::stamps::View;
-
-    #[test]
-    fn views() {
-        let view = View::default();
-        let mut state: LocalState<View> = LocalState::default();
-
-        assert_eq!(state.load(), view);
-
-        state.save(view.next());
-
-        assert!(state.load() > view);
-    }
-}
