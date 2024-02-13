@@ -1,3 +1,4 @@
+use crate::viewstamp::View;
 use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -47,8 +48,10 @@ impl<R> Request<R> {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Reply<R> {
-    /// The response from the service after executing the operation.
-    pub payload: R,
+    /// The current view of the replica.
+    pub view: View,
     /// Client-assigned number for the request.
     pub id: RequestIdentifier,
+    /// The response from the service after executing the operation.
+    pub payload: R,
 }

@@ -33,14 +33,16 @@ where
 #[derive(Serialize, Deserialize)]
 pub struct PrepareOk {
     /// The current view of the replica.
-    pub v: View,
+    pub view: View,
     /// The op-number assigned to the request.
-    pub n: usize,
+    pub op_number: usize,
+    /// The index of the replica that prepared the operation.
+    pub index: usize,
 }
 
 impl<'a> Message<'a> for PrepareOk {
     fn view(&self) -> View {
-        self.v
+        self.view
     }
 }
 

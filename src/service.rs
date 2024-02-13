@@ -5,5 +5,5 @@ pub trait Service {
 
     fn predict(&mut self, request: &Self::Request) -> Self::Prediction;
 
-    fn invoke(&mut self, request: Self::Request, prediction: Self::Prediction) -> Self::Reply;
+    fn invoke(&mut self, request: &Self::Request, prediction: &Self::Prediction) -> Self::Reply;
 }

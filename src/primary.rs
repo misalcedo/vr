@@ -1,14 +1,16 @@
 use crate::client_table::{CachedRequest, ClientTable};
 use crate::configuration::Configuration;
 use crate::log::{Entry, Log};
-use crate::mail::Mailbox;
-use crate::protocol::Prepare;
-use crate::request::Request;
+use crate::mail::Outbox;
+use crate::protocol::{Prepare, PrepareOk};
+use crate::replica::Replica;
+use crate::request::{Reply, Request};
 use crate::status::Status;
 use crate::viewstamp::View;
 use crate::Service;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 pub struct Primary<S>
 where
@@ -22,6 +24,7 @@ where
     committed: usize,
     client_table: ClientTable<S::Reply>,
     service: S,
+    prepared: HashMap<usize, HashSet<usize>>,
 }
 
 impl<'a, S> Primary<S>
@@ -31,10 +34,37 @@ where
     S::Prediction: Clone + Serialize + Deserialize<'a>,
     S::Reply: Serialize + Deserialize<'a>,
 {
-    pub fn invoke<M>(&mut self, request: Request<S::Request>, mailbox: &mut M)
-    where
-        M: Mailbox<Reply = S::Reply>,
-    {
+    fn prepare_request(
+        &mut self,
+        request: Request<S::Request>,
+        outbox: &mut impl Outbox<Reply = S::Reply>,
+    ) {
+        let prediction = self.service.predict(&request.payload);
+
+        self.log.push(Entry::new(request, prediction));
+
+        let entry = self.log.last();
+
+        self.client_table.start(entry.request());
+
+        outbox.broadcast(&Prepare {
+            view: self.view,
+            op_number: self.log.op_number(),
+            request: entry.request().clone(),
+            prediction: entry.prediction().clone(),
+            committed: self.committed,
+        });
+    }
+}
+
+impl<'a, S> Replica<S> for Primary<S>
+where
+    S: Service,
+    S::Request: Clone + Serialize + Deserialize<'a>,
+    S::Prediction: Clone + Serialize + Deserialize<'a>,
+    S::Reply: Serialize + Deserialize<'a>,
+{
+    fn invoke(&mut self, request: Request<S::Request>, outbox: &mut impl Outbox<Reply = S::Reply>) {
         let cached_request = self.client_table.get(&request.client);
         let comparison = cached_request
             .map(CachedRequest::request)
@@ -42,27 +72,42 @@ where
             .unwrap_or(Ordering::Greater);
 
         match comparison {
-            Ordering::Greater => {
-                let prediction = self.service.predict(&request.payload);
-
-                self.log.push(Entry::new(request, prediction));
-
-                let entry = self.log.last();
-
-                self.client_table.start(entry.request());
-                mailbox.broadcast(&Prepare {
-                    view: self.view,
-                    op_number: self.log.op_number(),
-                    request: entry.request().clone(),
-                    prediction: entry.prediction().clone(),
-                    committed: self.committed,
-                });
-            }
+            Ordering::Greater => self.prepare_request(request, outbox),
             Ordering::Equal => match cached_request.and_then(CachedRequest::reply) {
-                Some(reply) => mailbox.reply(request.client, reply),
+                Some(reply) => outbox.reply(request.client, reply),
                 _ => (),
             },
             _ => (),
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        _: Prepare<S::Request, S::Prediction>,
+        _: &mut impl Outbox<Reply = S::Reply>,
+    ) -> Option<Prepare<S::Request, S::Prediction>> {
+        None
+    }
+
+    fn prepare_ok(&mut self, prepare_ok: PrepareOk, outbox: &mut impl Outbox<Reply = S::Reply>) {
+        let prepared = self.prepared.entry(prepare_ok.op_number).or_default();
+
+        prepared.insert(prepare_ok.index);
+
+        if self.configuration.sub_majority() <= prepared.len() {
+            while self.committed < prepare_ok.op_number {
+                let entry = &self.log[self.committed];
+                let request = entry.request();
+                let reply = Reply {
+                    view: self.view,
+                    id: request.id,
+                    payload: self.service.invoke(&request.payload, entry.prediction()),
+                };
+
+                self.committed += 1;
+                outbox.reply(request.client, &reply);
+                self.client_table.finish(request, reply);
+            }
         }
     }
 }

@@ -9,9 +9,11 @@ mod status;
 pub use service::Service;
 pub use state::State;
 
+mod backup;
 mod configuration;
 mod log;
 mod primary;
 mod protocol;
+mod replica;
 mod request;
 mod viewstamp;
