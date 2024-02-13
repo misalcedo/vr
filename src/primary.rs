@@ -10,7 +10,7 @@ use crate::viewstamp::View;
 use crate::Service;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub struct Primary<S>
 where
@@ -24,7 +24,7 @@ where
     committed: usize,
     client_table: ClientTable<S::Reply>,
     service: S,
-    prepared: HashMap<usize, HashSet<usize>>,
+    prepared: BTreeMap<usize, HashSet<usize>>,
 }
 
 impl<'a, S> Primary<S>
@@ -98,6 +98,7 @@ where
         prepared.insert(prepare_ok.index);
 
         if self.configuration.sub_majority() <= prepared.len() {
+            self.prepared.retain(|&o, _| o > prepare_ok.op_number);
             while self.committed < prepare_ok.op_number {
                 let entry = &self.log[self.committed];
                 let request = entry.request();
