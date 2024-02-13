@@ -1,4 +1,5 @@
 use crate::request::{ClientIdentifier, Reply, Request, RequestIdentifier};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 pub struct CachedRequest<R> {
@@ -29,8 +30,18 @@ pub struct ClientTable<R> {
 }
 
 impl<R> ClientTable<R> {
-    pub fn get(&mut self, client: &ClientIdentifier) -> Option<&CachedRequest<R>> {
-        self.cache.get(client)
+    pub fn get_mut<T>(&mut self, request: &Request<T>) -> (&mut CachedRequest<R>, Ordering) {
+        let comparison = self
+            .cache
+            .get(&request.client)
+            .map(|cached| request.id.cmp(&cached.request))
+            .unwrap_or(Ordering::Greater);
+        let cached = self
+            .cache
+            .entry(request.client)
+            .or_insert_with(|| CachedRequest::new(request));
+
+        (cached, comparison)
     }
 
     pub fn finish<T>(&mut self, request: &Request<T>, reply: Reply<R>) {

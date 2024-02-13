@@ -1,29 +1,19 @@
-use crate::client_table::{CachedRequest, ClientTable};
-use crate::configuration::Configuration;
-use crate::log::{Entry, Log};
 use crate::mail::Outbox;
-use crate::protocol::{Commit, GetState, NewState, Prepare, PrepareOk};
-use crate::request::{Reply, Request};
+use crate::protocol::{
+    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, StartViewChange,
+};
+use crate::request::Request;
 use crate::role::Role;
-use crate::status::Status;
-use crate::viewstamp::View;
+use crate::state::State;
 use crate::Service;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
 pub struct Primary<S>
 where
     S: Service,
 {
-    configuration: Configuration,
-    replica_number: usize,
-    view: View,
-    status: Status,
-    log: Log<S::Request, S::Prediction>,
-    committed: usize,
-    client_table: ClientTable<S::Reply>,
-    service: S,
+    state: State<S>,
     prepared: BTreeMap<usize, HashSet<usize>>,
 }
 
@@ -34,43 +24,6 @@ where
     S::Prediction: Clone + Serialize + Deserialize<'a>,
     S::Reply: Serialize + Deserialize<'a>,
 {
-    fn prepare_request(
-        &mut self,
-        request: Request<S::Request>,
-        outbox: &mut impl Outbox<Reply = S::Reply>,
-    ) {
-        let prediction = self.service.predict(&request.payload);
-
-        self.log.push(Entry::new(request, prediction));
-
-        let entry = self.log.last();
-
-        self.client_table.start(entry.request());
-
-        outbox.broadcast(&Prepare {
-            view: self.view,
-            op_number: self.log.len(),
-            request: entry.request().clone(),
-            prediction: entry.prediction().clone(),
-            committed: self.committed,
-        });
-    }
-
-    fn commit_operations(&mut self, committed: usize, outbox: &mut impl Outbox<Reply = S::Reply>) {
-        while self.committed < committed {
-            let entry = &self.log[self.committed];
-            let request = entry.request();
-            let reply = Reply {
-                view: self.view,
-                id: request.id,
-                payload: self.service.invoke(&request.payload, entry.prediction()),
-            };
-
-            self.committed += 1;
-            outbox.reply(request.client, &reply);
-            self.client_table.finish(request, reply);
-        }
-    }
 }
 
 impl<'a, S> Role<S> for Primary<S>
@@ -85,19 +38,10 @@ where
         request: Request<S::Request>,
         outbox: &mut impl Outbox<Reply = S::Reply>,
     ) {
-        let cached_request = self.client_table.get(&request.client);
-        let comparison = cached_request
-            .map(CachedRequest::request)
-            .map(|id| request.id.cmp(&id))
-            .unwrap_or(Ordering::Greater);
-
-        match comparison {
-            Ordering::Greater => self.prepare_request(request, outbox),
-            Ordering::Equal => match cached_request.and_then(CachedRequest::reply) {
-                Some(reply) => outbox.reply(request.client, reply),
-                _ => (),
-            },
-            _ => (),
+        match self.state.prepare_request(request) {
+            Some(Ok(prepare)) => outbox.broadcast(&prepare),
+            Some(Err((client, reply))) => outbox.reply(client, reply),
+            None => (),
         }
     }
 
@@ -113,37 +57,43 @@ where
 
         prepared.insert(prepare_ok.index);
 
-        if self.configuration.sub_majority() <= prepared.len() {
+        if self.state.is_sub_majority(prepared.len()) {
             self.prepared.retain(|&o, _| o > prepare_ok.op_number);
-            self.commit_operations(prepare_ok.op_number, outbox);
+            self.state
+                .commit_operations_with_reply(prepare_ok.op_number, outbox);
         }
     }
 
     fn idle(&mut self, outbox: &mut impl Outbox<Reply = S::Reply>) {
-        outbox.broadcast(&Commit {
-            view: self.view,
-            committed: self.committed,
-        });
+        outbox.broadcast(&self.state.get_commit());
     }
 
     fn commit(&mut self, _: Commit, _: &mut impl Outbox<Reply = S::Reply>) {}
-
-    fn get_state(&mut self, get_state: GetState, outbox: &mut impl Outbox<Reply = S::Reply>) {
-        outbox.send(
-            get_state.index,
-            &NewState {
-                view: self.view,
-                log: self.log.after(get_state.op_number),
-                op_number: self.log.len(),
-                committed: self.committed,
-            },
-        )
-    }
 
     fn new_state(
         &mut self,
         _: NewState<S::Request, S::Prediction>,
         _: &mut impl Outbox<Reply = S::Reply>,
     ) {
+    }
+
+    fn get_state(&mut self, get_state: GetState, outbox: &mut impl Outbox<Reply = S::Reply>) {
+        outbox.send(self.state.primary(), &self.state.get_new_state(get_state));
+    }
+
+    fn start_view_change(
+        &mut self,
+        start_view_change: StartViewChange,
+        outbox: &mut impl Outbox<Reply = S::Reply>,
+    ) {
+        todo!()
+    }
+
+    fn do_view_change(
+        &mut self,
+        do_view_change: DoViewChange<S::Request, S::Prediction>,
+        outbox: &mut impl Outbox<Reply = S::Reply>,
+    ) {
+        todo!()
     }
 }

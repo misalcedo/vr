@@ -34,7 +34,7 @@ where
     R: Clone,
     P: Clone,
 {
-    pub fn after(&mut self, latest: usize) -> Self {
+    pub fn after(&self, latest: usize) -> Self {
         Self {
             entries: self.entries.iter().skip(latest).cloned().collect(),
         }
@@ -42,17 +42,15 @@ where
 }
 
 impl<R, P> Log<R, P> {
-    pub fn push(&mut self, entry: Entry<R, P>) -> usize {
+    pub fn push(&mut self, entry: Entry<R, P>) -> (&Entry<R, P>, usize) {
+        let index = self.entries.len();
+
         self.entries.push(entry);
-        self.entries.len()
+        (&self.entries[index], index + 1)
     }
 
     pub fn len(&self) -> usize {
         self.entries.len()
-    }
-
-    pub fn last(&self) -> &Entry<R, P> {
-        &self.entries[self.entries.len() - 1]
     }
 
     pub fn get(&self, index: usize) -> Option<&Entry<R, P>> {

@@ -98,3 +98,41 @@ where
         self.view
     }
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct StartViewChange {
+    /// The current view of the replica.
+    pub view: View,
+    /// The index of the replica that needs to get the new state.
+    pub index: usize,
+}
+
+impl<'a> Message<'a> for StartViewChange {
+    fn view(&self) -> View {
+        self.view
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DoViewChange<R, P> {
+    /// The current view of the replica.
+    pub view: View,
+    /// The latest view in which the replica's status was normal.
+    pub last_normal_view: View,
+    /// An excerpt of the log based on the last known op number.
+    pub log: Log<R, P>,
+    /// The latest op-number the replica is aware of.
+    pub op_number: usize,
+    /// The op-number of the latest committed request known to the replica.
+    pub committed: usize,
+}
+
+impl<'a, R, P> Message<'a> for DoViewChange<R, P>
+where
+    R: Serialize + Deserialize<'a>,
+    P: Serialize + Deserialize<'a>,
+{
+    fn view(&self) -> View {
+        self.view
+    }
+}

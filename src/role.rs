@@ -1,5 +1,7 @@
 use crate::mail::Outbox;
-use crate::protocol::{Commit, GetState, NewState, Prepare, PrepareOk};
+use crate::protocol::{
+    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, StartViewChange,
+};
 use crate::request::Request;
 use crate::Service;
 
@@ -18,11 +20,23 @@ pub trait Role<S: Service> {
 
     fn commit(&mut self, commit: Commit, outbox: &mut impl Outbox<Reply = S::Reply>);
 
-    fn get_state(&mut self, get_state: GetState, outbox: &mut impl Outbox<Reply = S::Reply>);
-
     fn new_state(
         &mut self,
         new_state: NewState<S::Request, S::Prediction>,
+        outbox: &mut impl Outbox<Reply = S::Reply>,
+    );
+
+    fn get_state(&mut self, get_state: GetState, outbox: &mut impl Outbox<Reply = S::Reply>);
+
+    fn start_view_change(
+        &mut self,
+        start_view_change: StartViewChange,
+        outbox: &mut impl Outbox<Reply = S::Reply>,
+    );
+
+    fn do_view_change(
+        &mut self,
+        do_view_change: DoViewChange<S::Request, S::Prediction>,
         outbox: &mut impl Outbox<Reply = S::Reply>,
     );
 }
