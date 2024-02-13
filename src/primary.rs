@@ -10,7 +10,7 @@ use crate::viewstamp::View;
 use crate::Service;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 pub struct Primary<S>
 where
@@ -54,6 +54,22 @@ where
             prediction: entry.prediction().clone(),
             committed: self.committed,
         });
+    }
+
+    fn commit_operations(&mut self, committed: usize, outbox: &mut impl Outbox<Reply = S::Reply>) {
+        while self.committed < committed {
+            let entry = &self.log[self.committed];
+            let request = entry.request();
+            let reply = Reply {
+                view: self.view,
+                id: request.id,
+                payload: self.service.invoke(&request.payload, entry.prediction()),
+            };
+
+            self.committed += 1;
+            outbox.reply(request.client, &reply);
+            self.client_table.finish(request, reply);
+        }
     }
 }
 
@@ -99,19 +115,7 @@ where
 
         if self.configuration.sub_majority() <= prepared.len() {
             self.prepared.retain(|&o, _| o > prepare_ok.op_number);
-            while self.committed < prepare_ok.op_number {
-                let entry = &self.log[self.committed];
-                let request = entry.request();
-                let reply = Reply {
-                    view: self.view,
-                    id: request.id,
-                    payload: self.service.invoke(&request.payload, entry.prediction()),
-                };
-
-                self.committed += 1;
-                outbox.reply(request.client, &reply);
-                self.client_table.finish(request, reply);
-            }
+            self.commit_operations(prepare_ok.op_number, outbox);
         }
     }
 
