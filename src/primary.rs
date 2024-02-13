@@ -2,7 +2,7 @@ use crate::client_table::{CachedRequest, ClientTable};
 use crate::configuration::Configuration;
 use crate::log::{Entry, Log};
 use crate::mail::Outbox;
-use crate::protocol::{Commit, Prepare, PrepareOk};
+use crate::protocol::{Commit, GetState, NewState, Prepare, PrepareOk};
 use crate::request::{Reply, Request};
 use crate::role::Role;
 use crate::status::Status;
@@ -122,4 +122,23 @@ where
     }
 
     fn commit(&mut self, _: Commit, _: &mut impl Outbox<Reply = S::Reply>) {}
+
+    fn get_state(&mut self, get_state: GetState, outbox: &mut impl Outbox<Reply = S::Reply>) {
+        outbox.send(
+            get_state.index,
+            &NewState {
+                view: self.view,
+                log: self.log.after(get_state.op_number),
+                op_number: self.log.op_number(),
+                committed: self.committed,
+            },
+        )
+    }
+
+    fn new_state(
+        &mut self,
+        _: NewState<S::Request, S::Prediction>,
+        _: &mut impl Outbox<Reply = S::Reply>,
+    ) {
+    }
 }

@@ -1,6 +1,8 @@
 use crate::request::Request;
+use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Entry<R, P> {
     request: Request<R>,
     prediction: P,
@@ -22,9 +24,21 @@ impl<R, P> Entry<R, P> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Log<R, P> {
     entries: Vec<Entry<R, P>>,
+}
+
+impl<R, P> Log<R, P>
+where
+    R: Clone,
+    P: Clone,
+{
+    pub fn after(&mut self, latest: usize) -> Self {
+        Self {
+            entries: self.entries.iter().skip(latest).cloned().collect(),
+        }
+    }
 }
 
 impl<R, P> Log<R, P> {
@@ -43,6 +57,14 @@ impl<R, P> Log<R, P> {
 
     pub fn get(&self, index: usize) -> Option<&Entry<R, P>> {
         self.entries.get(index)
+    }
+
+    pub fn truncate(&mut self, last: usize) {
+        self.entries.truncate(last)
+    }
+
+    pub fn extend(&mut self, tail: Self) {
+        self.entries.extend(tail.entries);
     }
 }
 

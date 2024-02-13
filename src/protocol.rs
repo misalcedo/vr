@@ -1,7 +1,7 @@
+use crate::log::Log;
 use crate::request::Request;
 use crate::viewstamp::View;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 
 pub trait Message<'a>: Serialize + Deserialize<'a> {
     fn view(&self) -> View;
@@ -56,6 +56,44 @@ pub struct Commit {
 }
 
 impl<'a> Message<'a> for Commit {
+    fn view(&self) -> View {
+        self.view
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GetState {
+    /// The current view of the replica.
+    pub view: View,
+    /// The latest op-number the replica is aware of.
+    pub op_number: usize,
+    /// The index of the replica that needs to get the new state.
+    pub index: usize,
+}
+
+impl<'a> Message<'a> for GetState {
+    fn view(&self) -> View {
+        self.view
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NewState<R, P> {
+    /// The current view of the replica.
+    pub view: View,
+    /// An excerpt of the log based on the last known op number.
+    pub log: Log<R, P>,
+    /// The latest op-number the replica is aware of.
+    pub op_number: usize,
+    /// The op-number of the latest committed request known to the replica.
+    pub committed: usize,
+}
+
+impl<'a, R, P> Message<'a> for NewState<R, P>
+where
+    R: Serialize + Deserialize<'a>,
+    P: Serialize + Deserialize<'a>,
+{
     fn view(&self) -> View {
         self.view
     }

@@ -4,7 +4,7 @@ use crate::request::{ClientIdentifier, Reply};
 pub trait Outbox {
     type Reply;
 
-    fn send<'a, M>(&mut self, message: &M)
+    fn send<'a, M>(&mut self, index: usize, message: &M)
     where
         M: Message<'a>;
 
