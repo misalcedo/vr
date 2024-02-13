@@ -15,5 +15,9 @@ mod state;
 pub use service::Service;
 pub use state::State;
 
+mod configuration;
+mod log;
 mod request;
+mod primary;
 mod protocol;
+mod viewstamp;
