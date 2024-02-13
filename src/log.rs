@@ -47,7 +47,7 @@ impl<R, P> Log<R, P> {
         self.entries.len()
     }
 
-    pub fn op_number(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.entries.len()
     }
 

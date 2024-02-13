@@ -49,7 +49,7 @@ where
 
         outbox.broadcast(&Prepare {
             view: self.view,
-            op_number: self.log.op_number(),
+            op_number: self.log.len(),
             request: entry.request().clone(),
             prediction: entry.prediction().clone(),
             committed: self.committed,
@@ -129,7 +129,7 @@ where
             &NewState {
                 view: self.view,
                 log: self.log.after(get_state.op_number),
-                op_number: self.log.op_number(),
+                op_number: self.log.len(),
                 committed: self.committed,
             },
         )

@@ -46,7 +46,7 @@ where
             self.configuration % self.view,
             &GetState {
                 view: self.view,
-                op_number: self.log.op_number(),
+                op_number: self.log.len(),
                 index: self.index,
             },
         );
@@ -54,7 +54,7 @@ where
     fn commit_operations(&mut self, committed: usize, outbox: &mut impl Outbox<Reply = S::Reply>) {
         while self.committed < committed {
             match self.log.get(self.committed) {
-                None => self.state_transfer(self.log.op_number(), outbox),
+                None => self.state_transfer(self.log.len(), outbox),
                 Some(entry) => {
                     let request = entry.request();
                     let reply = Reply {
@@ -85,8 +85,8 @@ where
         prepare: Prepare<S::Request, S::Prediction>,
         outbox: &mut impl Outbox<Reply = S::Reply>,
     ) {
-        if (self.log.op_number() + 1) != prepare.op_number {
-            self.state_transfer(self.log.op_number(), outbox);
+        if (self.log.len() + 1) != prepare.op_number {
+            self.state_transfer(self.log.len(), outbox);
             return;
         }
 
@@ -118,7 +118,7 @@ where
             &NewState {
                 view: self.view,
                 log: self.log.after(get_state.op_number),
-                op_number: self.log.op_number(),
+                op_number: self.log.len(),
                 committed: self.committed,
             },
         )
@@ -129,7 +129,9 @@ where
         new_state: NewState<S::Request, S::Prediction>,
         outbox: &mut impl Outbox<Reply = S::Reply>,
     ) {
-        self.log.extend(new_state.log);
-        self.commit_operations(new_state.committed, outbox);
+        if self.log.len() + self.log.len() == new_state.op_number {
+            self.log.extend(new_state.log);
+            self.commit_operations(new_state.committed, outbox);
+        }
     }
 }
