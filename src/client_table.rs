@@ -29,8 +29,8 @@ pub struct ClientTable<R> {
 }
 
 impl<R> ClientTable<R> {
-    pub fn get<T>(&mut self, client: ClientIdentifier) -> Option<&CachedRequest<R>> {
-        self.cache.get(&client)
+    pub fn get(&mut self, client: &ClientIdentifier) -> Option<&CachedRequest<R>> {
+        self.cache.get(client)
     }
 
     pub fn finish<T>(&mut self, request: &Request<T>, reply: Reply<R>) {

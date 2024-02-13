@@ -1,7 +1,10 @@
 use crate::configuration::Configuration;
+use serde::{Deserialize, Serialize};
 use std::ops::Rem;
 
-#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(
+    Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
+)]
 #[repr(transparent)]
 pub struct View(u128);
 

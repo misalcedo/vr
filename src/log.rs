@@ -6,6 +6,22 @@ pub struct Entry<R, P> {
     prediction: P,
 }
 
+impl<R, P> Entry<R, P> {
+    pub fn new(request: Request<R>, prediction: P) -> Self {
+        Self {
+            request,
+            prediction,
+        }
+    }
+
+    pub fn request(&self) -> &Request<R> {
+        &self.request
+    }
+    pub fn prediction(&self) -> &P {
+        &self.prediction
+    }
+}
+
 #[derive(Default)]
 pub struct Log<R, P> {
     entries: Vec<Entry<R, P>>,
@@ -16,18 +32,27 @@ impl<R, P> Log<R, P> {
         self.entries.push(entry);
         self.entries.len()
     }
+
+    pub fn op_number(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn last(&self) -> &Entry<R, P> {
+        &self.entries[self.entries.len() - 1]
+    }
 }
 
 impl<R, P> Index<usize> for Log<R, P> {
     type Output = Entry<R, P>;
 
     fn index(&self, index: usize) -> &Self::Output {
-        self.entries.index(index)
+        self.entries.index(index.checked_sub(1).unwrap_or_default())
     }
 }
 
 impl<R, P> IndexMut<usize> for Log<R, P> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        self.entries.index_mut(index)
+        self.entries
+            .index_mut(index.checked_sub(1).unwrap_or_default())
     }
 }

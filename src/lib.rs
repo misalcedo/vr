@@ -1,6 +1,7 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
 
 mod client_table;
+mod mail;
 mod service;
 mod state;
 mod status;

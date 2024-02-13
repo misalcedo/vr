@@ -28,17 +28,27 @@ impl RequestIdentifier {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Request<R> {
     /// The operation (with its arguments) the client wants to run.
-    pub op: R,
+    pub payload: R,
     /// Client id
     pub client: ClientIdentifier,
     /// Client-assigned number for the request.
     pub id: RequestIdentifier,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl<R> Request<R> {
+    pub fn owned_reference(&self) -> Request<&R> {
+        Request {
+            payload: &self.payload,
+            client: Default::default(),
+            id: Default::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Reply<R> {
     /// The response from the service after executing the operation.
-    pub x: R,
+    pub payload: R,
     /// Client-assigned number for the request.
-    pub s: RequestIdentifier,
+    pub id: RequestIdentifier,
 }
