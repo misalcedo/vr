@@ -40,6 +40,10 @@ impl<R, P> Log<R, P> {
     pub fn last(&self) -> &Entry<R, P> {
         &self.entries[self.entries.len() - 1]
     }
+
+    pub fn get(&self, index: usize) -> Option<&Entry<R, P>> {
+        self.entries.get(index)
+    }
 }
 
 impl<R, P> Index<usize> for Log<R, P> {

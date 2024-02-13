@@ -2,9 +2,9 @@ use crate::client_table::{CachedRequest, ClientTable};
 use crate::configuration::Configuration;
 use crate::log::{Entry, Log};
 use crate::mail::Outbox;
-use crate::protocol::{Prepare, PrepareOk};
-use crate::replica::Replica;
+use crate::protocol::{Commit, Prepare, PrepareOk};
 use crate::request::{Reply, Request};
+use crate::role::Role;
 use crate::status::Status;
 use crate::viewstamp::View;
 use crate::Service;
@@ -57,14 +57,18 @@ where
     }
 }
 
-impl<'a, S> Replica<S> for Primary<S>
+impl<'a, S> Role<S> for Primary<S>
 where
     S: Service,
     S::Request: Clone + Serialize + Deserialize<'a>,
     S::Prediction: Clone + Serialize + Deserialize<'a>,
     S::Reply: Serialize + Deserialize<'a>,
 {
-    fn invoke(&mut self, request: Request<S::Request>, outbox: &mut impl Outbox<Reply = S::Reply>) {
+    fn request(
+        &mut self,
+        request: Request<S::Request>,
+        outbox: &mut impl Outbox<Reply = S::Reply>,
+    ) {
         let cached_request = self.client_table.get(&request.client);
         let comparison = cached_request
             .map(CachedRequest::request)
@@ -85,8 +89,7 @@ where
         &mut self,
         _: Prepare<S::Request, S::Prediction>,
         _: &mut impl Outbox<Reply = S::Reply>,
-    ) -> Option<Prepare<S::Request, S::Prediction>> {
-        None
+    ) {
     }
 
     fn prepare_ok(&mut self, prepare_ok: PrepareOk, outbox: &mut impl Outbox<Reply = S::Reply>) {
@@ -110,4 +113,13 @@ where
             }
         }
     }
+
+    fn idle(&mut self, outbox: &mut impl Outbox<Reply = S::Reply>) {
+        outbox.broadcast(&Commit {
+            view: self.view,
+            committed: self.committed,
+        });
+    }
+
+    fn commit(&mut self, _: Commit, _: &mut impl Outbox<Reply = S::Reply>) {}
 }

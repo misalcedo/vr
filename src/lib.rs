@@ -14,6 +14,6 @@ mod configuration;
 mod log;
 mod primary;
 mod protocol;
-mod replica;
 mod request;
+mod role;
 mod viewstamp;

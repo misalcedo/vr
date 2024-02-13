@@ -1,6 +1,7 @@
 use crate::request::Request;
 use crate::viewstamp::View;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 
 pub trait Message<'a>: Serialize + Deserialize<'a> {
     fn view(&self) -> View;
@@ -49,13 +50,13 @@ impl<'a> Message<'a> for PrepareOk {
 #[derive(Serialize, Deserialize)]
 pub struct Commit {
     /// The current view of the replica.
-    pub v: View,
+    pub view: View,
     /// The op-number of the latest committed request known to the replica.
-    pub k: usize,
+    pub committed: usize,
 }
 
 impl<'a> Message<'a> for Commit {
     fn view(&self) -> View {
-        self.v
+        self.view
     }
 }
