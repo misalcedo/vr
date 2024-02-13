@@ -7,6 +7,7 @@ use crate::role::Role;
 use crate::state::State;
 use crate::Service;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 pub struct Backup<S>
 where
@@ -14,6 +15,7 @@ where
 {
     state: State<S>,
     service: S,
+    start_view_changes: HashSet<usize>,
 }
 
 impl<'a, S> Backup<S>
@@ -82,7 +84,10 @@ where
         start_view_change: StartViewChange,
         outbox: &mut impl Outbox<Reply = S::Reply>,
     ) {
-        todo!()
+        self.start_view_changes.insert(start_view_change.index);
+        if self.state.is_sub_majority(self.start_view_changes.len()) {
+            outbox.send(self.state.primary(), &self.state.new_do_view_change())
+        }
     }
 
     fn do_view_change(

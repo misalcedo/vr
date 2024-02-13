@@ -2,7 +2,9 @@ use crate::client_table::ClientTable;
 use crate::configuration::Configuration;
 use crate::log::{Entry, Log};
 use crate::mail::Outbox;
-use crate::protocol::{Commit, GetState, NewState, Prepare, PrepareOk, StartViewChange};
+use crate::protocol::{
+    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, StartViewChange,
+};
 use crate::request::{ClientIdentifier, Reply, Request};
 use crate::status::Status;
 use crate::viewstamp::View;
@@ -198,5 +200,9 @@ where
             view: self.view,
             index: self.index,
         }
+    }
+
+    pub fn new_do_view_change(&self) -> DoViewChange<S::Request, S::Prediction> {
+        todo!()
     }
 }
