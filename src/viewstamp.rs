@@ -1,10 +1,20 @@
 use crate::configuration::Configuration;
 use serde::{Deserialize, Serialize};
-use std::ops::Rem;
+use std::ops::{Rem, Sub};
 
-#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(
+    Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
+)]
 #[repr(transparent)]
 pub struct OpNumber(u128);
+
+impl Sub for OpNumber {
+    type Output = usize;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        (self.0 - rhs.0) as usize
+    }
+}
 
 impl OpNumber {
     pub fn increment(&mut self) {
@@ -40,7 +50,9 @@ impl View {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(
+    Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
+)]
 pub struct Viewstamp(View, OpNumber);
 
 impl Viewstamp {

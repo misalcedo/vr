@@ -1,6 +1,6 @@
 use crate::log::Log;
 use crate::request::Request;
-use crate::viewstamp::View;
+use crate::viewstamp::{OpNumber, View};
 use serde::{Deserialize, Serialize};
 
 pub trait Message<'a>: Serialize + Deserialize<'a> {
@@ -12,13 +12,13 @@ pub struct Prepare<R, P> {
     /// The current view of the replica.
     pub view: View,
     /// The op-number assigned to the request.
-    pub op_number: usize,
+    pub op_number: OpNumber,
     /// The message received from the client along with a prediction for supporting non-deterministic behavior.
     pub request: Request<R>,
     /// The prediction of non-deterministic behavior performed at the primary.
     pub prediction: P,
     /// The op-number of the last committed log entry.
-    pub committed: usize,
+    pub committed: OpNumber,
 }
 
 impl<'a, R, P> Message<'a> for Prepare<R, P>
@@ -36,7 +36,7 @@ pub struct PrepareOk {
     /// The current view of the replica.
     pub view: View,
     /// The op-number assigned to the request.
-    pub op_number: usize,
+    pub op_number: OpNumber,
     /// The index of the replica that prepared the operation.
     pub index: usize,
 }
@@ -52,7 +52,7 @@ pub struct Commit {
     /// The current view of the replica.
     pub view: View,
     /// The op-number of the latest committed request known to the replica.
-    pub committed: usize,
+    pub committed: OpNumber,
 }
 
 impl<'a> Message<'a> for Commit {
@@ -66,7 +66,7 @@ pub struct GetState {
     /// The current view of the replica.
     pub view: View,
     /// The latest op-number the replica is aware of.
-    pub op_number: usize,
+    pub op_number: OpNumber,
     /// The index of the replica that needs to get the new state.
     pub index: usize,
 }
@@ -84,9 +84,9 @@ pub struct NewState<R, P> {
     /// An excerpt of the log based on the last known op number.
     pub log: Log<R, P>,
     /// The latest op-number the replica is aware of.
-    pub op_number: usize,
+    pub op_number: OpNumber,
     /// The op-number of the latest committed request known to the replica.
-    pub committed: usize,
+    pub committed: OpNumber,
 }
 
 impl<'a, R, P> Message<'a> for NewState<R, P>
@@ -122,9 +122,9 @@ pub struct DoViewChange<R, P> {
     /// An excerpt of the log based on the last known op number.
     pub log: Log<R, P>,
     /// The latest op-number the replica is aware of.
-    pub op_number: usize,
+    pub op_number: OpNumber,
     /// The op-number of the latest committed request known to the replica.
-    pub committed: usize,
+    pub committed: OpNumber,
 }
 
 impl<'a, R, P> Message<'a> for DoViewChange<R, P>

@@ -1,19 +1,26 @@
 use crate::request::Request;
+use crate::viewstamp::{OpNumber, View, Viewstamp};
 use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Entry<R, P> {
+    viewstamp: Viewstamp,
     request: Request<R>,
     prediction: P,
 }
 
 impl<R, P> Entry<R, P> {
-    pub fn new(request: Request<R>, prediction: P) -> Self {
+    fn new(viewstamp: Viewstamp, request: Request<R>, prediction: P) -> Self {
         Self {
+            viewstamp,
             request,
             prediction,
         }
+    }
+
+    pub fn viewstamp(&self) -> &Viewstamp {
+        &self.viewstamp
     }
 
     pub fn request(&self) -> &Request<R> {
@@ -34,31 +41,52 @@ where
     R: Clone,
     P: Clone,
 {
-    pub fn after(&self, latest: usize) -> Self {
+    pub fn after(&self, latest: OpNumber) -> Self {
         Self {
-            entries: self.entries.iter().skip(latest).cloned().collect(),
+            entries: self
+                .entries
+                .iter()
+                .skip(latest - self.first_op_number() + 1)
+                .cloned()
+                .collect(),
         }
     }
 }
 
 impl<R, P> Log<R, P> {
-    pub fn push(&mut self, entry: Entry<R, P>) -> (&Entry<R, P>, usize) {
-        let index = self.entries.len();
-
+    pub fn push(&mut self, view: View, request: Request<R>, prediction: P) -> &Entry<R, P> {
+        let op_number = self.next_op_number();
+        let entry = Entry::new(Viewstamp::new(view, op_number), request, prediction);
         self.entries.push(entry);
-        (&self.entries[index], index + 1)
+        &self[op_number]
     }
 
-    pub fn len(&self) -> usize {
-        self.entries.len()
+    pub fn first_op_number(&self) -> OpNumber {
+        self.entries
+            .first()
+            .map(Entry::viewstamp)
+            .map(Viewstamp::op_number)
+            .unwrap_or_default()
     }
 
-    pub fn get(&self, index: usize) -> Option<&Entry<R, P>> {
-        self.entries.get(index)
+    pub fn last_op_number(&self) -> OpNumber {
+        self.entries
+            .last()
+            .map(Entry::viewstamp)
+            .map(Viewstamp::op_number)
+            .unwrap_or_default()
     }
 
-    pub fn truncate(&mut self, last: usize) {
-        self.entries.truncate(last)
+    pub fn next_op_number(&self) -> OpNumber {
+        self.last_op_number().next()
+    }
+
+    pub fn get(&self, index: OpNumber) -> Option<&Entry<R, P>> {
+        self.entries.get(index - self.first_op_number())
+    }
+
+    pub fn truncate(&mut self, last: OpNumber) {
+        self.entries.truncate(last - self.first_op_number() + 1)
     }
 
     pub fn extend(&mut self, tail: Self) {
@@ -66,17 +94,18 @@ impl<R, P> Log<R, P> {
     }
 }
 
-impl<R, P> Index<usize> for Log<R, P> {
+impl<R, P> Index<OpNumber> for Log<R, P> {
     type Output = Entry<R, P>;
 
-    fn index(&self, index: usize) -> &Self::Output {
-        self.entries.index(index.checked_sub(1).unwrap_or_default())
+    fn index(&self, index: OpNumber) -> &Self::Output {
+        let offset = index - self.first_op_number();
+        self.entries.index(offset)
     }
 }
 
-impl<R, P> IndexMut<usize> for Log<R, P> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        self.entries
-            .index_mut(index.checked_sub(1).unwrap_or_default())
+impl<R, P> IndexMut<OpNumber> for Log<R, P> {
+    fn index_mut(&mut self, index: OpNumber) -> &mut Self::Output {
+        let offset = index - self.first_op_number();
+        self.entries.index_mut(offset)
     }
 }

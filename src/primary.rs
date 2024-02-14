@@ -5,6 +5,7 @@ use crate::protocol::{
 use crate::request::Request;
 use crate::role::Role;
 use crate::state::State;
+use crate::viewstamp::OpNumber;
 use crate::Service;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -14,7 +15,7 @@ where
     S: Service,
 {
     state: State<S>,
-    prepared: BTreeMap<usize, HashSet<usize>>,
+    prepared: BTreeMap<OpNumber, HashSet<usize>>,
 }
 
 impl<'a, S> Primary<S>

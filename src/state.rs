@@ -1,13 +1,13 @@
 use crate::client_table::ClientTable;
 use crate::configuration::Configuration;
-use crate::log::{Entry, Log};
+use crate::log::Log;
 use crate::mail::Outbox;
 use crate::protocol::{
     Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, StartViewChange,
 };
 use crate::request::{ClientIdentifier, Reply, Request};
 use crate::status::Status;
-use crate::viewstamp::View;
+use crate::viewstamp::{OpNumber, View};
 use crate::Service;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ where
     view: View,
     status: Status,
     log: Log<S::Request, S::Prediction>,
-    committed: usize,
+    committed: OpNumber,
     client_table: ClientTable<S::Reply>,
     service: S,
 }
@@ -56,11 +56,11 @@ where
         match comparison {
             Ordering::Greater => {
                 let prediction = self.service.predict(&request.payload);
-                let (entry, op_number) = self.log.push(Entry::new(request, prediction));
+                let entry = self.log.push(self.view, request, prediction);
 
                 Some(Ok(Prepare {
                     view: self.view,
-                    op_number,
+                    op_number: entry.viewstamp().op_number(),
                     request: entry.request().clone(),
                     prediction: entry.prediction().clone(),
                     committed: self.committed,
@@ -75,16 +75,16 @@ where
         &mut self,
         prepare: Prepare<S::Request, S::Prediction>,
         outbox: &mut impl Outbox<Reply = S::Reply>,
-    ) -> Result<usize, usize> {
-        if (self.log.len() + 1) != prepare.op_number {
-            let latest = self.log.len();
+    ) -> Result<OpNumber, OpNumber> {
+        if self.log.next_op_number() != prepare.op_number {
+            let latest = self.log.last_op_number();
             self.start_state_transfer(latest, outbox);
             return Err(latest);
         }
 
         self.client_table.start(&prepare.request);
         self.log
-            .push(Entry::new(prepare.request, prepare.prediction));
+            .push(self.view, prepare.request, prepare.prediction);
         outbox.send(
             self.configuration % self.view,
             &PrepareOk {
@@ -98,7 +98,7 @@ where
 
     pub fn commit_operations_with_reply(
         &mut self,
-        committed: usize,
+        committed: OpNumber,
         outbox: &mut impl Outbox<Reply = S::Reply>,
     ) {
         while self.committed < committed {
@@ -110,7 +110,7 @@ where
                 payload: self.service.invoke(&request.payload, entry.prediction()),
             };
 
-            self.committed += 1;
+            self.committed.increment();
             outbox.reply(request.client, &reply);
             self.client_table.finish(request, reply);
         }
@@ -118,13 +118,13 @@ where
 
     pub fn commit_operations_with_state_transfer<O: Outbox<Reply = S::Reply>>(
         &mut self,
-        committed: usize,
+        committed: OpNumber,
         outbox: &mut O,
-    ) -> Result<usize, usize> {
+    ) -> Result<OpNumber, OpNumber> {
         while self.committed < committed {
             match self.log.get(self.committed) {
                 None => {
-                    let latest = self.log.len();
+                    let latest = self.log.last_op_number();
                     self.start_state_transfer(latest, outbox);
                     return Err(latest);
                 }
@@ -136,7 +136,7 @@ where
                         payload: self.service.invoke(&request.payload, entry.prediction()),
                     };
 
-                    self.committed += 1;
+                    self.committed.increment();
                     self.client_table.finish(request, reply);
                 }
             }
@@ -156,12 +156,16 @@ where
         NewState {
             view: self.view,
             log: self.log.after(get_state.op_number),
-            op_number: self.log.len(),
+            op_number: self.log.last_op_number(),
             committed: self.committed,
         }
     }
 
-    fn start_state_transfer(&mut self, latest: usize, outbox: &mut impl Outbox<Reply = S::Reply>) {
+    fn start_state_transfer(
+        &mut self,
+        latest: OpNumber,
+        outbox: &mut impl Outbox<Reply = S::Reply>,
+    ) {
         self.log.truncate(latest);
 
         let replicas = self.configuration.replicas();
@@ -175,7 +179,7 @@ where
             self.configuration % self.view,
             &GetState {
                 view: self.view,
-                op_number: self.log.len(),
+                op_number: self.log.last_op_number(),
                 index: self.index,
             },
         );
@@ -186,7 +190,7 @@ where
         new_state: NewState<S::Request, S::Prediction>,
         outbox: &mut impl Outbox<Reply = S::Reply>,
     ) {
-        if self.log.len() + self.log.len() == new_state.op_number {
+        if self.log.next_op_number() == new_state.log.first_op_number() {
             self.log.extend(new_state.log);
             self.commit_operations_with_state_transfer(new_state.committed, outbox);
         }
