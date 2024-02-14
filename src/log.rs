@@ -42,6 +42,7 @@ impl<R, P> Entry<R, P> {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Log<R, P> {
+    op_number: OpNumber,
     entries: Vec<Entry<R, P>>,
 }
 
@@ -78,6 +79,7 @@ where
 {
     pub fn after(&self, latest: OpNumber) -> Self {
         Self {
+            op_number: self.op_number,
             entries: self
                 .entries
                 .iter()
@@ -90,10 +92,12 @@ where
 
 impl<R, P> Log<R, P> {
     pub fn push(&mut self, view: View, request: Request<R>, prediction: P) -> &Entry<R, P> {
-        let op_number = self.next_op_number();
-        let entry = Entry::new(Viewstamp::new(view, op_number), request, prediction);
+        self.op_number.increment();
+
+        let entry = Entry::new(Viewstamp::new(view, self.op_number), request, prediction);
+
         self.entries.push(entry);
-        &self[op_number]
+        &self[self.op_number]
     }
 
     pub fn first_op_number(&self) -> OpNumber {
@@ -105,15 +109,11 @@ impl<R, P> Log<R, P> {
     }
 
     pub fn last_op_number(&self) -> OpNumber {
-        self.entries
-            .last()
-            .map(Entry::viewstamp)
-            .map(Viewstamp::op_number)
-            .unwrap_or_default()
+        self.op_number
     }
 
     pub fn next_op_number(&self) -> OpNumber {
-        self.last_op_number().next()
+        self.op_number.next()
     }
 
     pub fn get(&self, index: OpNumber) -> Option<&Entry<R, P>> {
