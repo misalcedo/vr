@@ -1,6 +1,7 @@
 use crate::request::Request;
 use crate::viewstamp::{OpNumber, View, Viewstamp};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::ops::{Index, IndexMut};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -8,6 +9,14 @@ pub struct Entry<R, P> {
     viewstamp: Viewstamp,
     request: Request<R>,
     prediction: P,
+}
+
+impl<R, P> Eq for Entry<R, P> {}
+
+impl<R, P> PartialEq for Entry<R, P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.viewstamp.eq(&other.viewstamp)
+    }
 }
 
 impl<R, P> Entry<R, P> {
@@ -34,6 +43,32 @@ impl<R, P> Entry<R, P> {
 #[derive(Default, Serialize, Deserialize)]
 pub struct Log<R, P> {
     entries: Vec<Entry<R, P>>,
+}
+
+impl<R, P> Eq for Log<R, P> {}
+
+impl<R, P> PartialEq for Log<R, P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries.iter().eq(other.entries.iter())
+    }
+}
+
+impl<R, P> Ord for Log<R, P> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.entries
+            .last()
+            .map(Entry::viewstamp)
+            .cmp(&other.entries.last().map(Entry::viewstamp))
+    }
+}
+
+impl<R, P> PartialOrd for Log<R, P> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.entries
+            .last()
+            .map(Entry::viewstamp)
+            .partial_cmp(&other.entries.last().map(Entry::viewstamp))
+    }
 }
 
 impl<R, P> Log<R, P>
