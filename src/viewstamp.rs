@@ -2,6 +2,20 @@ use crate::configuration::Configuration;
 use serde::{Deserialize, Serialize};
 use std::ops::Rem;
 
+#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[repr(transparent)]
+pub struct OpNumber(u128);
+
+impl OpNumber {
+    pub fn increment(&mut self) {
+        self.0 += 1;
+    }
+
+    pub fn next(&self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
 #[derive(
     Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
 )]
@@ -18,10 +32,27 @@ impl Rem<View> for Configuration {
 
 impl View {
     pub fn increment(&mut self) {
-        self.0 = 1 + self.0;
+        self.0 += 1;
     }
 
     pub fn next(&self) -> Self {
         Self(1 + self.0)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct Viewstamp(View, OpNumber);
+
+impl Viewstamp {
+    pub fn new(view: View, op_number: OpNumber) -> Self {
+        Self(view, op_number)
+    }
+
+    pub fn view(&self) -> View {
+        self.0
+    }
+
+    pub fn op_number(&self) -> OpNumber {
+        self.1
     }
 }
