@@ -156,7 +156,6 @@ where
         NewState {
             view: self.view,
             log: self.log.after(get_state.op_number),
-            op_number: self.log.last_op_number(),
             committed: self.committed,
         }
     }

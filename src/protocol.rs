@@ -83,8 +83,6 @@ pub struct NewState<R, P> {
     pub view: View,
     /// An excerpt of the log based on the last known op number.
     pub log: Log<R, P>,
-    /// The latest op-number the replica is aware of.
-    pub op_number: OpNumber,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,
 }
@@ -121,8 +119,6 @@ pub struct DoViewChange<R, P> {
     pub last_normal_view: View,
     /// An excerpt of the log based on the last known op number.
     pub log: Log<R, P>,
-    /// The latest op-number the replica is aware of.
-    pub op_number: OpNumber,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,
 }
