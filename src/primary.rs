@@ -1,14 +1,17 @@
-use crate::mail::Outbox;
+use crate::mail::{Either, Inbox, Mailbox, Outbox};
 use crate::protocol::{
-    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, StartViewChange,
+    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol,
+    StartViewChange,
 };
 use crate::request::Request;
 use crate::role::Role;
 use crate::state::State;
 use crate::viewstamp::OpNumber;
 use crate::Service;
+use futures::future;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
+use std::future::Future;
 
 pub struct Primary<S>
 where
@@ -25,6 +28,29 @@ where
     S::Prediction: Clone + Serialize + Deserialize<'a>,
     S::Reply: Serialize + Deserialize<'a>,
 {
+    /// Assumes all participating replicas are in the same view.
+    /// If the sender is behind, the receiver drops the message.
+    /// If the sender is ahead, the replica performs a state transfer.
+    pub async fn normal<M, F>(&mut self, mailbox: &mut M, idle_timeout: &mut F)
+    where
+        M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
+        F: Future + Unpin,
+    {
+        let result = match future::select(mailbox.receive(), idle_timeout).await {
+            future::Either::Left((message, _)) => Ok(message),
+            future::Either::Right((_, _)) => Err(()),
+        };
+
+        match result {
+            Ok(Either::Left(request)) => self.request(request, mailbox),
+            Ok(Either::Right(protocol)) if protocol.view() < self.state.view() => {}
+            Ok(Either::Right(protocol)) if protocol.view() > self.state.view() => {
+                self.state.state_transfer(mailbox).await;
+            }
+            Ok(Either::Right(protocol)) => {}
+            Err(_) => mailbox.broadcast(&self.state.get_commit()),
+        }
+    }
 }
 
 impl<'a, S> Role<S> for Primary<S>

@@ -34,6 +34,10 @@ where
     S::Prediction: Clone + Serialize + Deserialize<'a>,
     S::Reply: Serialize + Deserialize<'a>,
 {
+    pub fn view(&self) -> View {
+        self.view
+    }
+
     pub fn primary(&self) -> usize {
         self.configuration % self.view
     }

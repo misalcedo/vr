@@ -8,6 +8,35 @@ pub trait Message<'a>: Serialize + Deserialize<'a> {
 }
 
 #[derive(Serialize, Deserialize)]
+pub enum Protocol<R, P> {
+    Prepare(Prepare<R, P>),
+    PrepareOk(PrepareOk),
+    Commit(Commit),
+    GetState(GetState),
+    NewState(NewState<R, P>),
+    StartViewChange(StartViewChange),
+    DoViewChange(DoViewChange<R, P>),
+}
+
+impl<'a, R, P> Message<'a> for Protocol<R, P>
+where
+    R: Serialize + Deserialize<'a>,
+    P: Serialize + Deserialize<'a>,
+{
+    fn view(&self) -> View {
+        match self {
+            Protocol::Prepare(m) => m.view,
+            Protocol::PrepareOk(m) => m.view,
+            Protocol::Commit(m) => m.view,
+            Protocol::GetState(m) => m.view,
+            Protocol::NewState(m) => m.view,
+            Protocol::StartViewChange(m) => m.view,
+            Protocol::DoViewChange(m) => m.view,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct Prepare<R, P> {
     /// The current view of the replica.
     pub view: View,
