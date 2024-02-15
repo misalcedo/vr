@@ -1,5 +1,6 @@
 use crate::protocol::{Message, Protocol};
 use crate::request::{ClientIdentifier, Reply, Request};
+use std::future::Future;
 
 pub trait Inbox {
     type Request;
@@ -7,9 +8,16 @@ pub trait Inbox {
 
     fn receive(
         &mut self,
-    ) -> impl std::future::Future<
-        Output = Either<Request<Self::Request>, Protocol<Self::Request, Self::Prediction>>,
-    > + Unpin;
+    ) -> impl Future<Output = Either<Request<Self::Request>, Protocol<Self::Request, Self::Prediction>>>;
+
+    fn receive_response<'a, M, F>(&mut self, predicate: F) -> impl Future<Output = M>
+    where
+        M: Message<'a>
+            + TryFrom<
+                Protocol<Self::Request, Self::Prediction>,
+                Error = Protocol<Self::Request, Self::Prediction>,
+            > + Into<Protocol<Self::Request, Self::Prediction>>,
+        F: Fn(&M) -> bool;
 }
 
 pub enum Either<L, R> {

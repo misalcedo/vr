@@ -1,367 +1,119 @@
-use crate::identifiers::{GroupIdentifier, ReplicaIdentifier};
-use crate::model::{Message, Payload};
-use crate::request::ClientIdentifier;
-use crate::stamps::View;
+use crate::mail::{Either, Inbox, Mailbox, Outbox};
+use crate::protocol::{Message, Protocol};
+use crate::request::{ClientIdentifier, Reply, Request};
+use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt};
 use std::collections::VecDeque;
+use std::future::Future;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum Address {
-    Replica(ReplicaIdentifier),
-    Group(GroupIdentifier),
-    Client(ClientIdentifier),
-}
+type Payload<R, P> = Either<Request<R>, Protocol<R, P>>;
 
-impl From<ReplicaIdentifier> for Address {
-    fn from(value: ReplicaIdentifier) -> Self {
-        Self::Replica(value)
+#[repr(transparent)]
+pub struct Sender<R, P>(mpsc::Sender<Payload<R, P>>);
+
+impl<R, P> Sender<R, P> {
+    pub fn send_request(&mut self, request: Request<R>) -> Result<(), Payload<R, P>> {
+        match self.0.try_send(Either::Left(request)) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.into_inner()),
+        }
+    }
+
+    pub fn send_protocol(
+        &mut self,
+        index: usize,
+        protocol: Protocol<R, P>,
+    ) -> Result<(), Payload<R, P>> {
+        match self.0.try_send(Either::Right(protocol)) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.into_inner()),
+        }
     }
 }
 
-impl From<GroupIdentifier> for Address {
-    fn from(value: GroupIdentifier) -> Self {
-        Self::Group(value)
-    }
+pub struct LocalMailbox<Req, Pre, Rep> {
+    sender: mpsc::Sender<Payload<Req, Pre>>,
+    receiver: mpsc::Receiver<Payload<Req, Pre>>,
+    inbound_requests: VecDeque<Request<Req>>,
+    inbound_messages: VecDeque<Protocol<Req, Pre>>,
+    outbound_replies: VecDeque<(ClientIdentifier, Reply<Rep>)>,
+    outbound_messages: VecDeque<(usize, Protocol<Req, Pre>)>,
 }
 
-impl From<ClientIdentifier> for Address {
-    fn from(value: ClientIdentifier) -> Self {
-        Self::Client(value)
-    }
-}
+impl<Req, Pre, Rep> Default for LocalMailbox<Req, Pre, Rep> {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel(0);
 
-#[derive(Debug)]
-pub struct Mailbox {
-    address: Address,
-    group: Address,
-    inbound: Vec<Option<Message>>,
-    outbound: VecDeque<Message>,
-}
-
-impl From<ReplicaIdentifier> for Mailbox {
-    fn from(value: ReplicaIdentifier) -> Self {
-        Self::new(value.into(), value.group().into())
-    }
-}
-
-impl From<ClientIdentifier> for Mailbox {
-    fn from(value: ClientIdentifier) -> Self {
-        Self::new(value.into(), value.into())
-    }
-}
-
-impl Mailbox {
-    pub fn new(address: Address, group: Address) -> Self {
         Self {
-            address,
-            group,
-            inbound: Default::default(),
-            outbound: Default::default(),
+            sender,
+            receiver,
+            inbound_requests: Default::default(),
+            inbound_messages: Default::default(),
+            outbound_replies: Default::default(),
+            outbound_messages: Default::default(),
         }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.inbound.iter().all(Option::is_none)
-    }
-
-    pub fn deliver(&mut self, message: Message) {
-        // Find an empty slot starting at the end
-        for slot in self.inbound.iter_mut().rev() {
-            if slot.is_none() {
-                *slot = Some(message);
-                return;
-            }
-        }
-
-        self.inbound.push(Some(message));
-    }
-
-    pub fn drain_inbound(&mut self) -> impl Iterator<Item = Message> + '_ {
-        self.inbound.drain(..).filter_map(|o| o)
-    }
-
-    pub fn drain_outbound(&mut self) -> impl Iterator<Item = Message> + '_ {
-        self.outbound.drain(..)
-    }
-
-    pub fn select<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) {
-        for index in 0..self.inbound.len() {
-            if let Some(message) = self.inbound.get_mut(index).and_then(Option::take) {
-                self.inbound[index] = f(self, message);
-
-                if self.inbound[index].is_none() {
-                    break;
-                }
-            }
-        }
-    }
-
-    pub fn select_all<F: FnMut(&mut Self, Message) -> Option<Message>>(&mut self, mut f: F) {
-        for index in 0..self.inbound.len() {
-            if let Some(message) = self.inbound.get_mut(index).and_then(Option::take) {
-                self.inbound[index] = f(self, message);
-            }
-        }
-    }
-
-    pub fn visit<F: FnMut(&Message)>(&mut self, mut f: F) {
-        for slot in self.inbound.iter() {
-            if let Some(message) = slot {
-                f(message);
-            }
-        }
-    }
-
-    pub fn send(&mut self, to: impl Into<Address>, view: View, payload: impl Into<Payload>) {
-        let from = self.address;
-        let to = to.into();
-        let payload = payload.into();
-        let message = Message {
-            from,
-            to,
-            view,
-            payload,
-        };
-
-        if to == self.address {
-            self.deliver(message);
-        } else {
-            self.outbound.push_back(message);
-        }
-    }
-
-    pub fn broadcast(&mut self, view: View, payload: impl Into<Payload>) {
-        let from = self.address;
-        let to = self.group;
-        let payload = payload.into();
-
-        self.outbound.push_back(Message {
-            from,
-            to,
-            view,
-            payload,
-        });
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::client::Client;
-    use crate::identifiers::GroupIdentifier;
-    use crate::request::ClientIdentifier;
-    use crate::model::{Commit, Request};
-    use crate::stamps::{OpNumber, View};
-
-    #[test]
-    fn mailbox() {
-        let group = GroupIdentifier::default();
-        let client = ClientIdentifier::default();
-        let client_address = Address::from(client);
-        let replica = Address::from(group.into_iter().next().unwrap());
-        let view = View::default();
-        let request = Request {
-            op: vec![],
-            c: client,
-            s: Default::default(),
-        };
-
-        let mut instance = Mailbox::new(replica, Address::from(group));
-
-        instance.inbound = vec![
-            None,
-            Some(Message {
-                from: client_address,
-                to: replica,
-                view,
-                payload: request.clone().into(),
-            }),
-            Some(Message {
-                from: client_address,
-                to: replica,
-                view,
-                payload: request.clone().into(),
-            }),
-        ];
-
-        instance.select(|_, m| Some(m));
-        assert!(!instance.inbound.iter().all(Option::is_none));
-
-        instance.select(|_, _| None);
-        assert!(!instance.inbound.iter().all(Option::is_none));
-
-        instance.select(|_, _| None);
-        assert!(instance.inbound.iter().all(Option::is_none));
-    }
-
-    #[test]
-    fn mailbox_select_all() {
-        let group = GroupIdentifier::default();
-        let client = ClientIdentifier::default();
-        let client_address = Address::from(client);
-        let replica = Address::from(group.into_iter().next().unwrap());
-        let view = View::default();
-        let request = Request {
-            op: vec![],
-            c: client,
-            s: Default::default(),
-        };
-        let message = Message {
-            from: client_address,
-            to: replica,
-            view,
-            payload: request.clone().into(),
-        };
-
-        let mut instance = Mailbox::new(replica, Address::from(group));
-
-        instance.inbound = vec![
-            None,
-            Some(message.clone()),
-            Some(message.clone()),
-            Some(Message {
-                from: client_address,
-                to: client_address,
-                view,
-                payload: request.clone().into(),
-            }),
-        ];
-
-        instance.select_all(|_, m| Some(m));
-        assert!(!instance.inbound.iter().all(Option::is_none));
-
-        instance.select_all(|_, _| None);
-        assert!(instance.inbound.iter().all(Option::is_none));
-    }
-
-    #[test]
-    fn mailbox_visit() {
-        let group = GroupIdentifier::default();
-        let client = ClientIdentifier::default();
-        let client_address = Address::from(client);
-        let replica = Address::from(group.into_iter().next().unwrap());
-        let view = View::default();
-        let request = Request {
-            op: vec![],
-            c: client,
-            s: Default::default(),
-        };
-        let message = Message {
-            from: client_address,
-            to: replica,
-            view,
-            payload: request.clone().into(),
-        };
-
-        let mut instance = Mailbox::new(replica, Address::from(group));
-
-        instance.inbound = vec![None, Some(message.clone()), Some(message.clone())];
-
-        let mut counter = 0;
-        instance.visit(|_| counter += 1);
-        assert_eq!(counter, 2);
-    }
-
-    #[test]
-    fn deliver() {
-        let group = GroupIdentifier::default();
-        let client = ClientIdentifier::default();
-        let client_address = Address::from(client);
-        let replica = Address::from(group.into_iter().next().unwrap());
-        let view = View::default();
-        let request = Request {
-            op: vec![],
-            c: client,
-            s: Default::default(),
-        };
-
-        let mut instance = Mailbox::new(replica, Address::from(group));
-
-        instance.inbound = vec![
-            None,
-            Some(Message {
-                from: replica,
-                to: replica,
-                view,
-                payload: request.clone().into(),
-            }),
-        ];
-
-        instance.deliver(Message {
-            from: client_address,
-            to: replica,
-            view,
-            payload: request.clone().into(),
-        });
-        assert!(instance.inbound.iter().all(Option::is_some));
-        assert_eq!(instance.inbound.len(), 2);
-
-        instance.deliver(Message {
-            from: client_address,
-            to: replica,
-            view,
-            payload: request.clone().into(),
-        });
-        assert!(instance.inbound.iter().all(Option::is_some));
-        assert_eq!(instance.inbound.len(), 3);
-    }
-
-    #[test]
-    fn send_self() {
-        let group = GroupIdentifier::default();
-        let replica = Address::from(group.into_iter().next().unwrap());
-        let view = View::default();
-
-        let mut instance = Mailbox::new(replica, Address::from(group));
-
-        instance.send(
-            replica,
-            view,
-            Commit {
-                k: OpNumber::default(),
-            },
-        );
-
-        assert!(instance.inbound.iter().all(Option::is_some));
-        assert_eq!(instance.inbound.len(), 1);
-    }
-
-    #[test]
-    fn empty() {
-        let instance = Mailbox::from(ClientIdentifier::default());
-
-        assert!(instance.is_empty());
-    }
-
-    #[test]
-    fn not_empty() {
-        let group = GroupIdentifier::new(3);
-        let client = Client::new(group);
-        let mut instance = Mailbox::from(client.identifier());
-
-        instance.deliver(Message {
-            from: client.address(),
-            to: group.into(),
-            view: client.view(),
-            payload: Payload::OutdatedView,
-        });
-
-        assert!(!instance.is_empty());
-    }
-
-    #[test]
-    fn empty_slot() {
-        let group = GroupIdentifier::new(3);
-        let client = Client::new(group);
-        let mut instance = Mailbox::from(client.identifier());
-
-        instance.deliver(Message {
-            from: client.address(),
-            to: group.into(),
-            view: client.view(),
-            payload: Payload::OutdatedView,
-        });
-        instance.drain_inbound().count();
-
-        assert!(instance.is_empty());
+impl<Req, Pre, Rep> LocalMailbox<Req, Pre, Rep> {
+    pub fn sender(&self) -> Sender<Req, Pre> {
+        Sender(self.sender.clone())
     }
 }
+
+impl<Req, Pre, Rep> Inbox for LocalMailbox<Req, Pre, Rep> {
+    type Request = Req;
+    type Prediction = Pre;
+
+    async fn receive(
+        &mut self,
+    ) -> Either<Request<Self::Request>, Protocol<Self::Request, Self::Prediction>> {
+        self.receiver.next().await.unwrap()
+    }
+
+    async fn receive_response<'a, M, F>(&mut self, predicate: F) -> M
+    where
+        M: Message<'a>
+            + TryFrom<
+                Protocol<Self::Request, Self::Prediction>,
+                Error = Protocol<Self::Request, Self::Prediction>,
+            > + Into<Protocol<Self::Request, Self::Prediction>>,
+        F: Fn(&M) -> bool,
+    {
+        loop {
+            match self.receiver.next().await.unwrap() {
+                Either::Left(request) => self.inbound_requests.push_back(request),
+                Either::Right(protocol) => match M::try_from(protocol) {
+                    Ok(message) if predicate(&message) => return message,
+                    Ok(message) => self.inbound_messages.push_back(message.into()),
+                    Err(protocol) => self.inbound_messages.push_back(protocol),
+                },
+            }
+        }
+    }
+}
+
+impl<Req, Pre, Rep> Outbox for LocalMailbox<Req, Pre, Rep> {
+    type Reply = ();
+
+    fn send<'a, M>(&mut self, index: usize, message: &M)
+    where
+        M: Message<'a>,
+    {
+        self.outbound_messages
+            .push_back((index, message.clone().into()))
+    }
+
+    fn broadcast<'a, M>(&mut self, message: &M)
+    where
+        M: Message<'a>,
+    {
+        todo!()
+    }
+
+    fn reply(&mut self, client: ClientIdentifier, reply: &Reply<Self::Reply>) {
+        todo!()
+    }
+}
+
+impl<Req, Pre, Rep> Mailbox for LocalMailbox<Req, Pre, Rep> {}

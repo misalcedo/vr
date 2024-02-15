@@ -3,7 +3,7 @@ use crate::protocol::{
     Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, StartViewChange,
 };
 use crate::request::Request;
-use crate::Service;
+use crate::service::Service;
 
 pub trait Role<S: Service> {
     fn request(&mut self, request: Request<S::Request>, outbox: &mut impl Outbox<Reply = S::Reply>);

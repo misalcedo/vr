@@ -18,6 +18,40 @@ pub enum Protocol<R, P> {
     DoViewChange(DoViewChange<R, P>),
 }
 
+impl<R, P> TryFrom<Protocol<R, P>> for Prepare<R, P> {
+    type Error = Protocol<R, P>;
+
+    fn try_from(value: Protocol<R, P>) -> Result<Self, Self::Error> {
+        match value {
+            Protocol::Prepare(m) => Ok(m),
+            _ => Err(value),
+        }
+    }
+}
+
+impl<R, P> From<Prepare<R, P>> for Protocol<R, P> {
+    fn from(value: Prepare<R, P>) -> Self {
+        Protocol::Prepare(value)
+    }
+}
+
+impl<R, P> TryFrom<Protocol<R, P>> for NewState<R, P> {
+    type Error = Protocol<R, P>;
+
+    fn try_from(value: Protocol<R, P>) -> Result<Self, Self::Error> {
+        match value {
+            Protocol::NewState(p) => Ok(p),
+            _ => Err(value),
+        }
+    }
+}
+
+impl<R, P> From<NewState<R, P>> for Protocol<R, P> {
+    fn from(value: NewState<R, P>) -> Self {
+        Protocol::NewState(value)
+    }
+}
+
 impl<'a, R, P> Message<'a> for Protocol<R, P>
 where
     R: Serialize + Deserialize<'a>,
