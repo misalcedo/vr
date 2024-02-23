@@ -32,17 +32,6 @@ pub struct Primary {
 //     ) {
 //     }
 //
-//     fn prepare_ok(&mut self, prepare_ok: PrepareOk, outbox: &mut impl Outbox<Reply = S::Reply>) {
-//         let prepared = self.prepared.entry(prepare_ok.op_number).or_default();
-//
-//         prepared.insert(prepare_ok.index);
-//
-//         if self.state.is_sub_majority(prepared.len()) {
-//             self.prepared.retain(|&o, _| o > prepare_ok.op_number);
-//             self.state
-//                 .commit_operations_with_reply(prepare_ok.op_number, outbox);
-//         }
-//     }
 //
 //     fn idle(&mut self, outbox: &mut impl Outbox<Reply = S::Reply>) {
 //         outbox.broadcast(&self.state.get_commit());

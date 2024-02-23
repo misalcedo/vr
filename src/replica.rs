@@ -2,8 +2,7 @@ use crate::backup::Backup;
 use crate::client_table::ClientTable;
 use crate::configuration::Configuration;
 use crate::log::Log;
-use crate::mail::{Either, Mailbox, Outbox};
-use crate::primary::Primary;
+use crate::mail::{Mailbox, Outbox};
 use crate::protocol::{
     Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol,
     StartViewChange,
@@ -16,12 +15,10 @@ use crate::viewstamp::{OpNumber, View};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
 
-enum AdditionalState {
-    Primary(Primary),
-    StartViewChange,
-    DoViewChange,
-    Backup(Backup),
+struct Primary {
+    prepared: BTreeMap<OpNumber, HashSet<usize>>,
 }
 
 pub struct Replica<S>
@@ -36,7 +33,8 @@ where
     committed: OpNumber,
     client_table: ClientTable<S::Reply>,
     service: S,
-    additional_state: AdditionalState,
+    primary: Primary,
+    backup: Backup,
 }
 
 impl<'a, S> Replica<S>
@@ -88,9 +86,19 @@ where
     ) where
         M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
     {
+        if protocol.view() < self.view {
+            return;
+        }
+
+        if protocol.view() > self.view {
+            self.state_transfer(self.committed, mailbox);
+        }
+
         match protocol {
-            Protocol::Prepare(prepare) if self.is_backup() => self.handle_prepare(prepare, mailbox),
-            Protocol::PrepareOk(_) if self.is_primary() => {}
+            Protocol::Prepare(message) if self.is_backup() => self.handle_prepare(message, mailbox),
+            Protocol::PrepareOk(message) if self.is_primary() => {
+                self.handle_prepare_ok(message, mailbox)
+            }
             Protocol::Commit(_) if self.is_backup() => {}
             Protocol::GetState(_) if self.status == Status::Normal => {}
             Protocol::NewState(_) if self.status == Status::Recovering => {}
@@ -197,6 +205,26 @@ where
             },
         );
         self.commit_operations(prepare.committed, mailbox);
+    }
+
+    fn handle_prepare_ok<O>(&mut self, prepare_ok: PrepareOk, outbox: &mut O)
+    where
+        O: Outbox<Reply = S::Reply>,
+    {
+        let prepared = self
+            .primary
+            .prepared
+            .entry(prepare_ok.op_number)
+            .or_default();
+
+        prepared.insert(prepare_ok.index);
+
+        if self.is_sub_majority(prepared.len()) {
+            self.primary
+                .prepared
+                .retain(|&o, _| o > prepare_ok.op_number);
+            self.commit_operations(prepare_ok.op_number, outbox);
+        }
     }
 }
 
