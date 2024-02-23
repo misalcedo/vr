@@ -7,7 +7,6 @@ use crate::replica::Replica;
 use crate::request::Request;
 use crate::role::Role;
 use crate::viewstamp::OpNumber;
-use futures::future;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;

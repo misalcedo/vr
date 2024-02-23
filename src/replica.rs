@@ -46,79 +46,7 @@ where
     S::Prediction: Clone + Serialize + Deserialize<'a>,
     S::Reply: Serialize + Deserialize<'a>,
 {
-    /// Assumes all participating replicas are in the same view.
-    /// If the sender is behind, the receiver drops the message.
-    /// If the sender is ahead, the replica performs a state transfer.
-    pub async fn normal<M>(&mut self, mailbox: &mut M)
-    where
-        M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
-    {
-        match mailbox.receive().await {
-            Either::Left(request) => {
-                self.handle_request(request, mailbox);
-            }
-            Either::Right(protocol) if protocol.view() < self.view => {}
-            Either::Right(protocol) if protocol.view() > self.view => {
-                self.view = protocol.view();
-                self.state_transfer(self.committed, mailbox).await;
-                self.handle_protocol(protocol, mailbox).await;
-            }
-            Either::Right(protocol) => {
-                self.handle_protocol(protocol, mailbox).await;
-            }
-        }
-    }
-
-    pub async fn idle<O>(&mut self, outbox: &mut O)
-    where
-        O: Outbox<Reply = S::Reply>,
-    {
-        if self.is_primary() {
-            outbox.broadcast(&Commit {
-                view: self.view,
-                committed: self.committed,
-            })
-        } else {
-            outbox.broadcast(&StartViewChange {
-                view: self.view,
-                index: self.index,
-            });
-        }
-    }
-
-    async fn state_transfer<M>(&mut self, op_number: OpNumber, mailbox: &mut M)
-    where
-        M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
-    {
-        self.log.truncate(op_number);
-
-        let replicas = self.configuration.replicas();
-        let mut replica = rand::thread_rng().gen_range(0..replicas);
-
-        if replica == self.index {
-            replica += (replica + 1) % replicas;
-        }
-
-        mailbox.send(
-            self.configuration % self.view,
-            &GetState {
-                view: self.view,
-                op_number: self.log.last_op_number(),
-                index: self.index,
-            },
-        );
-
-        let new_state = mailbox
-            .receive_response(|m: &NewState<S::Request, S::Prediction>| {
-                m.view == self.view && m.log.first_op_number() == self.log.next_op_number()
-            })
-            .await;
-
-        self.log.extend(new_state.log);
-        self.commit_operations(new_state.committed, mailbox);
-    }
-
-    fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
+    pub fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
     where
         O: Outbox<Reply = S::Reply>,
     {
@@ -150,6 +78,75 @@ where
         }
     }
 
+    /// Assumes all participating replicas are in the same view.
+    /// If the sender is behind, the receiver drops the message.
+    /// If the sender is ahead, the replica performs a state transfer.
+    pub fn handle_protocol<M>(
+        &mut self,
+        protocol: Protocol<S::Request, S::Prediction>,
+        mailbox: &mut M,
+    ) where
+        M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
+    {
+        match protocol {
+            Protocol::Prepare(prepare) if self.is_backup() => self.handle_prepare(prepare, mailbox),
+            Protocol::PrepareOk(_) if self.is_primary() => {}
+            Protocol::Commit(_) if self.is_backup() => {}
+            Protocol::GetState(_) if self.status == Status::Normal => {}
+            Protocol::NewState(_) if self.status == Status::Recovering => {}
+            Protocol::StartViewChange(_) => {}
+            Protocol::DoViewChange(_) => {}
+            _ => (),
+        }
+    }
+
+    pub async fn idle<O>(&mut self, outbox: &mut O)
+    where
+        O: Outbox<Reply = S::Reply>,
+    {
+        if self.is_primary() {
+            outbox.broadcast(&Commit {
+                view: self.view,
+                committed: self.committed,
+            })
+        } else {
+            outbox.broadcast(&StartViewChange {
+                view: self.view,
+                index: self.index,
+            });
+        }
+    }
+
+    fn state_transfer<M>(&mut self, op_number: OpNumber, mailbox: &mut M)
+    where
+        M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
+    {
+        self.log.truncate(op_number);
+
+        let replicas = self.configuration.replicas();
+        let mut replica = rand::thread_rng().gen_range(0..replicas);
+
+        if replica == self.index {
+            replica += (replica + 1) % replicas;
+        }
+
+        mailbox.send(
+            replica,
+            &GetState {
+                view: self.view,
+                op_number: self.log.last_op_number(),
+                index: self.index,
+            },
+        );
+
+        let new_state = mailbox.receive_response(|m: &NewState<S::Request, S::Prediction>| {
+            m.view == self.view && m.log.first_op_number() == self.log.next_op_number()
+        });
+
+        self.log.extend(new_state.log);
+        self.commit_operations(new_state.committed, mailbox);
+    }
+
     fn commit_operations(
         &mut self,
         committed: OpNumber,
@@ -174,32 +171,8 @@ where
         }
     }
 
-    async fn handle_protocol<M>(
-        &mut self,
-        protocol: Protocol<S::Request, S::Prediction>,
-        mailbox: &mut M,
-    ) where
-        M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
-    {
-        match protocol {
-            Protocol::Prepare(prepare) if self.is_backup() => {
-                self.handle_prepare(prepare, mailbox).await
-            }
-            Protocol::PrepareOk(_) => {}
-            Protocol::Commit(_) => {}
-            Protocol::GetState(_) => {}
-            Protocol::NewState(_) => {}
-            Protocol::StartViewChange(_) => {}
-            Protocol::DoViewChange(_) => {}
-            _ => (),
-        }
-    }
-
-    async fn handle_prepare<M>(
-        &mut self,
-        prepare: Prepare<S::Request, S::Prediction>,
-        mailbox: &mut M,
-    ) where
+    fn handle_prepare<M>(&mut self, prepare: Prepare<S::Request, S::Prediction>, mailbox: &mut M)
+    where
         M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
     {
         let next = self.log.next_op_number();
@@ -209,8 +182,7 @@ where
         }
 
         if next < prepare.op_number {
-            self.state_transfer(self.log.last_op_number(), mailbox)
-                .await;
+            self.state_transfer(self.log.last_op_number(), mailbox);
         }
 
         self.client_table.start(&prepare.request);

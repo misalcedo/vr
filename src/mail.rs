@@ -8,9 +8,9 @@ pub trait Inbox {
 
     fn receive(
         &mut self,
-    ) -> impl Future<Output = Either<Request<Self::Request>, Protocol<Self::Request, Self::Prediction>>>;
+    ) -> Either<Request<Self::Request>, Protocol<Self::Request, Self::Prediction>>;
 
-    fn receive_response<'a, M, F>(&mut self, predicate: F) -> impl Future<Output = M>
+    fn receive_response<'a, M, F>(&mut self, predicate: F) -> M
     where
         M: Message<'a>
             + TryFrom<
