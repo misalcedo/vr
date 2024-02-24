@@ -136,6 +136,7 @@ impl<R, P> Log<R, P> {
 
     pub fn extend(&mut self, tail: Self) {
         self.entries.extend(tail.entries);
+        self.op_number = tail.op_number;
     }
 }
 
