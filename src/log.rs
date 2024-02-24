@@ -2,7 +2,7 @@ use crate::request::Request;
 use crate::viewstamp::{OpNumber, View, Viewstamp};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::ops::{Index, IndexMut};
+use std::ops::{Index, IndexMut, Range, RangeInclusive};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Entry<R, P> {
@@ -91,6 +91,10 @@ where
 }
 
 impl<R, P> Log<R, P> {
+    pub fn range(&self) -> RangeInclusive<OpNumber> {
+        self.first_op_number()..=self.last_op_number()
+    }
+
     pub fn push(&mut self, view: View, request: Request<R>, prediction: P) -> &Entry<R, P> {
         self.op_number.increment();
 
@@ -121,7 +125,13 @@ impl<R, P> Log<R, P> {
     }
 
     pub fn truncate(&mut self, last: OpNumber) {
-        self.entries.truncate(last - self.first_op_number() + 1)
+        self.entries.truncate(last - self.first_op_number() + 1);
+        self.op_number = self
+            .entries
+            .last()
+            .map(Entry::viewstamp)
+            .map(Viewstamp::op_number)
+            .unwrap_or_default();
     }
 
     pub fn extend(&mut self, tail: Self) {

@@ -29,23 +29,9 @@ impl<Req, Pre, Rep> Default for LocalMailbox<Req, Pre, Rep> {
 }
 
 impl<Req, Pre, Rep> Inbox for LocalMailbox<Req, Pre, Rep> {
-    type Request = Req;
-    type Prediction = Pre;
-
-    fn receive(
-        &mut self,
-    ) -> Either<Request<Self::Request>, Protocol<Self::Request, Self::Prediction>> {
-        todo!()
-    }
-
-    fn receive_response<'a, M, F>(&mut self, predicate: F) -> M
+    fn receive<'a, M>(&mut self) -> M
     where
-        M: Message<'a>
-            + TryFrom<
-                Protocol<Self::Request, Self::Prediction>,
-                Error = Protocol<Self::Request, Self::Prediction>,
-            > + Into<Protocol<Self::Request, Self::Prediction>>,
-        F: Fn(&M) -> bool,
+        M: Message<'a>,
     {
         todo!()
     }

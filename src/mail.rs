@@ -3,21 +3,9 @@ use crate::request::{ClientIdentifier, Reply, Request};
 use std::future::Future;
 
 pub trait Inbox {
-    type Request;
-    type Prediction;
-
-    fn receive(
-        &mut self,
-    ) -> Either<Request<Self::Request>, Protocol<Self::Request, Self::Prediction>>;
-
-    fn receive_response<'a, M, F>(&mut self, predicate: F) -> M
+    fn receive<'a, M>(&mut self) -> M
     where
-        M: Message<'a>
-            + TryFrom<
-                Protocol<Self::Request, Self::Prediction>,
-                Error = Protocol<Self::Request, Self::Prediction>,
-            > + Into<Protocol<Self::Request, Self::Prediction>>,
-        F: Fn(&M) -> bool;
+        M: Message<'a>;
 }
 
 pub enum Either<L, R> {

@@ -4,8 +4,7 @@ use crate::configuration::Configuration;
 use crate::log::Log;
 use crate::mail::{Mailbox, Outbox};
 use crate::protocol::{
-    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol,
-    StartViewChange,
+    Commit, GetState, Message, NewState, Prepare, PrepareOk, Protocol, StartViewChange,
 };
 use crate::request::{Reply, Request};
 use crate::role::Role;
@@ -84,24 +83,21 @@ where
         protocol: Protocol<S::Request, S::Prediction>,
         mailbox: &mut M,
     ) where
-        M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
+        M: Mailbox<Reply = S::Reply>,
     {
         if protocol.view() < self.view {
             return;
         }
 
-        if protocol.view() > self.view {
+        while protocol.view() > self.view {
             self.state_transfer(self.committed, mailbox);
         }
 
         match protocol {
-            Protocol::Prepare(message) if self.is_backup() => self.handle_prepare(message, mailbox),
-            Protocol::PrepareOk(message) if self.is_primary() => {
-                self.handle_prepare_ok(message, mailbox)
-            }
-            Protocol::Commit(_) if self.is_backup() => {}
-            Protocol::GetState(_) if self.status == Status::Normal => {}
-            Protocol::NewState(_) if self.status == Status::Recovering => {}
+            Protocol::Prepare(message) => self.handle_prepare(message, mailbox),
+            Protocol::PrepareOk(message) => self.handle_prepare_ok(message, mailbox),
+            Protocol::Commit(message) => self.handle_commit(message, mailbox),
+            Protocol::GetState(_) if self.is_normal() => {}
             Protocol::StartViewChange(_) => {}
             Protocol::DoViewChange(_) => {}
             _ => (),
@@ -125,9 +121,73 @@ where
         }
     }
 
+    fn handle_prepare<M>(&mut self, prepare: Prepare<S::Request, S::Prediction>, mailbox: &mut M)
+    where
+        M: Mailbox<Reply = S::Reply>,
+    {
+        if self.is_primary() {
+            return;
+        }
+
+        let next = self.log.next_op_number();
+
+        if prepare.op_number < next {
+            return;
+        }
+
+        while prepare.op_number > next {
+            self.state_transfer(self.log.last_op_number(), mailbox);
+        }
+
+        self.client_table.start(&prepare.request);
+        self.log
+            .push(self.view, prepare.request, prepare.prediction);
+        mailbox.send(
+            self.configuration % self.view,
+            &PrepareOk {
+                view: self.view,
+                op_number: prepare.op_number,
+                index: self.index,
+            },
+        );
+        self.commit_operations(prepare.committed, mailbox);
+    }
+
+    fn handle_prepare_ok<O>(&mut self, prepare_ok: PrepareOk, outbox: &mut O)
+    where
+        O: Outbox<Reply = S::Reply>,
+    {
+        if self.is_backup() {
+            return;
+        }
+
+        let prepared = self.insert_prepare_ok(&prepare_ok);
+        if self.is_sub_majority(prepared) {
+            self.primary
+                .prepared
+                .retain(|&o, _| o > prepare_ok.op_number);
+            self.commit_operations(prepare_ok.op_number, outbox);
+        }
+    }
+
+    fn handle_commit<M>(&mut self, commit: Commit, mailbox: &mut M)
+    where
+        M: Mailbox<Reply = S::Reply>,
+    {
+        if self.is_primary() {
+            return;
+        }
+
+        while self.log.last_op_number() < commit.committed {
+            self.state_transfer(self.log.last_op_number(), mailbox);
+        }
+
+        self.commit_operations(self.committed, mailbox);
+    }
+
     fn state_transfer<M>(&mut self, op_number: OpNumber, mailbox: &mut M)
     where
-        M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
+        M: Mailbox<Reply = S::Reply>,
     {
         self.log.truncate(op_number);
 
@@ -147,12 +207,49 @@ where
             },
         );
 
-        let new_state = mailbox.receive_response(|m: &NewState<S::Request, S::Prediction>| {
-            m.view == self.view && m.log.first_op_number() == self.log.next_op_number()
-        });
+        let new_state: NewState<S::Request, S::Prediction> = mailbox.receive();
 
         self.log.extend(new_state.log);
         self.commit_operations(new_state.committed, mailbox);
+    }
+
+    fn is_primary(&self) -> bool {
+        (self.configuration % self.view) == self.index
+    }
+
+    fn is_backup(&self) -> bool {
+        !self.is_primary()
+    }
+
+    fn is_normal(&self) -> bool {
+        self.status == Status::Normal
+    }
+
+    fn is_recovering(&self) -> bool {
+        self.status == Status::Recovering
+    }
+
+    fn is_view_change(&self) -> bool {
+        self.status == Status::ViewChange
+    }
+
+    pub fn is_sub_majority(&self, value: usize) -> bool {
+        self.configuration.sub_majority() <= value
+    }
+
+    pub fn is_quorum(&self, value: usize) -> bool {
+        self.configuration.quorum() <= value
+    }
+
+    fn insert_prepare_ok(&mut self, prepare_ok: &PrepareOk) -> usize {
+        let prepared = self
+            .primary
+            .prepared
+            .entry(prepare_ok.op_number)
+            .or_default();
+
+        prepared.insert(prepare_ok.index);
+        prepared.len()
     }
 
     fn commit_operations(
@@ -177,89 +274,5 @@ where
 
             self.client_table.finish(request, reply);
         }
-    }
-
-    fn handle_prepare<M>(&mut self, prepare: Prepare<S::Request, S::Prediction>, mailbox: &mut M)
-    where
-        M: Mailbox<Request = S::Request, Prediction = S::Prediction, Reply = S::Reply>,
-    {
-        let next = self.log.next_op_number();
-
-        if prepare.op_number < next {
-            return;
-        }
-
-        if next < prepare.op_number {
-            self.state_transfer(self.log.last_op_number(), mailbox);
-        }
-
-        self.client_table.start(&prepare.request);
-        self.log
-            .push(self.view, prepare.request, prepare.prediction);
-        mailbox.send(
-            self.configuration % self.view,
-            &PrepareOk {
-                view: self.view,
-                op_number: prepare.op_number,
-                index: self.index,
-            },
-        );
-        self.commit_operations(prepare.committed, mailbox);
-    }
-
-    fn handle_prepare_ok<O>(&mut self, prepare_ok: PrepareOk, outbox: &mut O)
-    where
-        O: Outbox<Reply = S::Reply>,
-    {
-        let prepared = self
-            .primary
-            .prepared
-            .entry(prepare_ok.op_number)
-            .or_default();
-
-        prepared.insert(prepare_ok.index);
-
-        if self.is_sub_majority(prepared.len()) {
-            self.primary
-                .prepared
-                .retain(|&o, _| o > prepare_ok.op_number);
-            self.commit_operations(prepare_ok.op_number, outbox);
-        }
-    }
-}
-
-impl<'a, S> Replica<S>
-where
-    S: Service,
-    S::Request: Clone + Serialize + Deserialize<'a>,
-    S::Prediction: Clone + Serialize + Deserialize<'a>,
-    S::Reply: Serialize + Deserialize<'a>,
-{
-    pub fn is_primary(&self) -> bool {
-        (self.configuration % self.view) == self.index
-    }
-
-    pub fn is_backup(&self) -> bool {
-        !self.is_primary()
-    }
-
-    pub fn is_sub_majority(&self, value: usize) -> bool {
-        self.configuration.sub_majority() <= value
-    }
-
-    pub fn is_quorum(&self, value: usize) -> bool {
-        self.configuration.quorum() <= value
-    }
-
-    pub fn get_new_state(&self, get_state: GetState) -> NewState<S::Request, S::Prediction> {
-        NewState {
-            view: self.view,
-            log: self.log.after(get_state.op_number),
-            committed: self.committed,
-        }
-    }
-
-    pub fn new_do_view_change(&self) -> DoViewChange<S::Request, S::Prediction> {
-        todo!()
     }
 }
