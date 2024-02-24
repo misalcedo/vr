@@ -114,6 +114,10 @@ impl<R, P> Log<R, P> {
         self.range.1
     }
 
+    pub fn last_normal_view(&self) -> View {
+        self.view
+    }
+
     pub fn next_op_number(&self) -> OpNumber {
         self.range.1.next()
     }

@@ -178,9 +178,7 @@ impl<'a> Message<'a> for StartViewChange {
 pub struct DoViewChange<R, P> {
     /// The current view of the replica.
     pub view: View,
-    /// The latest view in which the replica's status was normal.
-    pub last_normal_view: View,
-    /// An excerpt of the log based on the last known op number.
+    /// The log of the replica from its last normal view.
     pub log: Log<R, P>,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,
@@ -202,7 +200,7 @@ where
 pub struct StartView<R, P> {
     /// The current view of the replica.
     pub view: View,
-    /// An excerpt of the log based on the last known op number.
+    /// The log to use in the new view.
     pub log: Log<R, P>,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,

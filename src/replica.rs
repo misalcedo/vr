@@ -28,7 +28,7 @@ where
     client_table: ClientTable<S::Reply>,
     service: S,
     prepared: BTreeMap<OpNumber, HashSet<usize>>,
-    start_view_changes: (View, HashSet<usize>),
+    start_view_changes: HashSet<usize>,
     do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
 }
 
@@ -118,8 +118,7 @@ where
                 committed: self.committed,
             });
         } else {
-            self.view.increment();
-            self.start_view_change(outbox);
+            self.start_view_change(self.view.next(), outbox);
         }
     }
 
@@ -219,18 +218,16 @@ where
     where
         O: Outbox<Reply = S::Reply>,
     {
-        if start_view_change.view > self.start_view_changes.0 {
-            self.start_view_change(outbox);
-            self.start_view_changes.0 = start_view_change.view
+        if start_view_change.view > self.view {
+            self.start_view_change(start_view_change.view, outbox);
         }
 
-        self.start_view_changes.1.insert(start_view_change.index);
-        if self.start_view_changes.1.len() >= self.configuration.sub_majority() {
+        self.start_view_changes.insert(start_view_change.index);
+        if self.start_view_changes.len() >= self.configuration.sub_majority() {
             outbox.send(
                 self.configuration % self.view,
                 &DoViewChange {
                     view: self.view,
-                    last_normal_view: self.start_view_changes.0,
                     log: self.log.clone(),
                     committed: self.committed,
                     index: self.index,
@@ -246,8 +243,8 @@ where
     ) where
         O: Outbox<Reply = S::Reply>,
     {
-        if do_view_change.view > self.start_view_changes.0 {
-            self.start_view_change(outbox);
+        if do_view_change.view > self.view {
+            self.start_view_change(do_view_change.view, outbox);
         }
 
         if self.is_backup() {
@@ -270,7 +267,7 @@ where
                 .do_view_changes
                 .drain()
                 .map(|(k, v)| v)
-                .max_by_key(|m| (m.last_normal_view, m.log.last_op_number()));
+                .max_by(|x, y| x.log.cmp(&y.log));
 
             if let Some(do_view_change) = max {
                 self.log = do_view_change.log;
@@ -288,10 +285,12 @@ where
         }
     }
 
-    fn start_view_change<O>(&mut self, outbox: &mut O)
+    fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
     where
         O: Outbox<Reply = S::Reply>,
     {
+        self.view = view;
+
         self.set_status(Status::ViewChange);
 
         outbox.broadcast(&StartViewChange {
@@ -376,7 +375,7 @@ where
     fn set_status(&mut self, status: Status) {
         self.status = status;
         self.prepared.clear();
-        self.start_view_changes = (self.view, Default::default());
+        self.start_view_changes = Default::default();
         self.do_view_changes = Default::default();
     }
 }
