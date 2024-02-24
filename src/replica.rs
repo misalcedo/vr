@@ -125,17 +125,12 @@ where
     where
         M: Mailbox<Reply = S::Reply>,
     {
-        if self.is_primary() {
+        if self.is_primary() || self.log.contains(prepare.op_number) {
             return;
         }
 
         let next = self.log.next_op_number();
-
-        if prepare.op_number < next {
-            return;
-        }
-
-        if prepare.op_number > next {
+        if next < prepare.op_number || next < prepare.committed {
             self.state_transfer(self.view, mailbox);
         }
 
