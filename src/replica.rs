@@ -89,8 +89,8 @@ where
             return;
         }
 
-        while protocol.view() > self.view {
-            self.state_transfer(self.committed, mailbox);
+        if protocol.view() > self.view {
+            self.state_transfer(protocol.view(), mailbox);
         }
 
         match protocol {
@@ -135,8 +135,8 @@ where
             return;
         }
 
-        while prepare.op_number > next {
-            self.state_transfer(self.log.last_op_number(), mailbox);
+        if prepare.op_number > next {
+            self.state_transfer(self.view, mailbox);
         }
 
         self.client_table.start(&prepare.request);
@@ -178,18 +178,20 @@ where
             return;
         }
 
-        while self.log.last_op_number() < commit.committed {
-            self.state_transfer(self.log.last_op_number(), mailbox);
+        if self.log.last_op_number() < commit.committed {
+            self.state_transfer(self.view, mailbox);
         }
 
         self.commit_operations(self.committed, mailbox);
     }
 
-    fn state_transfer<M>(&mut self, op_number: OpNumber, mailbox: &mut M)
+    fn state_transfer<M>(&mut self, view: View, mailbox: &mut M)
     where
         M: Mailbox<Reply = S::Reply>,
     {
-        self.log.truncate(op_number);
+        if self.view < view {
+            self.log.truncate(self.committed);
+        }
 
         let replicas = self.configuration.replicas();
         let mut replica = rand::thread_rng().gen_range(0..replicas);
@@ -257,7 +259,7 @@ where
         committed: OpNumber,
         outbox: &mut impl Outbox<Reply = S::Reply>,
     ) {
-        while self.committed < committed {
+        if self.committed < committed {
             let entry = &self.log[self.committed];
             let request = entry.request();
             let reply = Reply {
