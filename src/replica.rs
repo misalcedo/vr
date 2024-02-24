@@ -1,10 +1,9 @@
-use crate::backup::Backup;
 use crate::client_table::ClientTable;
 use crate::configuration::Configuration;
 use crate::log::Log;
 use crate::mail::{Mailbox, Outbox};
 use crate::protocol::{
-    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol,
+    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol, StartView,
     StartViewChange,
 };
 use crate::request::{Reply, Request};
@@ -29,8 +28,7 @@ where
     client_table: ClientTable<S::Reply>,
     service: S,
     prepared: BTreeMap<OpNumber, HashSet<usize>>,
-    last_normal_view: View,
-    start_view_changes: HashSet<usize>,
+    start_view_changes: (View, HashSet<usize>),
     do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
 }
 
@@ -120,7 +118,8 @@ where
                 committed: self.committed,
             });
         } else {
-            self.start_view_change(self.view.next(), outbox);
+            self.view.increment();
+            self.start_view_change(outbox);
         }
     }
 
@@ -220,17 +219,18 @@ where
     where
         O: Outbox<Reply = S::Reply>,
     {
-        if start_view_change.view > self.view {
-            self.start_view_change(start_view_change.view, outbox);
+        if start_view_change.view > self.start_view_changes.0 {
+            self.start_view_change(outbox);
+            self.start_view_changes.0 = start_view_change.view
         }
 
-        self.start_view_changes.insert(start_view_change.index);
-        if self.start_view_changes.len() >= self.configuration.sub_majority() {
+        self.start_view_changes.1.insert(start_view_change.index);
+        if self.start_view_changes.1.len() >= self.configuration.sub_majority() {
             outbox.send(
                 self.configuration % self.view,
                 &DoViewChange {
                     view: self.view,
-                    last_normal_view: self.last_normal_view,
+                    last_normal_view: self.start_view_changes.0,
                     log: self.log.clone(),
                     committed: self.committed,
                     index: self.index,
@@ -246,8 +246,8 @@ where
     ) where
         O: Outbox<Reply = S::Reply>,
     {
-        if do_view_change.view > self.view {
-            self.start_view_change(do_view_change.view, outbox);
+        if do_view_change.view > self.start_view_changes.0 {
+            self.start_view_change(outbox);
         }
 
         if self.is_backup() {
@@ -256,23 +256,43 @@ where
 
         self.do_view_changes
             .insert(do_view_change.index, do_view_change);
-        if self.do_view_changes.len() >= self.configuration.quorum() {
-            todo!();
+
+        if self.do_view_changes.contains_key(&self.index)
+            && self.do_view_changes.len() >= self.configuration.quorum()
+        {
+            let committed = self
+                .do_view_changes
+                .values()
+                .map(|v| v.committed)
+                .max()
+                .unwrap_or(self.committed);
+            let max = self
+                .do_view_changes
+                .drain()
+                .map(|(k, v)| v)
+                .max_by_key(|m| (m.last_normal_view, m.log.last_op_number()));
+
+            if let Some(do_view_change) = max {
+                self.log = do_view_change.log;
+                self.view = do_view_change.view;
+                self.set_status(Status::Normal);
+
+                outbox.broadcast(&StartView {
+                    view: self.view,
+                    log: self.log.clone(),
+                    committed,
+                });
+
+                self.commit_operations(committed, outbox);
+            }
         }
     }
 
-    fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
+    fn start_view_change<O>(&mut self, outbox: &mut O)
     where
         O: Outbox<Reply = S::Reply>,
     {
-        if self.status == Status::Normal {
-            self.last_normal_view = self.view;
-        }
-
-        self.view = view;
-        self.status = Status::ViewChange;
-        self.start_view_changes.clear();
-        self.do_view_changes.clear();
+        self.set_status(Status::ViewChange);
 
         outbox.broadcast(&StartViewChange {
             view: self.view,
@@ -351,5 +371,12 @@ where
 
             self.client_table.finish(request, reply);
         }
+    }
+
+    fn set_status(&mut self, status: Status) {
+        self.status = status;
+        self.prepared.clear();
+        self.start_view_changes = (self.view, Default::default());
+        self.do_view_changes = Default::default();
     }
 }

@@ -1,12 +1,10 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
 
-mod backup;
 mod client_table;
 mod configuration;
 mod log;
 mod mail;
 mod mailbox;
-mod primary;
 mod protocol;
 mod replica;
 mod request;

@@ -197,3 +197,23 @@ where
         self.view
     }
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct StartView<R, P> {
+    /// The current view of the replica.
+    pub view: View,
+    /// An excerpt of the log based on the last known op number.
+    pub log: Log<R, P>,
+    /// The op-number of the latest committed request known to the replica.
+    pub committed: OpNumber,
+}
+
+impl<'a, R, P> Message<'a> for crate::protocol::StartView<R, P>
+where
+    R: Serialize + Deserialize<'a>,
+    P: Serialize + Deserialize<'a>,
+{
+    fn view(&self) -> View {
+        self.view
+    }
+}

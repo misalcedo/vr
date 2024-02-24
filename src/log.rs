@@ -40,7 +40,7 @@ impl<R, P> Entry<R, P> {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Log<R, P> {
     op_number: OpNumber,
     entries: Vec<Entry<R, P>>,
