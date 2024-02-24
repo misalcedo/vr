@@ -152,12 +152,21 @@ where
     where
         O: Outbox<Reply = S::Reply>,
     {
-        if self.is_backup() {
+        if self.is_backup() || prepare_ok.op_number <= self.committed {
             return;
         }
 
-        let prepared = self.insert_prepare_ok(&prepare_ok);
-        if self.is_sub_majority(prepared) {
+        let prepared = self
+            .primary
+            .prepared
+            .entry(prepare_ok.op_number)
+            .or_default();
+
+        prepared.insert(prepare_ok.index);
+
+        let committed = prepared.len() >= self.configuration.sub_majority();
+
+        if committed {
             self.primary
                 .prepared
                 .retain(|&o, _| o > prepare_ok.op_number);
@@ -230,23 +239,8 @@ where
         self.status == Status::ViewChange
     }
 
-    pub fn is_sub_majority(&self, value: usize) -> bool {
-        self.configuration.sub_majority() <= value
-    }
-
     pub fn is_quorum(&self, value: usize) -> bool {
         self.configuration.quorum() <= value
-    }
-
-    fn insert_prepare_ok(&mut self, prepare_ok: &PrepareOk) -> usize {
-        let prepared = self
-            .primary
-            .prepared
-            .entry(prepare_ok.op_number)
-            .or_default();
-
-        prepared.insert(prepare_ok.index);
-        prepared.len()
     }
 
     fn commit_operations(
