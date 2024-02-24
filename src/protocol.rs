@@ -184,6 +184,8 @@ pub struct DoViewChange<R, P> {
     pub log: Log<R, P>,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,
+    /// The index of the replica that sent the message.
+    pub index: usize,
 }
 
 impl<'a, R, P> Message<'a> for DoViewChange<R, P>

@@ -4,21 +4,17 @@ use crate::configuration::Configuration;
 use crate::log::Log;
 use crate::mail::{Mailbox, Outbox};
 use crate::protocol::{
-    Commit, GetState, Message, NewState, Prepare, PrepareOk, Protocol, StartViewChange,
+    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol,
+    StartViewChange,
 };
 use crate::request::{Reply, Request};
-use crate::role::Role;
 use crate::service::Service;
 use crate::status::Status;
 use crate::viewstamp::{OpNumber, View};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
-
-struct Primary {
-    prepared: BTreeMap<OpNumber, HashSet<usize>>,
-}
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub struct Replica<S>
 where
@@ -32,8 +28,10 @@ where
     committed: OpNumber,
     client_table: ClientTable<S::Reply>,
     service: S,
-    primary: Primary,
-    backup: Backup,
+    prepared: BTreeMap<OpNumber, HashSet<usize>>,
+    last_normal_view: View,
+    start_view_changes: HashSet<usize>,
+    do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
 }
 
 impl<'a, S> Replica<S>
@@ -85,16 +83,21 @@ where
     ) where
         M: Mailbox<Reply = S::Reply>,
     {
-        if protocol.view() < self.view {
-            return;
-        }
-
-        if protocol.view() > self.view && !matches!(&protocol, &Protocol::NewState(_)) {
-            self.state_transfer(protocol.view(), mailbox);
-            mailbox.send(self.index, &protocol);
-        }
-
         match (self.status, protocol) {
+            (_, p) if p.view() < self.view => {}
+            (Status::Normal, Protocol::NewState(message)) => {
+                self.handle_new_state(message, mailbox)
+            }
+            (Status::Normal | Status::ViewChange, Protocol::StartViewChange(message)) => {
+                self.handle_start_view_change(message, mailbox)
+            }
+            (Status::Normal | Status::ViewChange, Protocol::DoViewChange(message)) => {
+                self.handle_do_view_change(message, mailbox)
+            }
+            (_, p) if p.view() > self.view => {
+                self.state_transfer(p.view(), mailbox);
+                mailbox.send(self.index, &p);
+            }
             (Status::Normal, Protocol::Prepare(message)) => self.handle_prepare(message, mailbox),
             (Status::Normal, Protocol::PrepareOk(message)) => {
                 self.handle_prepare_ok(message, mailbox)
@@ -103,14 +106,11 @@ where
             (Status::Normal, Protocol::GetState(message)) => {
                 self.handle_get_state(message, mailbox)
             }
-            (Status::Normal, Protocol::NewState(message)) => {
-                self.handle_new_state(message, mailbox)
-            }
             _ => (),
         }
     }
 
-    pub async fn idle<O>(&mut self, outbox: &mut O)
+    pub fn idle<O>(&mut self, outbox: &mut O)
     where
         O: Outbox<Reply = S::Reply>,
     {
@@ -118,12 +118,9 @@ where
             outbox.broadcast(&Commit {
                 view: self.view,
                 committed: self.committed,
-            })
-        } else {
-            outbox.broadcast(&StartViewChange {
-                view: self.view,
-                index: self.index,
             });
+        } else {
+            self.start_view_change(self.view.next(), outbox);
         }
     }
 
@@ -163,20 +160,14 @@ where
             return;
         }
 
-        let prepared = self
-            .primary
-            .prepared
-            .entry(prepare_ok.op_number)
-            .or_default();
+        let prepared = self.prepared.entry(prepare_ok.op_number).or_default();
 
         prepared.insert(prepare_ok.index);
 
         let committed = prepared.len() >= self.configuration.sub_majority();
 
         if committed {
-            self.primary
-                .prepared
-                .retain(|&o, _| o > prepare_ok.op_number);
+            self.prepared.retain(|&o, _| o > prepare_ok.op_number);
             self.commit_operations(prepare_ok.op_number, outbox);
         }
     }
@@ -223,6 +214,70 @@ where
             self.log.extend(new_state.log);
             self.commit_operations(new_state.committed, outbox);
         }
+    }
+
+    fn handle_start_view_change<O>(&mut self, start_view_change: StartViewChange, outbox: &mut O)
+    where
+        O: Outbox<Reply = S::Reply>,
+    {
+        if start_view_change.view > self.view {
+            self.start_view_change(start_view_change.view, outbox);
+        }
+
+        self.start_view_changes.insert(start_view_change.index);
+        if self.start_view_changes.len() >= self.configuration.sub_majority() {
+            outbox.send(
+                self.configuration % self.view,
+                &DoViewChange {
+                    view: self.view,
+                    last_normal_view: self.last_normal_view,
+                    log: self.log.clone(),
+                    committed: self.committed,
+                    index: self.index,
+                },
+            )
+        }
+    }
+
+    fn handle_do_view_change<O>(
+        &mut self,
+        do_view_change: DoViewChange<S::Request, S::Prediction>,
+        outbox: &mut O,
+    ) where
+        O: Outbox<Reply = S::Reply>,
+    {
+        if do_view_change.view > self.view {
+            self.start_view_change(do_view_change.view, outbox);
+        }
+
+        if self.is_backup() {
+            return;
+        }
+
+        self.do_view_changes
+            .insert(do_view_change.index, do_view_change);
+        if self.do_view_changes.len() >= self.configuration.quorum() {
+            todo!();
+        }
+    }
+
+    fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
+    where
+        O: Outbox<Reply = S::Reply>,
+    {
+        if self.status == Status::Normal {
+            self.last_normal_view = self.view;
+        }
+
+        self.view = view;
+        self.status = Status::ViewChange;
+        self.start_view_changes.clear();
+        self.do_view_changes.clear();
+
+        outbox.broadcast(&StartViewChange {
+            view: self.view,
+            index: self.index,
+        });
     }
 
     fn state_transfer<M>(&mut self, view: View, mailbox: &mut M)
