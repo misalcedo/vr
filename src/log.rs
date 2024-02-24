@@ -91,8 +91,8 @@ where
 }
 
 impl<R, P> Log<R, P> {
-    pub fn contains(&self, op_number: OpNumber) -> bool {
-        self.range().contains(&op_number)
+    pub fn contains(&self, op_number: &OpNumber) -> bool {
+        self.range().contains(op_number)
     }
 
     pub fn push(&mut self, view: View, request: Request<R>, prediction: P) -> &Entry<R, P> {

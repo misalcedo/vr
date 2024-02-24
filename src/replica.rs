@@ -89,17 +89,23 @@ where
             return;
         }
 
-        if protocol.view() > self.view {
+        if protocol.view() > self.view && !matches!(&protocol, &Protocol::NewState(_)) {
             self.state_transfer(protocol.view(), mailbox);
+            mailbox.send(self.index, &protocol);
         }
 
-        match protocol {
-            Protocol::Prepare(message) => self.handle_prepare(message, mailbox),
-            Protocol::PrepareOk(message) => self.handle_prepare_ok(message, mailbox),
-            Protocol::Commit(message) => self.handle_commit(message, mailbox),
-            Protocol::GetState(_) if self.is_normal() => {}
-            Protocol::StartViewChange(_) => {}
-            Protocol::DoViewChange(_) => {}
+        match (self.status, protocol) {
+            (Status::Normal, Protocol::Prepare(message)) => self.handle_prepare(message, mailbox),
+            (Status::Normal, Protocol::PrepareOk(message)) => {
+                self.handle_prepare_ok(message, mailbox)
+            }
+            (Status::Normal, Protocol::Commit(message)) => self.handle_commit(message, mailbox),
+            (Status::Normal, Protocol::GetState(message)) => {
+                self.handle_get_state(message, mailbox)
+            }
+            (Status::Normal, Protocol::NewState(message)) => {
+                self.handle_new_state(message, mailbox)
+            }
             _ => (),
         }
     }
@@ -125,13 +131,14 @@ where
     where
         M: Mailbox<Reply = S::Reply>,
     {
-        if self.is_primary() || self.log.contains(prepare.op_number) {
+        if self.is_primary() || self.log.contains(&prepare.op_number) {
             return;
         }
 
         let next = self.log.next_op_number();
         if next < prepare.op_number || next < prepare.committed {
             self.state_transfer(self.view, mailbox);
+            mailbox.send(self.index, &prepare);
         }
 
         self.client_table.start(&prepare.request);
@@ -178,15 +185,44 @@ where
     where
         M: Mailbox<Reply = S::Reply>,
     {
-        if self.is_primary() {
+        if self.is_primary() || commit.committed <= self.committed {
             return;
         }
 
-        if self.log.last_op_number() < commit.committed {
+        if !self.log.contains(&commit.committed) {
             self.state_transfer(self.view, mailbox);
+            mailbox.send(self.index, &commit);
         }
 
-        self.commit_operations(self.committed, mailbox);
+        self.commit_operations(commit.committed, mailbox);
+    }
+
+    fn handle_get_state<O>(&mut self, get_state: GetState, outbox: &mut O)
+    where
+        O: Outbox<Reply = S::Reply>,
+    {
+        outbox.send(
+            get_state.index,
+            &NewState {
+                view: self.view,
+                log: self.log.after(get_state.op_number),
+                committed: self.committed,
+            },
+        )
+    }
+
+    fn handle_new_state<O>(
+        &mut self,
+        new_state: NewState<S::Request, S::Prediction>,
+        outbox: &mut O,
+    ) where
+        O: Outbox<Reply = S::Reply>,
+    {
+        if new_state.log.first_op_number() == self.log.next_op_number() {
+            self.view = new_state.view;
+            self.log.extend(new_state.log);
+            self.commit_operations(new_state.committed, outbox);
+        }
     }
 
     fn state_transfer<M>(&mut self, view: View, mailbox: &mut M)
@@ -212,11 +248,6 @@ where
                 index: self.index,
             },
         );
-
-        let new_state: NewState<S::Request, S::Prediction> = mailbox.receive();
-
-        self.log.extend(new_state.log);
-        self.commit_operations(new_state.committed, mailbox);
     }
 
     fn is_primary(&self) -> bool {
