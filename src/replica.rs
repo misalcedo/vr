@@ -52,11 +52,11 @@ where
         match comparison {
             Ordering::Greater => {
                 let prediction = self.service.predict(&request.payload);
-                let entry = self.log.push(self.view, request, prediction);
+                let (entry, op_number) = self.log.push(self.view, request, prediction);
 
                 outbox.broadcast(&Prepare {
                     view: self.view,
-                    op_number: entry.viewstamp().op_number(),
+                    op_number,
                     request: entry.request().clone(),
                     prediction: entry.prediction().clone(),
                     committed: self.committed,

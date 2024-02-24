@@ -1,74 +1,66 @@
 use crate::request::Request;
-use crate::viewstamp::{OpNumber, View, Viewstamp};
+use crate::viewstamp::{OpNumber, View};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::ops::{Index, IndexMut, RangeInclusive};
+use std::ops::{Index, IndexMut};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Entry<R, P> {
-    viewstamp: Viewstamp,
     request: Request<R>,
     prediction: P,
 }
 
-impl<R, P> Eq for Entry<R, P> {}
-
-impl<R, P> PartialEq for Entry<R, P> {
-    fn eq(&self, other: &Self) -> bool {
-        self.viewstamp.eq(&other.viewstamp)
-    }
-}
-
 impl<R, P> Entry<R, P> {
-    fn new(viewstamp: Viewstamp, request: Request<R>, prediction: P) -> Self {
+    fn new(request: Request<R>, prediction: P) -> Self {
         Self {
-            viewstamp,
             request,
             prediction,
         }
     }
 
-    pub fn viewstamp(&self) -> &Viewstamp {
-        &self.viewstamp
-    }
-
     pub fn request(&self) -> &Request<R> {
         &self.request
     }
+
     pub fn prediction(&self) -> &P {
         &self.prediction
     }
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Log<R, P> {
-    op_number: OpNumber,
+    range: (OpNumber, OpNumber),
+    view: View,
     entries: Vec<Entry<R, P>>,
+}
+
+impl<R, P> Default for Log<R, P> {
+    fn default() -> Self {
+        Self {
+            range: (Default::default(), Default::default()),
+            view: Default::default(),
+            entries: vec![],
+        }
+    }
 }
 
 impl<R, P> Eq for Log<R, P> {}
 
 impl<R, P> PartialEq for Log<R, P> {
     fn eq(&self, other: &Self) -> bool {
-        self.entries.iter().eq(other.entries.iter())
+        self.view == other.view && self.range == other.range
     }
 }
 
 impl<R, P> Ord for Log<R, P> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.entries
-            .last()
-            .map(Entry::viewstamp)
-            .cmp(&other.entries.last().map(Entry::viewstamp))
+        (self.view, self.range.1).cmp(&(other.view, other.range.1))
     }
 }
 
 impl<R, P> PartialOrd for Log<R, P> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.entries
-            .last()
-            .map(Entry::viewstamp)
-            .partial_cmp(&other.entries.last().map(Entry::viewstamp))
+        (self.view, self.range.1).partial_cmp(&(other.view, other.range.1))
     }
 }
 
@@ -78,69 +70,67 @@ where
     P: Clone,
 {
     pub fn after(&self, latest: OpNumber) -> Self {
+        let entries = latest - self.range.0;
+
         Self {
-            op_number: self.op_number,
-            entries: self
-                .entries
-                .iter()
-                .skip(latest - self.first_op_number() + 1)
-                .cloned()
-                .collect(),
+            range: (latest.next(), self.range.1),
+            view: self.view,
+            entries: self.entries.iter().skip(entries + 1).cloned().collect(),
         }
     }
 }
 
 impl<R, P> Log<R, P> {
     pub fn contains(&self, op_number: &OpNumber) -> bool {
-        self.range().contains(op_number)
+        (self.range.0..=self.range.1).contains(op_number)
     }
 
-    pub fn push(&mut self, view: View, request: Request<R>, prediction: P) -> &Entry<R, P> {
-        self.op_number.increment();
+    pub fn push(
+        &mut self,
+        view: View,
+        request: Request<R>,
+        prediction: P,
+    ) -> (&Entry<R, P>, OpNumber) {
+        self.view = view;
+        self.range.1.increment();
 
-        let entry = Entry::new(Viewstamp::new(view, self.op_number), request, prediction);
+        if self.entries.is_empty() {
+            self.range.0.increment();
+        }
+
+        let entry = Entry::new(request, prediction);
+        let index = self.entries.len();
 
         self.entries.push(entry);
-        &self[self.op_number]
+
+        (&self.entries[index], self.range.1)
     }
 
     pub fn first_op_number(&self) -> OpNumber {
-        self.entries
-            .first()
-            .map(Entry::viewstamp)
-            .map(Viewstamp::op_number)
-            .unwrap_or_default()
+        self.range.0
     }
 
     pub fn last_op_number(&self) -> OpNumber {
-        self.op_number
+        self.range.1
     }
 
     pub fn next_op_number(&self) -> OpNumber {
-        self.op_number.next()
+        self.range.1.next()
     }
 
     pub fn get(&self, index: OpNumber) -> Option<&Entry<R, P>> {
-        self.entries.get(index - self.first_op_number())
+        self.entries.get(index - self.range.0)
     }
 
     pub fn truncate(&mut self, last: OpNumber) {
-        self.entries.truncate(last - self.first_op_number() + 1);
-        self.op_number = self
-            .entries
-            .last()
-            .map(Entry::viewstamp)
-            .map(Viewstamp::op_number)
-            .unwrap_or_default();
+        self.entries.truncate((last - self.range.0) + 1);
+        self.range.1 = last;
     }
 
     pub fn extend(&mut self, tail: Self) {
         self.entries.extend(tail.entries);
-        self.op_number = tail.op_number;
-    }
-
-    fn range(&self) -> RangeInclusive<OpNumber> {
-        self.first_op_number()..=self.last_op_number()
+        self.view = tail.view;
+        self.range.1 = tail.range.1;
     }
 }
 

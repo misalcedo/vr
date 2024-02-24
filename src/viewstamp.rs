@@ -49,22 +49,3 @@ impl View {
         Self(1 + self.0)
     }
 }
-
-#[derive(
-    Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
-)]
-pub struct Viewstamp(View, OpNumber);
-
-impl Viewstamp {
-    pub fn new(view: View, op_number: OpNumber) -> Self {
-        Self(view, op_number)
-    }
-
-    pub fn view(&self) -> View {
-        self.0
-    }
-
-    pub fn op_number(&self) -> OpNumber {
-        self.1
-    }
-}
