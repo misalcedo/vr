@@ -328,7 +328,7 @@ where
         committed: OpNumber,
         outbox: &mut impl Outbox<Reply = S::Reply>,
     ) {
-        if self.committed < committed {
+        while self.committed < committed {
             let entry = &self.log[self.committed];
             let request = entry.request();
             let reply = Reply {
