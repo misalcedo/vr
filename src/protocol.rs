@@ -1,5 +1,5 @@
 use crate::log::Log;
-use crate::request::Request;
+use crate::request::{Request, RequestIdentifier};
 use crate::viewstamp::{OpNumber, View};
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,8 @@ pub enum Protocol<R, P> {
     StartViewChange(StartViewChange),
     DoViewChange(DoViewChange<R, P>),
     StartView(StartView<R, P>),
+    Recovery(Recovery),
+    RecoveryResponse(RecoveryResponse<R, P>),
 }
 
 impl<R, P> TryFrom<Protocol<R, P>> for Prepare<R, P> {
@@ -68,6 +70,8 @@ where
             Protocol::StartViewChange(m) => m.view,
             Protocol::DoViewChange(m) => m.view,
             Protocol::StartView(m) => m.view,
+            Protocol::Recovery(m) => m.view(),
+            Protocol::RecoveryResponse(m) => m.view,
         }
     }
 }
@@ -209,6 +213,44 @@ pub struct StartView<R, P> {
 }
 
 impl<'a, R, P> Message<'a> for StartView<R, P>
+where
+    R: Serialize + Deserialize<'a>,
+    P: Serialize + Deserialize<'a>,
+{
+    fn view(&self) -> View {
+        self.view
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Recovery {
+    /// The index of the replica that needs to get the new state.
+    pub index: usize,
+    /// A value coined for single use to detect replays of previous recovery requests.
+    pub nonce: RequestIdentifier,
+}
+
+impl<'a> Message<'a> for Recovery {
+    fn view(&self) -> View {
+        Default::default()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RecoveryResponse<R, P> {
+    /// The current view of the replica.
+    pub view: View,
+    /// A value coined for single use to detect replays of previous recovery requests.
+    pub nonce: RequestIdentifier,
+    /// The log to use in the new view.
+    pub log: Log<R, P>,
+    /// The op-number of the latest committed request known to the replica.
+    pub committed: OpNumber,
+    /// The index of the sender.
+    pub index: usize,
+}
+
+impl<'a, R, P> Message<'a> for RecoveryResponse<R, P>
 where
     R: Serialize + Deserialize<'a>,
     P: Serialize + Deserialize<'a>,

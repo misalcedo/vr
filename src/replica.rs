@@ -3,10 +3,10 @@ use crate::configuration::Configuration;
 use crate::log::Log;
 use crate::mail::{Mailbox, Outbox};
 use crate::protocol::{
-    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol, StartView,
-    StartViewChange,
+    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol, Recovery,
+    RecoveryResponse, StartView, StartViewChange,
 };
-use crate::request::{Reply, Request};
+use crate::request::{Reply, Request, RequestIdentifier};
 use crate::service::Service;
 use crate::status::Status;
 use crate::viewstamp::{OpNumber, View};
@@ -21,15 +21,16 @@ where
 {
     configuration: Configuration,
     index: usize,
-    view: View,
+    service: S,
     status: Status,
+    view: View,
     log: Log<S::Request, S::Prediction>,
     committed: OpNumber,
     client_table: ClientTable<S::Reply>,
-    service: S,
     prepared: BTreeMap<OpNumber, HashSet<usize>>,
     start_view_changes: HashSet<usize>,
     do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
+    nonce: RequestIdentifier,
 }
 
 impl<'a, S> Replica<S>
@@ -39,6 +40,44 @@ where
     S::Prediction: Clone + Serialize + Deserialize<'a>,
     S::Reply: Serialize + Deserialize<'a>,
 {
+    pub fn new(configuration: Configuration, index: usize, service: S) -> Self {
+        Self {
+            configuration,
+            index,
+            service,
+            status: Status::Normal,
+            view: Default::default(),
+            log: Default::default(),
+            committed: Default::default(),
+            client_table: Default::default(),
+            prepared: Default::default(),
+            start_view_changes: Default::default(),
+            do_view_changes: Default::default(),
+            nonce: Default::default(),
+        }
+    }
+
+    pub fn recovering<O>(
+        configuration: Configuration,
+        index: usize,
+        service: S,
+        outbox: &mut O,
+    ) -> Self
+    where
+        O: Outbox<Reply = S::Reply>,
+    {
+        let mut replica = Self::new(configuration, index, service);
+
+        replica.status = Status::Recovering;
+
+        outbox.broadcast(&Recovery {
+            index,
+            nonce: replica.nonce,
+        });
+
+        replica
+    }
+
     pub fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
     where
         O: Outbox<Reply = S::Reply>,
@@ -101,6 +140,7 @@ where
             (Status::Normal, Protocol::GetState(message)) => {
                 self.handle_get_state(message, mailbox)
             }
+            (Status::Normal, Protocol::Recovery(message)) => self.handle_recovery(message, mailbox),
             _ => (),
         }
     }
@@ -194,7 +234,27 @@ where
                 log: self.log.after(get_state.op_number),
                 committed: self.committed,
             },
-        )
+        );
+    }
+
+    fn handle_recovery<O>(&mut self, recovery: Recovery, outbox: &mut O)
+    where
+        O: Outbox<Reply = S::Reply>,
+    {
+        let mut response = RecoveryResponse {
+            view: self.view,
+            nonce: recovery.nonce,
+            log: Default::default(),
+            committed: Default::default(),
+            index: self.index,
+        };
+
+        if self.is_primary() {
+            response.log = self.log.clone();
+            response.committed = self.committed;
+        }
+
+        outbox.send(recovery.index, &response);
     }
 
     fn handle_new_state<O>(
@@ -307,9 +367,9 @@ where
         });
     }
 
-    fn state_transfer<M>(&mut self, view: View, mailbox: &mut M)
+    fn state_transfer<O>(&mut self, view: View, outbox: &mut O)
     where
-        M: Mailbox<Reply = S::Reply>,
+        O: Outbox<Reply = S::Reply>,
     {
         if self.view < view {
             self.log.truncate(self.committed);
@@ -322,7 +382,7 @@ where
             replica += (replica + 1) % replicas;
         }
 
-        mailbox.send(
+        outbox.send(
             replica,
             &GetState {
                 view: self.view,
