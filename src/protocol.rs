@@ -16,6 +16,7 @@ pub enum Protocol<R, P> {
     NewState(NewState<R, P>),
     StartViewChange(StartViewChange),
     DoViewChange(DoViewChange<R, P>),
+    StartView(StartView<R, P>),
 }
 
 impl<R, P> TryFrom<Protocol<R, P>> for Prepare<R, P> {
@@ -66,6 +67,7 @@ where
             Protocol::NewState(m) => m.view,
             Protocol::StartViewChange(m) => m.view,
             Protocol::DoViewChange(m) => m.view,
+            Protocol::StartView(m) => m.view,
         }
     }
 }
@@ -206,7 +208,7 @@ pub struct StartView<R, P> {
     pub committed: OpNumber,
 }
 
-impl<'a, R, P> Message<'a> for crate::protocol::StartView<R, P>
+impl<'a, R, P> Message<'a> for StartView<R, P>
 where
     R: Serialize + Deserialize<'a>,
     P: Serialize + Deserialize<'a>,

@@ -43,10 +43,6 @@ where
     where
         O: Outbox<Reply = S::Reply>,
     {
-        if self.is_backup() {
-            return;
-        }
-
         let (cached_request, comparison) = self.client_table.get_mut(&request);
 
         match comparison {
@@ -92,6 +88,7 @@ where
             (Status::Normal | Status::ViewChange, Protocol::DoViewChange(message)) => {
                 self.handle_do_view_change(message, mailbox)
             }
+            (_, Protocol::StartView(message)) => self.handle_start_view(message, mailbox),
             (Status::Normal, message) if message.view() > self.view => {
                 self.state_transfer(message.view(), mailbox);
                 mailbox.send(self.index, &message);
@@ -126,7 +123,7 @@ where
     where
         M: Mailbox<Reply = S::Reply>,
     {
-        if self.is_primary() || self.log.contains(&prepare.op_number) {
+        if self.log.contains(&prepare.op_number) {
             return;
         }
 
@@ -154,7 +151,7 @@ where
     where
         O: Outbox<Reply = S::Reply>,
     {
-        if self.is_backup() || prepare_ok.op_number <= self.committed {
+        if prepare_ok.op_number <= self.committed {
             return;
         }
 
@@ -174,7 +171,7 @@ where
     where
         M: Mailbox<Reply = S::Reply>,
     {
-        if self.is_primary() || commit.committed <= self.committed {
+        if commit.committed <= self.committed {
             return;
         }
 
@@ -247,10 +244,6 @@ where
             self.start_view_change(do_view_change.view, outbox);
         }
 
-        if self.is_backup() {
-            return;
-        }
-
         self.do_view_changes
             .insert(do_view_change.index, do_view_change);
 
@@ -281,7 +274,23 @@ where
             });
 
             self.commit_operations(committed, outbox);
+            self.start_preparing_operations(outbox);
         }
+    }
+
+    fn handle_start_view<O>(
+        &mut self,
+        start_view: StartView<S::Request, S::Prediction>,
+        outbox: &mut O,
+    ) where
+        O: Outbox<Reply = S::Reply>,
+    {
+        self.log = start_view.log;
+        self.view = start_view.view;
+
+        self.set_status(Status::Normal);
+        self.commit_operations(start_view.committed, outbox);
+        self.start_preparing_operations(outbox);
     }
 
     fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
@@ -344,6 +353,30 @@ where
             }
 
             self.client_table.finish(request, reply);
+        }
+    }
+
+    fn start_preparing_operations(&mut self, outbox: &mut impl Outbox<Reply = S::Reply>) {
+        let mut current = self.committed.next();
+
+        while self.log.contains(&current) {
+            let entry = &self.log[current];
+            let request = entry.request();
+
+            self.client_table.start(request);
+
+            if self.is_backup() {
+                outbox.send(
+                    self.configuration % self.view,
+                    &PrepareOk {
+                        view: self.view,
+                        op_number: current,
+                        index: self.index,
+                    },
+                );
+            }
+
+            current.increment();
         }
     }
 
