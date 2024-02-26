@@ -324,30 +324,6 @@ where
         );
     }
 
-    fn is_primary(&self) -> bool {
-        (self.configuration % self.view) == self.index
-    }
-
-    fn is_backup(&self) -> bool {
-        !self.is_primary()
-    }
-
-    fn is_normal(&self) -> bool {
-        self.status == Status::Normal
-    }
-
-    fn is_recovering(&self) -> bool {
-        self.status == Status::Recovering
-    }
-
-    fn is_view_change(&self) -> bool {
-        self.status == Status::ViewChange
-    }
-
-    pub fn is_quorum(&self, value: usize) -> bool {
-        self.configuration.quorum() <= value
-    }
-
     fn commit_operations(
         &mut self,
         committed: OpNumber,
@@ -375,7 +351,25 @@ where
     fn set_status(&mut self, status: Status) {
         self.status = status;
         self.prepared.clear();
-        self.start_view_changes = Default::default();
-        self.do_view_changes = Default::default();
+
+        match self.status {
+            Status::ViewChange => {
+                self.start_view_changes = HashSet::with_capacity(self.configuration.sub_majority());
+                self.do_view_changes = HashMap::with_capacity(self.configuration.quorum());
+            }
+            _ => {
+                // Avoid allocating unless we need it for a view change.
+                self.start_view_changes = Default::default();
+                self.do_view_changes = Default::default();
+            }
+        }
+    }
+
+    fn is_primary(&self) -> bool {
+        (self.configuration % self.view) == self.index
+    }
+
+    fn is_backup(&self) -> bool {
+        !self.is_primary()
     }
 }
