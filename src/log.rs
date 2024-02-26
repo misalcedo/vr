@@ -29,16 +29,16 @@ impl<R, P> Entry<R, P> {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Log<R, P> {
-    range: (OpNumber, OpNumber),
     view: View,
+    range: (OpNumber, OpNumber),
     entries: Vec<Entry<R, P>>,
 }
 
 impl<R, P> Default for Log<R, P> {
     fn default() -> Self {
         Self {
-            range: (Default::default(), Default::default()),
             view: Default::default(),
+            range: (Default::default(), Default::default()),
             entries: vec![],
         }
     }
@@ -73,8 +73,8 @@ where
         let entries = latest - self.range.0;
 
         Self {
-            range: (latest.next(), self.range.1),
             view: self.view,
+            range: (latest.next(), self.range.1),
             entries: self.entries.iter().skip(entries + 1).cloned().collect(),
         }
     }
@@ -127,14 +127,14 @@ impl<R, P> Log<R, P> {
     }
 
     pub fn truncate(&mut self, last: OpNumber) {
-        self.entries.truncate((last - self.range.0) + 1);
         self.range.1 = last;
+        self.entries.truncate((last - self.range.0) + 1);
     }
 
     pub fn extend(&mut self, tail: Self) {
-        self.entries.extend(tail.entries);
         self.view = tail.view;
         self.range.1 = tail.range.1;
+        self.entries.extend(tail.entries);
     }
 }
 
