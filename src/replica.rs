@@ -263,25 +263,24 @@ where
                 .map(|v| v.committed)
                 .max()
                 .unwrap_or(self.committed);
-            let max = self
+            let do_view_change = self
                 .do_view_changes
                 .drain()
                 .map(|(k, v)| v)
-                .max_by(|x, y| x.log.cmp(&y.log));
+                .max_by(|x, y| x.log.cmp(&y.log))
+                .expect("did not have quorum DoViewChange messages");
 
-            if let Some(do_view_change) = max {
-                self.log = do_view_change.log;
-                self.view = do_view_change.view;
-                self.set_status(Status::Normal);
+            self.log = do_view_change.log;
+            self.view = do_view_change.view;
+            self.set_status(Status::Normal);
 
-                outbox.broadcast(&StartView {
-                    view: self.view,
-                    log: self.log.clone(),
-                    committed,
-                });
+            outbox.broadcast(&StartView {
+                view: self.view,
+                log: self.log.clone(),
+                committed,
+            });
 
-                self.commit_operations(committed, outbox);
-            }
+            self.commit_operations(committed, outbox);
         }
     }
 
@@ -350,15 +349,15 @@ where
 
     fn set_status(&mut self, status: Status) {
         self.status = status;
-        self.prepared.clear();
+        self.prepared = Default::default();
 
+        // Avoid allocating unless we need it for the current protocol.
         match self.status {
             Status::ViewChange => {
                 self.start_view_changes = HashSet::with_capacity(self.configuration.sub_majority());
                 self.do_view_changes = HashMap::with_capacity(self.configuration.quorum());
             }
             _ => {
-                // Avoid allocating unless we need it for a view change.
                 self.start_view_changes = Default::default();
                 self.do_view_changes = Default::default();
             }
