@@ -92,9 +92,9 @@ where
             (Status::Normal | Status::ViewChange, Protocol::DoViewChange(message)) => {
                 self.handle_do_view_change(message, mailbox)
             }
-            (_, p) if p.view() > self.view => {
-                self.state_transfer(p.view(), mailbox);
-                mailbox.send(self.index, &p);
+            (Status::Normal, message) if message.view() > self.view => {
+                self.state_transfer(message.view(), mailbox);
+                mailbox.send(self.index, &message);
             }
             (Status::Normal, Protocol::Prepare(message)) => self.handle_prepare(message, mailbox),
             (Status::Normal, Protocol::PrepareOk(message)) => {
