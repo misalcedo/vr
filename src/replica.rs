@@ -143,6 +143,9 @@ where
                 self.handle_get_state(message, mailbox)
             }
             (Status::Normal, Protocol::Recovery(message)) => self.handle_recovery(message, mailbox),
+            (Status::Recovering, Protocol::RecoveryResponse(message)) => {
+                self.handle_recovery_response(message, mailbox)
+            }
             _ => (),
         }
     }
@@ -259,6 +262,39 @@ where
         outbox.send(recovery.index, &response);
     }
 
+    fn handle_recovery_response<O>(
+        &mut self,
+        recovery_response: RecoveryResponse<S::Request, S::Prediction>,
+        outbox: &mut O,
+    ) where
+        O: Outbox<Reply = S::Reply>,
+    {
+        if self.nonce != recovery_response.nonce {
+            return;
+        }
+
+        self.recovery_responses
+            .insert(recovery_response.index, recovery_response);
+
+        if self.recovery_responses.len() >= self.configuration.quorum() {
+            let view = self
+                .recovery_responses
+                .values()
+                .map(|r| r.view)
+                .max()
+                .unwrap_or_default();
+            let primary = self.configuration % view;
+
+            if let Some(primary_response) = self.recovery_responses.remove(&primary) {
+                self.view = primary_response.view;
+                self.log = primary_response.log;
+                self.set_status(Status::Normal);
+                self.commit_operations(primary_response.committed, outbox);
+                self.start_preparing_operations(outbox);
+            }
+        }
+    }
+
     fn handle_new_state<O>(
         &mut self,
         new_state: NewState<S::Request, S::Prediction>,
@@ -270,6 +306,7 @@ where
             self.view = new_state.view;
             self.log.extend(new_state.log);
             self.commit_operations(new_state.committed, outbox);
+            self.start_preparing_operations(outbox);
         }
     }
 
@@ -318,25 +355,25 @@ where
                 .map(|v| v.committed)
                 .max()
                 .unwrap_or(self.committed);
-            let do_view_change = self
+            if let Some(do_view_change) = self
                 .do_view_changes
                 .drain()
                 .map(|(k, v)| v)
                 .max_by(|x, y| x.log.cmp(&y.log))
-                .expect("did not have quorum DoViewChange messages");
+            {
+                self.log = do_view_change.log;
+                self.view = do_view_change.view;
+                self.set_status(Status::Normal);
 
-            self.log = do_view_change.log;
-            self.view = do_view_change.view;
-            self.set_status(Status::Normal);
+                outbox.broadcast(&StartView {
+                    view: self.view,
+                    log: self.log.clone(),
+                    committed,
+                });
 
-            outbox.broadcast(&StartView {
-                view: self.view,
-                log: self.log.clone(),
-                committed,
-            });
-
-            self.commit_operations(committed, outbox);
-            self.start_preparing_operations(outbox);
+                self.commit_operations(committed, outbox);
+                self.start_preparing_operations(outbox);
+            }
         }
     }
 
@@ -347,8 +384,8 @@ where
     ) where
         O: Outbox<Reply = S::Reply>,
     {
-        self.log = start_view.log;
         self.view = start_view.view;
+        self.log = start_view.log;
 
         self.set_status(Status::Normal);
         self.commit_operations(start_view.committed, outbox);
