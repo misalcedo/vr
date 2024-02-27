@@ -1,16 +1,10 @@
-use crate::protocol::{Message, Protocol};
-use crate::request::{ClientIdentifier, Reply, Request};
-use std::future::Future;
+use crate::protocol::Message;
+use crate::request::{ClientIdentifier, Reply};
 
 pub trait Inbox {
     fn receive<'a, M>(&mut self) -> M
     where
         M: Message<'a>;
-}
-
-pub enum Either<L, R> {
-    Left(L),
-    Right(R),
 }
 
 pub trait Outbox {

@@ -24,9 +24,16 @@ impl<R> CachedRequest<R> {
     }
 }
 
-#[derive(Default)]
 pub struct ClientTable<R> {
     cache: HashMap<ClientIdentifier, CachedRequest<R>>,
+}
+
+impl<R> Default for ClientTable<R> {
+    fn default() -> Self {
+        Self {
+            cache: Default::default(),
+        }
+    }
 }
 
 impl<R> ClientTable<R> {

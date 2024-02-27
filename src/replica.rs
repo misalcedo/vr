@@ -11,13 +11,12 @@ use crate::service::Service;
 use crate::status::Status;
 use crate::viewstamp::{OpNumber, View};
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub struct Replica<S>
+pub struct Replica<'a, S>
 where
-    S: Service,
+    S: Service<'a>,
 {
     configuration: Configuration,
     index: usize,
@@ -34,12 +33,9 @@ where
     nonce: RequestIdentifier,
 }
 
-impl<'a, S> Replica<S>
+impl<'a, S> Replica<'a, S>
 where
-    S: Service,
-    S::Request: Clone + Serialize + Deserialize<'a>,
-    S::Prediction: Clone + Serialize + Deserialize<'a>,
-    S::Reply: Serialize + Deserialize<'a>,
+    S: Service<'a>,
 {
     pub fn new(configuration: Configuration, index: usize, service: S) -> Self {
         Self {
@@ -358,7 +354,7 @@ where
             if let Some(do_view_change) = self
                 .do_view_changes
                 .drain()
-                .map(|(k, v)| v)
+                .map(|(_, v)| v)
                 .max_by(|x, y| x.log.cmp(&y.log))
             {
                 self.log = do_view_change.log;

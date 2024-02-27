@@ -26,10 +26,8 @@ impl Client {
     pub fn new_request<P>(&mut self, payload: P) -> Request<P> {
         let request = self
             .last_request
-            .map(RequestIdentifier::next)
-            .unwrap_or_default();
-
-        self.last_request = Some(request);
+            .get_or_insert_with(Default::default)
+            .next();
 
         Request {
             payload,

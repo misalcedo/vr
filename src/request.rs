@@ -20,9 +20,13 @@ impl Default for RequestIdentifier {
 }
 
 impl RequestIdentifier {
-    pub fn next(&mut self) -> Self {
+    pub fn increment(&mut self) -> Self {
         *self = Self::default();
         *self
+    }
+
+    pub fn next(&self) -> Self {
+        Self::default()
     }
 }
 
@@ -34,16 +38,6 @@ pub struct Request<R> {
     pub client: ClientIdentifier,
     /// Client-assigned number for the request.
     pub id: RequestIdentifier,
-}
-
-impl<R> Request<R> {
-    pub fn owned_reference(&self) -> Request<&R> {
-        Request {
-            payload: &self.payload,
-            client: Default::default(),
-            id: Default::default(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
