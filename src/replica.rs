@@ -30,6 +30,7 @@ where
     prepared: BTreeMap<OpNumber, HashSet<usize>>,
     start_view_changes: HashSet<usize>,
     do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
+    recovery_responses: HashMap<usize, RecoveryResponse<S::Request, S::Prediction>>,
     nonce: RequestIdentifier,
 }
 
@@ -53,6 +54,7 @@ where
             prepared: Default::default(),
             start_view_changes: Default::default(),
             do_view_changes: Default::default(),
+            recovery_responses: Default::default(),
             nonce: Default::default(),
         }
     }
@@ -443,6 +445,9 @@ where
     fn set_status(&mut self, status: Status) {
         self.status = status;
         self.prepared = Default::default();
+
+        // We only need this on a new replica. Therefore, we can deallocate on any status change.
+        self.recovery_responses = Default::default();
 
         // Avoid allocating unless we need it for the current protocol.
         match self.status {
