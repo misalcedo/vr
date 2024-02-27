@@ -2,6 +2,7 @@ use crate::request::Request;
 use crate::viewstamp::{OpNumber, View};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::ops::{Index, IndexMut};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -31,7 +32,7 @@ impl<R, P> Entry<R, P> {
 pub struct Log<R, P> {
     view: View,
     range: (OpNumber, OpNumber),
-    entries: Vec<Entry<R, P>>,
+    entries: VecDeque<Entry<R, P>>,
 }
 
 impl<R, P> Default for Log<R, P> {
@@ -39,7 +40,7 @@ impl<R, P> Default for Log<R, P> {
         Self {
             view: Default::default(),
             range: (Default::default(), Default::default()),
-            entries: vec![],
+            entries: Default::default(),
         }
     }
 }
@@ -101,7 +102,7 @@ impl<R, P> Log<R, P> {
         let entry = Entry::new(request, prediction);
         let index = self.entries.len();
 
-        self.entries.push(entry);
+        self.entries.push_back(entry);
 
         (&self.entries[index], self.range.1)
     }
@@ -124,6 +125,18 @@ impl<R, P> Log<R, P> {
 
     pub fn get(&self, index: OpNumber) -> Option<&Entry<R, P>> {
         self.entries.get(index - self.range.0)
+    }
+
+    pub fn compact(&mut self, start: OpNumber) {
+        if start == self.range.0 {
+            return;
+        }
+
+        let old_start = self.range.0;
+        let index = (start - old_start) - 1;
+
+        self.range.0 = start;
+        self.entries.drain(..index);
     }
 
     pub fn truncate(&mut self, last: OpNumber) {

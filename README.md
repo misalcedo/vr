@@ -23,6 +23,7 @@ waiting for `f` responses and deterministically merging the values.
 - Support for configuration changes.
 - Support for networked communication.
 - Log compaction.
+- Make non-determinism and checkpointing optional for services to implement.
 
 ## Links
 

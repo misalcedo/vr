@@ -12,7 +12,7 @@ use crate::status::Status;
 use crate::viewstamp::{OpNumber, View};
 use rand::Rng;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 pub struct Replica<'a, S>
 where
@@ -31,6 +31,7 @@ where
     do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
     recovery_responses: HashMap<usize, RecoveryResponse<S::Request, S::Prediction>>,
     nonce: RequestIdentifier,
+    checkpoints: VecDeque<OpNumber>,
 }
 
 impl<'a, S> Replica<'a, S>
@@ -52,6 +53,7 @@ where
             do_view_changes: Default::default(),
             recovery_responses: Default::default(),
             nonce: Default::default(),
+            checkpoints: Default::default(),
         }
     }
 
@@ -74,6 +76,29 @@ where
         });
 
         replica
+    }
+
+    pub fn checkpoint(&mut self) -> S::Checkpoint {
+        self.checkpoints.push_back(self.log.last_op_number());
+        self.service.checkpoint()
+    }
+
+    pub fn compact(&mut self, suffix: usize) -> Option<OpNumber> {
+        if self.checkpoints.len() <= suffix {
+            return None;
+        }
+
+        let mut checkpoint = self.checkpoints.pop_front()?;
+
+        while self.checkpoints.len() > suffix {
+            checkpoint = self.checkpoints.pop_front()?;
+        }
+
+        let cutoff = checkpoint.next();
+
+        self.log.compact(cutoff);
+
+        Some(cutoff)
     }
 
     pub fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
