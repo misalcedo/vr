@@ -15,6 +15,17 @@ prepare to all replicas.
 Currently, there is no support for other solutions mentioned in the literature such as sending a predict message,
 waiting for `f` responses and deterministically merging the values.
 
+## Log Compaction
+
+Supports log compaction by regularly taking checkpoints of the service state to be durably stored.
+A service must be restore-able from a checkpoint.
+Once a large enough suffix of checkpoints exists, the log may be compacted to remove all operations included in the last
+checkpoint before the suffix.
+
+For example, imagine a configuration that takes a checkpoint every 5 minutes and keeps the last 3 checkpoints.
+The log will be compacted on the 4th checkpoint and any operations whose application state is reflected in 1st
+checkpoint will be removed from the log.
+
 ## TODOs
 
 - Define mechanism for recovering replicas to fetch configuration upon receiving a protocol message.
@@ -22,7 +33,8 @@ waiting for `f` responses and deterministically merging the values.
 - Support stale read-only requests on backups.
 - Support for configuration changes.
 - Support for networked communication.
-- Log compaction.
+- Support fetching the checkpoints from other replicas when recovering.
+- Support copy-on-write semantics in log compaction to reduce the cost of checkpoints.
 - Make non-determinism and checkpointing optional for services to implement.
 
 ## Links

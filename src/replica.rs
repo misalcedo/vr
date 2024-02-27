@@ -83,22 +83,16 @@ where
         self.service.checkpoint()
     }
 
-    pub fn compact(&mut self, suffix: usize) -> Option<OpNumber> {
+    pub fn compact(&mut self, suffix: usize) {
         if self.checkpoints.len() <= suffix {
-            return None;
+            return;
         }
 
-        let mut checkpoint = self.checkpoints.pop_front()?;
-
-        while self.checkpoints.len() > suffix {
-            checkpoint = self.checkpoints.pop_front()?;
-        }
-
-        let cutoff = checkpoint.next();
+        let index = self.checkpoints.len() - suffix;
+        let checkpoint = self.checkpoints.drain(..index).last();
+        let cutoff = checkpoint.unwrap_or_default().next();
 
         self.log.compact(cutoff);
-
-        Some(cutoff)
     }
 
     pub fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
