@@ -8,8 +8,6 @@ pub trait Inbox {
 }
 
 pub trait Outbox {
-    type Reply;
-
     fn send<'a, M>(&mut self, index: usize, message: &M)
     where
         M: Message<'a>;
@@ -18,7 +16,7 @@ pub trait Outbox {
     where
         M: Message<'a>;
 
-    fn reply(&mut self, client: ClientIdentifier, reply: &Reply<Self::Reply>);
+    fn reply<R>(&mut self, client: ClientIdentifier, reply: &Reply<R>);
 }
 
 pub trait Mailbox: Inbox + Outbox {}

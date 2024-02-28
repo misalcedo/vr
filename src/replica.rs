@@ -64,7 +64,7 @@ where
         outbox: &mut O,
     ) -> Self
     where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         let mut replica = Self::new(configuration, index, service);
 
@@ -97,7 +97,7 @@ where
 
     pub fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
     where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         let (cached_request, comparison) = self.client_table.get_mut(&request);
 
@@ -131,7 +131,7 @@ where
         protocol: Protocol<S::Request, S::Prediction>,
         mailbox: &mut M,
     ) where
-        M: Mailbox<Reply = S::Reply>,
+        M: Mailbox,
     {
         match (self.status, protocol) {
             (_, p) if p.view() < self.view => {}
@@ -167,7 +167,7 @@ where
 
     pub fn idle<O>(&mut self, outbox: &mut O)
     where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         if self.is_primary() {
             outbox.broadcast(&Commit {
@@ -181,7 +181,7 @@ where
 
     fn handle_prepare<M>(&mut self, prepare: Prepare<S::Request, S::Prediction>, mailbox: &mut M)
     where
-        M: Mailbox<Reply = S::Reply>,
+        M: Mailbox,
     {
         if self.log.contains(&prepare.op_number) {
             return;
@@ -209,7 +209,7 @@ where
 
     fn handle_prepare_ok<O>(&mut self, prepare_ok: PrepareOk, outbox: &mut O)
     where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         if prepare_ok.op_number <= self.committed {
             return;
@@ -229,7 +229,7 @@ where
 
     fn handle_commit<M>(&mut self, commit: Commit, mailbox: &mut M)
     where
-        M: Mailbox<Reply = S::Reply>,
+        M: Mailbox,
     {
         if commit.committed <= self.committed {
             return;
@@ -245,7 +245,7 @@ where
 
     fn handle_get_state<O>(&mut self, get_state: GetState, outbox: &mut O)
     where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         outbox.send(
             get_state.index,
@@ -259,7 +259,7 @@ where
 
     fn handle_recovery<O>(&mut self, recovery: Recovery, outbox: &mut O)
     where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         let mut response = RecoveryResponse {
             view: self.view,
@@ -282,7 +282,7 @@ where
         recovery_response: RecoveryResponse<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         if self.nonce != recovery_response.nonce {
             return;
@@ -315,7 +315,7 @@ where
         new_state: NewState<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         if new_state.log.first_op_number() == self.log.next_op_number() {
             self.view = new_state.view;
@@ -327,7 +327,7 @@ where
 
     fn handle_start_view_change<O>(&mut self, start_view_change: StartViewChange, outbox: &mut O)
     where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         if start_view_change.view > self.view {
             self.start_view_change(start_view_change.view, outbox);
@@ -352,7 +352,7 @@ where
         do_view_change: DoViewChange<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         if do_view_change.view > self.view {
             self.start_view_change(do_view_change.view, outbox);
@@ -397,7 +397,7 @@ where
         start_view: StartView<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         self.view = start_view.view;
         self.log = start_view.log;
@@ -409,7 +409,7 @@ where
 
     fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
     where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         self.view = view;
 
@@ -423,7 +423,7 @@ where
 
     fn state_transfer<O>(&mut self, view: View, outbox: &mut O)
     where
-        O: Outbox<Reply = S::Reply>,
+        O: Outbox,
     {
         if self.view < view {
             self.log.truncate(self.committed);
@@ -446,11 +446,7 @@ where
         );
     }
 
-    fn commit_operations(
-        &mut self,
-        committed: OpNumber,
-        outbox: &mut impl Outbox<Reply = S::Reply>,
-    ) {
+    fn commit_operations(&mut self, committed: OpNumber, outbox: &mut impl Outbox) {
         while self.committed < committed {
             let entry = &self.log[self.committed];
             let request = entry.request();
@@ -470,7 +466,7 @@ where
         }
     }
 
-    fn start_preparing_operations(&mut self, outbox: &mut impl Outbox<Reply = S::Reply>) {
+    fn start_preparing_operations(&mut self, outbox: &mut impl Outbox) {
         let mut current = self.committed.next();
 
         while self.log.contains(&current) {
