@@ -23,25 +23,25 @@ impl BufferedMailbox {
 }
 
 impl Inbox for BufferedMailbox {
-    fn receive<'a, M>(&mut self) -> M
+    fn receive<M>(&mut self) -> M
     where
-        M: Message<'a>,
+        M: Message,
     {
         todo!()
     }
 }
 
 impl Outbox for BufferedMailbox {
-    fn send<'a, M>(&mut self, index: usize, message: &M)
+    fn send<M>(&mut self, index: usize, message: &M)
     where
-        M: Message<'a>,
+        M: Message,
     {
         todo!()
     }
 
-    fn broadcast<'a, M>(&mut self, message: &M)
+    fn broadcast<M>(&mut self, message: &M)
     where
-        M: Message<'a>,
+        M: Message,
     {
         todo!()
     }

@@ -3,11 +3,24 @@ use crate::request::{Request, RequestIdentifier};
 use crate::viewstamp::{OpNumber, View};
 use serde::{Deserialize, Serialize};
 
-pub trait Message<'a>: Serialize + Deserialize<'a> {
+/// A trait to associate all the necessary types together.
+/// All associated types must be serializable and not borrow data since replicas need to store these values.
+pub trait Protocol {
+    type Request: Payload;
+    type Prediction: Payload;
+    type Reply: Payload;
+    type Checkpoint: Payload;
+}
+
+pub trait Payload: Clone + Serialize + Deserialize<'static> {}
+
+impl<P> Payload for P where P: Clone + Serialize + Deserialize<'static> {}
+
+pub trait Message: Payload {
     fn view(&self) -> View;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Prepare<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -21,17 +34,17 @@ pub struct Prepare<R, P> {
     pub committed: OpNumber,
 }
 
-impl<'a, R, P> Message<'a> for Prepare<R, P>
+impl<R, P> Message for Prepare<R, P>
 where
-    R: Serialize + Deserialize<'a>,
-    P: Serialize + Deserialize<'a>,
+    R: Payload,
+    P: Payload,
 {
     fn view(&self) -> View {
         self.view
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PrepareOk {
     /// The current view of the replica.
     pub view: View,
@@ -41,13 +54,13 @@ pub struct PrepareOk {
     pub index: usize,
 }
 
-impl<'a> Message<'a> for PrepareOk {
+impl<'a> Message for PrepareOk {
     fn view(&self) -> View {
         self.view
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Commit {
     /// The current view of the replica.
     pub view: View,
@@ -55,13 +68,13 @@ pub struct Commit {
     pub committed: OpNumber,
 }
 
-impl<'a> Message<'a> for Commit {
+impl<'a> Message for Commit {
     fn view(&self) -> View {
         self.view
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct GetState {
     /// The current view of the replica.
     pub view: View,
@@ -71,13 +84,13 @@ pub struct GetState {
     pub index: usize,
 }
 
-impl<'a> Message<'a> for GetState {
+impl<'a> Message for GetState {
     fn view(&self) -> View {
         self.view
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NewState<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -87,17 +100,17 @@ pub struct NewState<R, P> {
     pub committed: OpNumber,
 }
 
-impl<'a, R, P> Message<'a> for NewState<R, P>
+impl<R, P> Message for NewState<R, P>
 where
-    R: Serialize + Deserialize<'a>,
-    P: Serialize + Deserialize<'a>,
+    R: Payload,
+    P: Payload,
 {
     fn view(&self) -> View {
         self.view
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StartViewChange {
     /// The current view of the replica.
     pub view: View,
@@ -105,13 +118,13 @@ pub struct StartViewChange {
     pub index: usize,
 }
 
-impl<'a> Message<'a> for StartViewChange {
+impl<'a> Message for StartViewChange {
     fn view(&self) -> View {
         self.view
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DoViewChange<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -123,17 +136,17 @@ pub struct DoViewChange<R, P> {
     pub index: usize,
 }
 
-impl<'a, R, P> Message<'a> for DoViewChange<R, P>
+impl<R, P> Message for DoViewChange<R, P>
 where
-    R: Serialize + Deserialize<'a>,
-    P: Serialize + Deserialize<'a>,
+    R: Payload,
+    P: Payload,
 {
     fn view(&self) -> View {
         self.view
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StartView<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -143,17 +156,17 @@ pub struct StartView<R, P> {
     pub committed: OpNumber,
 }
 
-impl<'a, R, P> Message<'a> for StartView<R, P>
+impl<R, P> Message for StartView<R, P>
 where
-    R: Serialize + Deserialize<'a>,
-    P: Serialize + Deserialize<'a>,
+    R: Payload,
+    P: Payload,
 {
     fn view(&self) -> View {
         self.view
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Recovery {
     /// The index of the replica that needs to get the new state.
     pub index: usize,
@@ -161,13 +174,13 @@ pub struct Recovery {
     pub nonce: RequestIdentifier,
 }
 
-impl<'a> Message<'a> for Recovery {
+impl<'a> Message for Recovery {
     fn view(&self) -> View {
         Default::default()
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RecoveryResponse<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -181,10 +194,10 @@ pub struct RecoveryResponse<R, P> {
     pub index: usize,
 }
 
-impl<'a, R, P> Message<'a> for RecoveryResponse<R, P>
+impl<R, P> Message for RecoveryResponse<R, P>
 where
-    R: Serialize + Deserialize<'a>,
-    P: Serialize + Deserialize<'a>,
+    R: Payload,
+    P: Payload,
 {
     fn view(&self) -> View {
         self.view

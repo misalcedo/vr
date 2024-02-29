@@ -1,14 +1,12 @@
-use serde::{Deserialize, Serialize};
+use crate::protocol::Protocol;
 
-pub trait Service<'a>: From<Self::Checkpoint> {
-    type Request: Clone + Serialize + Deserialize<'a>;
-    type Prediction: Clone + Serialize + Deserialize<'a>;
-    type Reply: Clone + Serialize + Deserialize<'a>;
-    type Checkpoint: Clone + Serialize + Deserialize<'a>;
+pub trait Service<P>: From<P::Checkpoint>
+where
+    P: Protocol,
+{
+    fn predict(&mut self, request: &P::Request) -> P::Prediction;
 
-    fn predict(&mut self, request: &Self::Request) -> Self::Prediction;
+    fn checkpoint(&mut self) -> P::Checkpoint;
 
-    fn checkpoint(&mut self) -> Self::Checkpoint;
-
-    fn invoke(&mut self, request: &Self::Request, prediction: &Self::Prediction) -> Self::Reply;
+    fn invoke(&mut self, request: &P::Request, prediction: &P::Prediction) -> P::Reply;
 }

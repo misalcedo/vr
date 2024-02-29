@@ -3,7 +3,7 @@ use crate::configuration::Configuration;
 use crate::log::Log;
 use crate::mail::Outbox;
 use crate::protocol::{
-    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Recovery,
+    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol, Recovery,
     RecoveryResponse, StartView, StartViewChange,
 };
 use crate::request::{Reply, Request, RequestIdentifier};
@@ -14,29 +14,31 @@ use rand::Rng;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-pub struct Replica<'a, S>
+pub struct Replica<S, P>
 where
-    S: Service<'a>,
+    S: Service<P>,
+    P: Protocol,
 {
     configuration: Configuration,
     index: usize,
     service: S,
     status: Status,
     view: View,
-    log: Log<S::Request, S::Prediction>,
+    log: Log<P::Request, P::Prediction>,
     committed: OpNumber,
-    client_table: ClientTable<S::Reply>,
+    client_table: ClientTable<P::Reply>,
     prepared: BTreeMap<OpNumber, HashSet<usize>>,
     start_view_changes: HashSet<usize>,
-    do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
-    recovery_responses: HashMap<usize, RecoveryResponse<S::Request, S::Prediction>>,
+    do_view_changes: HashMap<usize, DoViewChange<P::Request, P::Prediction>>,
+    recovery_responses: HashMap<usize, RecoveryResponse<P::Request, P::Prediction>>,
     nonce: RequestIdentifier,
     checkpoints: VecDeque<OpNumber>,
 }
 
-impl<'a, S> Replica<'a, S>
+impl<S, P> Replica<S, P>
 where
-    S: Service<'a>,
+    S: Service<P>,
+    P: Protocol,
 {
     pub fn new(configuration: Configuration, index: usize, service: S) -> Self {
         Self {
@@ -78,7 +80,7 @@ where
         replica
     }
 
-    pub fn checkpoint(&mut self) -> S::Checkpoint {
+    pub fn checkpoint(&mut self) -> P::Checkpoint {
         self.checkpoints.push_back(self.log.last_op_number());
         self.service.checkpoint()
     }
@@ -109,7 +111,7 @@ where
         }
     }
 
-    pub fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
+    pub fn handle_request<O>(&mut self, request: Request<P::Request>, outbox: &mut O)
     where
         O: Outbox,
     {
@@ -137,7 +139,7 @@ where
         }
     }
 
-    pub fn handle_prepare<O>(&mut self, message: Prepare<S::Request, S::Prediction>, outbox: &mut O)
+    pub fn handle_prepare<O>(&mut self, message: Prepare<P::Request, P::Prediction>, outbox: &mut O)
     where
         O: Outbox,
     {
@@ -265,7 +267,7 @@ where
 
     pub fn handle_recovery_response<O>(
         &mut self,
-        message: RecoveryResponse<S::Request, S::Prediction>,
+        message: RecoveryResponse<P::Request, P::Prediction>,
         outbox: &mut O,
     ) where
         O: Outbox,
@@ -297,7 +299,7 @@ where
 
     pub fn handle_new_state<O>(
         &mut self,
-        message: NewState<S::Request, S::Prediction>,
+        message: NewState<P::Request, P::Prediction>,
         outbox: &mut O,
     ) where
         O: Outbox,
@@ -344,7 +346,7 @@ where
 
     pub fn handle_do_view_change<O>(
         &mut self,
-        message: DoViewChange<S::Request, S::Prediction>,
+        message: DoViewChange<P::Request, P::Prediction>,
         outbox: &mut O,
     ) where
         O: Outbox,
@@ -392,7 +394,7 @@ where
 
     pub fn handle_start_view<O>(
         &mut self,
-        message: StartView<S::Request, S::Prediction>,
+        message: StartView<P::Request, P::Prediction>,
         outbox: &mut O,
     ) where
         O: Outbox,
@@ -427,9 +429,9 @@ where
         });
     }
 
-    fn start_state_transfer<'m, M>(&mut self, message: M, outbox: &mut impl Outbox)
+    fn start_state_transfer<M>(&mut self, message: M, outbox: &mut impl Outbox)
     where
-        M: Message<'m>,
+        M: Message,
     {
         self.state_transfer(message.view(), outbox);
         outbox.send(self.index, &message);

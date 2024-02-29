@@ -1,24 +1,30 @@
 use crate::configuration::Configuration;
 use crate::local::BufferedMailbox;
+use crate::protocol::Protocol;
 use crate::replica::Replica;
 use crate::request::{ClientIdentifier, Reply, Request};
 use crate::service::Service;
 use std::collections::HashMap;
 
-pub struct Driver<'a, S: Service<'a>> {
+pub struct Driver<S, P>
+where
+    S: Service<P>,
+    P: Protocol,
+{
     configuration: Configuration,
-    checkpoint: S::Checkpoint,
-    replicas: Vec<Replica<'a, S>>,
+    checkpoint: P::Checkpoint,
+    replicas: Vec<Replica<S, P>>,
     mailboxes: Vec<BufferedMailbox>,
-    replies: HashMap<ClientIdentifier, Reply<S::Reply>>,
+    replies: HashMap<ClientIdentifier, Reply<P::Reply>>,
 }
 
 // TODO: update driver to be for a single replica.
-impl<'a, S> Driver<'a, S>
+impl<S, P> Driver<S, P>
 where
-    S: Service<'a>,
+    S: Service<P>,
+    P: Protocol,
 {
-    pub fn new(configuration: Configuration, checkpoint: S::Checkpoint) -> Self {
+    pub fn new(configuration: Configuration, checkpoint: P::Checkpoint) -> Self {
         let mut replicas = Vec::with_capacity(configuration.replicas());
         let mut mailboxes = Vec::with_capacity(configuration.replicas());
 
@@ -40,13 +46,13 @@ where
         }
     }
 
-    pub fn send(&mut self, index: usize, request: Request<S::Request>) {
+    pub fn send(&mut self, index: usize, request: Request<P::Request>) {
         if let Some(mailbox) = self.mailboxes.get_mut(index) {
             mailbox.deliver(request);
         }
     }
 
-    pub fn broadcast(&mut self, request: Request<S::Request>) {
+    pub fn broadcast(&mut self, request: Request<P::Request>) {
         for mailbox in self.mailboxes.iter_mut() {
             mailbox.deliver(request.clone());
         }
