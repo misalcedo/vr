@@ -20,6 +20,7 @@ default = []
 postcard = { version = "1.0.8", features = ["alloc"] }
 
 [dependencies]
+bytes = "1.5.0"
 rand = "0.8.5"
 serde = { version = "1.0.196", features = ["derive"] }
 uuid = { version = "1.6.1", features = ["v4", "v7"] }

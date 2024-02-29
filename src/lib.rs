@@ -3,6 +3,8 @@
 mod client;
 mod client_table;
 mod configuration;
+mod driver;
+mod local;
 mod log;
 mod mail;
 mod protocol;

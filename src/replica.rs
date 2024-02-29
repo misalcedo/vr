@@ -95,6 +95,20 @@ where
         self.log.compact(cutoff);
     }
 
+    pub fn idle<O>(&mut self, outbox: &mut O)
+    where
+        O: Outbox,
+    {
+        if self.is_primary() {
+            outbox.broadcast(&Commit {
+                view: self.view,
+                committed: self.committed,
+            });
+        } else {
+            self.start_view_change(self.view.next(), outbox);
+        }
+    }
+
     pub fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
     where
         O: Outbox,
@@ -123,147 +137,119 @@ where
         }
     }
 
-    /// Assumes all participating replicas are in the same view.
-    /// If the sender is behind, the receiver drops the message.
-    /// If the sender is ahead, the replica performs a state transfer.
-    pub fn handle_protocol<M>(
-        &mut self,
-        protocol: Protocol<S::Request, S::Prediction>,
-        mailbox: &mut M,
-    ) where
-        M: Mailbox,
-    {
-        match (self.status, protocol) {
-            (_, p) if p.view() < self.view => {}
-            (Status::Normal, Protocol::NewState(message)) => {
-                self.handle_new_state(message, mailbox)
-            }
-            (Status::Normal | Status::ViewChange, Protocol::StartViewChange(message)) => {
-                self.handle_start_view_change(message, mailbox)
-            }
-            (Status::Normal | Status::ViewChange, Protocol::DoViewChange(message)) => {
-                self.handle_do_view_change(message, mailbox)
-            }
-            (_, Protocol::StartView(message)) => self.handle_start_view(message, mailbox),
-            (Status::Normal, message) if message.view() > self.view => {
-                self.state_transfer(message.view(), mailbox);
-                mailbox.send(self.index, &message);
-            }
-            (Status::Normal, Protocol::Prepare(message)) => self.handle_prepare(message, mailbox),
-            (Status::Normal, Protocol::PrepareOk(message)) => {
-                self.handle_prepare_ok(message, mailbox)
-            }
-            (Status::Normal, Protocol::Commit(message)) => self.handle_commit(message, mailbox),
-            (Status::Normal, Protocol::GetState(message)) => {
-                self.handle_get_state(message, mailbox)
-            }
-            (Status::Normal, Protocol::Recovery(message)) => self.handle_recovery(message, mailbox),
-            (Status::Recovering, Protocol::RecoveryResponse(message)) => {
-                self.handle_recovery_response(message, mailbox)
-            }
-            _ => (),
-        }
-    }
-
-    pub fn idle<O>(&mut self, outbox: &mut O)
+    pub fn handle_prepare<O>(&mut self, message: Prepare<S::Request, S::Prediction>, outbox: &mut O)
     where
         O: Outbox,
     {
-        if self.is_primary() {
-            outbox.broadcast(&Commit {
-                view: self.view,
-                committed: self.committed,
-            });
-        } else {
-            self.start_view_change(self.view.next(), outbox);
+        if self.need_state_transfer(message.view) {
+            self.start_state_transfer(message, outbox);
+            return;
         }
-    }
 
-    fn handle_prepare<M>(&mut self, prepare: Prepare<S::Request, S::Prediction>, mailbox: &mut M)
-    where
-        M: Mailbox,
-    {
-        if self.log.contains(&prepare.op_number) {
+        if self.should_ignore_normal(message.view) || self.log.contains(&message.op_number) {
             return;
         }
 
         let next = self.log.next_op_number();
-        if next < prepare.op_number || next < prepare.committed {
-            self.state_transfer(self.view, mailbox);
-            mailbox.send(self.index, &prepare);
+        if next < message.op_number || next < message.committed {
+            self.state_transfer(self.view, outbox);
+            outbox.send(self.index, &message);
         }
 
-        self.client_table.start(&prepare.request);
+        self.client_table.start(&message.request);
         self.log
-            .push(self.view, prepare.request, prepare.prediction);
-        mailbox.send(
+            .push(self.view, message.request, message.prediction);
+        outbox.send(
             self.configuration % self.view,
             &PrepareOk {
                 view: self.view,
-                op_number: prepare.op_number,
+                op_number: message.op_number,
                 index: self.index,
             },
         );
-        self.commit_operations(prepare.committed, mailbox);
+        self.commit_operations(message.committed, outbox);
     }
 
-    fn handle_prepare_ok<O>(&mut self, prepare_ok: PrepareOk, outbox: &mut O)
+    pub fn handle_prepare_ok<O>(&mut self, message: PrepareOk, outbox: &mut O)
     where
         O: Outbox,
     {
-        if prepare_ok.op_number <= self.committed {
+        if self.need_state_transfer(message.view) {
+            self.start_state_transfer(message, outbox);
             return;
         }
 
-        let prepared = self.prepared.entry(prepare_ok.op_number).or_default();
+        if self.should_ignore_normal(message.view) || message.op_number <= self.committed {
+            return;
+        }
 
-        prepared.insert(prepare_ok.index);
+        let prepared = self.prepared.entry(message.op_number).or_default();
+
+        prepared.insert(message.index);
 
         let committed = prepared.len() >= self.configuration.sub_majority();
 
         if committed {
-            self.prepared.retain(|&o, _| o > prepare_ok.op_number);
-            self.commit_operations(prepare_ok.op_number, outbox);
+            self.prepared.retain(|&o, _| o > message.op_number);
+            self.commit_operations(message.op_number, outbox);
         }
     }
 
-    fn handle_commit<M>(&mut self, commit: Commit, mailbox: &mut M)
-    where
-        M: Mailbox,
-    {
-        if commit.committed <= self.committed {
-            return;
-        }
-
-        if !self.log.contains(&commit.committed) {
-            self.state_transfer(self.view, mailbox);
-            mailbox.send(self.index, &commit);
-        }
-
-        self.commit_operations(commit.committed, mailbox);
-    }
-
-    fn handle_get_state<O>(&mut self, get_state: GetState, outbox: &mut O)
+    pub fn handle_commit<O>(&mut self, message: Commit, outbox: &mut O)
     where
         O: Outbox,
     {
+        if self.need_state_transfer(message.view) {
+            self.start_state_transfer(message, outbox);
+            return;
+        }
+
+        if self.should_ignore_normal(message.view) || message.committed <= self.committed {
+            return;
+        }
+
+        if !self.log.contains(&message.committed) {
+            self.state_transfer(self.view, outbox);
+            outbox.send(self.index, &message);
+        }
+
+        self.commit_operations(message.committed, outbox);
+    }
+
+    pub fn handle_get_state<O>(&mut self, message: GetState, outbox: &mut O)
+    where
+        O: Outbox,
+    {
+        if self.need_state_transfer(message.view) {
+            self.start_state_transfer(message, outbox);
+            return;
+        }
+
+        if self.should_ignore_normal(message.view) {
+            return;
+        }
+
         outbox.send(
-            get_state.index,
+            message.index,
             &NewState {
                 view: self.view,
-                log: self.log.after(get_state.op_number),
+                log: self.log.after(message.op_number),
                 committed: self.committed,
             },
         );
     }
 
-    fn handle_recovery<O>(&mut self, recovery: Recovery, outbox: &mut O)
+    pub fn handle_recovery<O>(&mut self, message: Recovery, outbox: &mut O)
     where
         O: Outbox,
     {
+        if self.status != Status::Normal {
+            return;
+        }
+
         let mut response = RecoveryResponse {
             view: self.view,
-            nonce: recovery.nonce,
+            nonce: message.nonce,
             log: Default::default(),
             committed: Default::default(),
             index: self.index,
@@ -274,22 +260,21 @@ where
             response.committed = self.committed;
         }
 
-        outbox.send(recovery.index, &response);
+        outbox.send(message.index, &response);
     }
 
-    fn handle_recovery_response<O>(
+    pub fn handle_recovery_response<O>(
         &mut self,
-        recovery_response: RecoveryResponse<S::Request, S::Prediction>,
+        message: RecoveryResponse<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
         O: Outbox,
     {
-        if self.nonce != recovery_response.nonce {
+        if self.status != Status::Recovering || self.nonce != message.nonce {
             return;
         }
 
-        self.recovery_responses
-            .insert(recovery_response.index, recovery_response);
+        self.recovery_responses.insert(message.index, message);
 
         if self.recovery_responses.len() >= self.configuration.quorum() {
             let view = self
@@ -310,30 +295,40 @@ where
         }
     }
 
-    fn handle_new_state<O>(
+    pub fn handle_new_state<O>(
         &mut self,
-        new_state: NewState<S::Request, S::Prediction>,
+        message: NewState<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
         O: Outbox,
     {
-        if new_state.log.first_op_number() == self.log.next_op_number() {
-            self.view = new_state.view;
-            self.log.extend(new_state.log);
-            self.commit_operations(new_state.committed, outbox);
-            self.start_preparing_operations(outbox);
+        if message.view < self.view
+            || self.status != Status::Normal
+            || message.log.first_op_number() != self.log.next_op_number()
+        {
+            return;
         }
+
+        self.view = message.view;
+        self.log.extend(message.log);
+        self.commit_operations(message.committed, outbox);
+        self.start_preparing_operations(outbox);
     }
 
-    fn handle_start_view_change<O>(&mut self, start_view_change: StartViewChange, outbox: &mut O)
+    pub fn handle_start_view_change<O>(&mut self, message: StartViewChange, outbox: &mut O)
     where
         O: Outbox,
     {
-        if start_view_change.view > self.view {
-            self.start_view_change(start_view_change.view, outbox);
+        if self.need_view_change(message.view) {
+            self.start_view_change(message.view, outbox);
         }
 
-        self.start_view_changes.insert(start_view_change.index);
+        if self.should_ignore_view_change(message.view) {
+            return;
+        }
+
+        self.start_view_changes.insert(message.index);
+
         if self.start_view_changes.len() >= self.configuration.sub_majority() {
             outbox.send(
                 self.configuration % self.view,
@@ -347,19 +342,22 @@ where
         }
     }
 
-    fn handle_do_view_change<O>(
+    pub fn handle_do_view_change<O>(
         &mut self,
-        do_view_change: DoViewChange<S::Request, S::Prediction>,
+        message: DoViewChange<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
         O: Outbox,
     {
-        if do_view_change.view > self.view {
-            self.start_view_change(do_view_change.view, outbox);
+        if self.need_view_change(message.view) {
+            self.start_view_change(message.view, outbox);
         }
 
-        self.do_view_changes
-            .insert(do_view_change.index, do_view_change);
+        if self.should_ignore_view_change(message.view) {
+            return;
+        }
+
+        self.do_view_changes.insert(message.index, message);
 
         if self.do_view_changes.contains_key(&self.index)
             && self.do_view_changes.len() >= self.configuration.quorum()
@@ -392,18 +390,26 @@ where
         }
     }
 
-    fn handle_start_view<O>(
+    pub fn handle_start_view<O>(
         &mut self,
-        start_view: StartView<S::Request, S::Prediction>,
+        message: StartView<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
         O: Outbox,
     {
-        self.view = start_view.view;
-        self.log = start_view.log;
+        if message.view < self.view {
+            return;
+        }
+
+        if message.view == self.view && self.status == Status::Normal {
+            return;
+        }
+
+        self.view = message.view;
+        self.log = message.log;
 
         self.set_status(Status::Normal);
-        self.commit_operations(start_view.committed, outbox);
+        self.commit_operations(message.committed, outbox);
         self.start_preparing_operations(outbox);
     }
 
@@ -419,6 +425,14 @@ where
             view: self.view,
             index: self.index,
         });
+    }
+
+    fn start_state_transfer<'m, M>(&mut self, message: M, outbox: &mut impl Outbox)
+    where
+        M: Message<'m>,
+    {
+        self.state_transfer(message.view(), outbox);
+        outbox.send(self.index, &message);
     }
 
     fn state_transfer<O>(&mut self, view: View, outbox: &mut O)
@@ -516,5 +530,21 @@ where
 
     fn is_backup(&self) -> bool {
         !self.is_primary()
+    }
+
+    fn should_ignore_normal(&self, view: View) -> bool {
+        self.view != view && self.status != Status::Normal
+    }
+
+    fn need_state_transfer(&self, view: View) -> bool {
+        self.status == Status::Normal && view > self.view
+    }
+
+    fn should_ignore_view_change(&self, view: View) -> bool {
+        self.view != view && self.status != Status::ViewChange
+    }
+
+    fn need_view_change(&self, view: View) -> bool {
+        self.status != Status::Recovering && view > self.view
     }
 }
