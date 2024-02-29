@@ -3,7 +3,7 @@ use crate::configuration::Configuration;
 use crate::log::Log;
 use crate::mail::Outbox;
 use crate::protocol::{
-    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol, Recovery,
+    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Protocol, Recovery,
     RecoveryResponse, StartView, StartViewChange,
 };
 use crate::request::{Reply, Request, RequestIdentifier};
@@ -66,13 +66,13 @@ where
         outbox: &mut O,
     ) -> Self
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         let mut replica = Self::new(configuration, index, service);
 
         replica.status = Status::Recovering;
 
-        outbox.broadcast(&Recovery {
+        outbox.recovery(Recovery {
             index,
             nonce: replica.nonce,
         });
@@ -99,10 +99,10 @@ where
 
     pub fn idle<O>(&mut self, outbox: &mut O)
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.is_primary() {
-            outbox.broadcast(&Commit {
+            outbox.commit(Commit {
                 view: self.view,
                 committed: self.committed,
             });
@@ -113,8 +113,12 @@ where
 
     pub fn handle_request<O>(&mut self, request: Request<P::Request>, outbox: &mut O)
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
+        if self.is_backup() {
+            return;
+        }
+
         let (cached_request, comparison) = self.client_table.get_mut(&request);
 
         match comparison {
@@ -122,7 +126,7 @@ where
                 let prediction = self.service.predict(&request.payload);
                 let (entry, op_number) = self.log.push(self.view, request, prediction);
 
-                outbox.broadcast(&Prepare {
+                outbox.prepare(Prepare {
                     view: self.view,
                     op_number,
                     request: entry.request().clone(),
@@ -139,50 +143,56 @@ where
         }
     }
 
-    pub fn handle_prepare<O>(&mut self, message: Prepare<P::Request, P::Prediction>, outbox: &mut O)
+    pub fn handle_prepare<O>(
+        &mut self,
+        message: Prepare<P::Request, P::Prediction>,
+        outbox: &mut O,
+    ) -> Option<Prepare<P::Request, P::Prediction>>
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.need_state_transfer(message.view) {
-            self.start_state_transfer(message, outbox);
-            return;
+            self.state_transfer(message.view, outbox);
+            return Some(message);
         }
 
         if self.should_ignore_normal(message.view) || self.log.contains(&message.op_number) {
-            return;
+            return None;
         }
 
         let next = self.log.next_op_number();
         if next < message.op_number || next < message.committed {
-            self.state_transfer(self.view, outbox);
-            outbox.send(self.index, &message);
+            self.state_transfer(message.view, outbox);
+            return Some(message);
         }
 
         self.client_table.start(&message.request);
         self.log
             .push(self.view, message.request, message.prediction);
-        outbox.send(
+        outbox.prepare_ok(
             self.configuration % self.view,
-            &PrepareOk {
+            PrepareOk {
                 view: self.view,
                 op_number: message.op_number,
                 index: self.index,
             },
         );
         self.commit_operations(message.committed, outbox);
+
+        None
     }
 
-    pub fn handle_prepare_ok<O>(&mut self, message: PrepareOk, outbox: &mut O)
+    pub fn handle_prepare_ok<O>(&mut self, message: PrepareOk, outbox: &mut O) -> Option<PrepareOk>
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.need_state_transfer(message.view) {
-            self.start_state_transfer(message, outbox);
-            return;
+            self.state_transfer(message.view, outbox);
+            return Some(message);
         }
 
         if self.should_ignore_normal(message.view) || message.op_number <= self.committed {
-            return;
+            return None;
         }
 
         let prepared = self.prepared.entry(message.op_number).or_default();
@@ -195,55 +205,61 @@ where
             self.prepared.retain(|&o, _| o > message.op_number);
             self.commit_operations(message.op_number, outbox);
         }
+
+        None
     }
 
-    pub fn handle_commit<O>(&mut self, message: Commit, outbox: &mut O)
+    pub fn handle_commit<O>(&mut self, message: Commit, outbox: &mut O) -> Option<Commit>
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.need_state_transfer(message.view) {
-            self.start_state_transfer(message, outbox);
-            return;
+            self.state_transfer(message.view, outbox);
+            return Some(message);
         }
 
         if self.should_ignore_normal(message.view) || message.committed <= self.committed {
-            return;
+            return None;
         }
 
         if !self.log.contains(&message.committed) {
-            self.state_transfer(self.view, outbox);
-            outbox.send(self.index, &message);
+            self.state_transfer(message.view, outbox);
+            return Some(message);
         }
 
         self.commit_operations(message.committed, outbox);
+
+        None
     }
 
-    pub fn handle_get_state<O>(&mut self, message: GetState, outbox: &mut O)
+    pub fn handle_get_state<O>(&mut self, message: GetState, outbox: &mut O) -> Option<GetState>
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.need_state_transfer(message.view) {
-            self.start_state_transfer(message, outbox);
-            return;
+            self.state_transfer(message.view, outbox);
+            return Some(message);
         }
 
         if self.should_ignore_normal(message.view) {
-            return;
+            return None;
         }
 
-        outbox.send(
+        outbox.new_state(
             message.index,
-            &NewState {
+            NewState {
                 view: self.view,
                 log: self.log.after(message.op_number),
                 committed: self.committed,
             },
         );
+
+        None
     }
 
     pub fn handle_recovery<O>(&mut self, message: Recovery, outbox: &mut O)
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.status != Status::Normal {
             return;
@@ -262,7 +278,7 @@ where
             response.committed = self.committed;
         }
 
-        outbox.send(message.index, &response);
+        outbox.recovery_response(message.index, response);
     }
 
     pub fn handle_recovery_response<O>(
@@ -270,7 +286,7 @@ where
         message: RecoveryResponse<P::Request, P::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.status != Status::Recovering || self.nonce != message.nonce {
             return;
@@ -302,7 +318,7 @@ where
         message: NewState<P::Request, P::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if message.view < self.view
             || self.status != Status::Normal
@@ -319,7 +335,7 @@ where
 
     pub fn handle_start_view_change<O>(&mut self, message: StartViewChange, outbox: &mut O)
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.need_view_change(message.view) {
             self.start_view_change(message.view, outbox);
@@ -332,9 +348,9 @@ where
         self.start_view_changes.insert(message.index);
 
         if self.start_view_changes.len() >= self.configuration.sub_majority() {
-            outbox.send(
+            outbox.do_view_change(
                 self.configuration % self.view,
-                &DoViewChange {
+                DoViewChange {
                     view: self.view,
                     log: self.log.clone(),
                     committed: self.committed,
@@ -349,7 +365,7 @@ where
         message: DoViewChange<P::Request, P::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.need_view_change(message.view) {
             self.start_view_change(message.view, outbox);
@@ -380,7 +396,7 @@ where
                 self.view = do_view_change.view;
                 self.set_status(Status::Normal);
 
-                outbox.broadcast(&StartView {
+                outbox.start_view(StartView {
                     view: self.view,
                     log: self.log.clone(),
                     committed,
@@ -397,7 +413,7 @@ where
         message: StartView<P::Request, P::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if message.view < self.view {
             return;
@@ -417,29 +433,21 @@ where
 
     fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         self.view = view;
 
         self.set_status(Status::ViewChange);
 
-        outbox.broadcast(&StartViewChange {
+        outbox.start_view_change(StartViewChange {
             view: self.view,
             index: self.index,
         });
     }
 
-    fn start_state_transfer<M>(&mut self, message: M, outbox: &mut impl Outbox)
-    where
-        M: Message,
-    {
-        self.state_transfer(message.view(), outbox);
-        outbox.send(self.index, &message);
-    }
-
     fn state_transfer<O>(&mut self, view: View, outbox: &mut O)
     where
-        O: Outbox,
+        O: Outbox<P>,
     {
         if self.view < view {
             self.log.truncate(self.committed);
@@ -452,9 +460,9 @@ where
             replica += (replica + 1) % replicas;
         }
 
-        outbox.send(
+        outbox.get_state(
             replica,
-            &GetState {
+            GetState {
                 view: self.view,
                 op_number: self.log.last_op_number(),
                 index: self.index,
@@ -462,7 +470,10 @@ where
         );
     }
 
-    fn commit_operations(&mut self, committed: OpNumber, outbox: &mut impl Outbox) {
+    fn commit_operations<O>(&mut self, committed: OpNumber, outbox: &mut O)
+    where
+        O: Outbox<P>,
+    {
         while self.committed < committed {
             let entry = &self.log[self.committed];
             let request = entry.request();
@@ -482,7 +493,10 @@ where
         }
     }
 
-    fn start_preparing_operations(&mut self, outbox: &mut impl Outbox) {
+    fn start_preparing_operations<O>(&mut self, outbox: &mut O)
+    where
+        O: Outbox<P>,
+    {
         let mut current = self.committed.next();
 
         while self.log.contains(&current) {
@@ -492,9 +506,9 @@ where
             self.client_table.start(request);
 
             if self.is_backup() {
-                outbox.send(
+                outbox.prepare_ok(
                     self.configuration % self.view,
-                    &PrepareOk {
+                    PrepareOk {
                         view: self.view,
                         op_number: current,
                         index: self.index,

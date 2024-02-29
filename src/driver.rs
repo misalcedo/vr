@@ -1,5 +1,5 @@
 use crate::configuration::Configuration;
-use crate::local::BufferedMailbox;
+use crate::local::BufferedOutbox;
 use crate::protocol::Protocol;
 use crate::replica::Replica;
 use crate::request::{ClientIdentifier, Reply, Request};
@@ -14,7 +14,7 @@ where
     configuration: Configuration,
     checkpoint: P::Checkpoint,
     replicas: Vec<Replica<S, P>>,
-    mailboxes: Vec<BufferedMailbox>,
+    mailboxes: Vec<BufferedOutbox<P>>,
     replies: HashMap<ClientIdentifier, Reply<P::Reply>>,
 }
 
@@ -48,13 +48,13 @@ where
 
     pub fn send(&mut self, index: usize, request: Request<P::Request>) {
         if let Some(mailbox) = self.mailboxes.get_mut(index) {
-            mailbox.deliver(request);
+            todo!()
         }
     }
 
     pub fn broadcast(&mut self, request: Request<P::Request>) {
         for mailbox in self.mailboxes.iter_mut() {
-            mailbox.deliver(request.clone());
+            todo!()
         }
     }
 
