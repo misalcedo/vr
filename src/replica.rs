@@ -1,9 +1,9 @@
 use crate::client_table::ClientTable;
 use crate::configuration::Configuration;
 use crate::log::Log;
-use crate::mail::{Mailbox, Outbox};
+use crate::mail::Outbox;
 use crate::protocol::{
-    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Protocol, Recovery,
+    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, Recovery,
     RecoveryResponse, StartView, StartViewChange,
 };
 use crate::request::{Reply, Request, RequestIdentifier};
