@@ -1,5 +1,6 @@
 use crate::log::Log;
-use crate::request::{Request, RequestIdentifier};
+use crate::nonce::Nonce;
+use crate::request::Request;
 use crate::viewstamp::{OpNumber, View};
 use serde::{Deserialize, Serialize};
 
@@ -102,8 +103,10 @@ pub struct StartView<R, P> {
 pub struct Recovery {
     /// The index of the replica that needs to get the new state.
     pub index: usize,
+    /// The last committed operation included in the checkpoint the replica used to recover.
+    pub committed: OpNumber,
     /// A value coined for single use to detect replays of previous recovery requests.
-    pub nonce: RequestIdentifier,
+    pub nonce: Nonce,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -111,11 +114,19 @@ pub struct RecoveryResponse<R, P> {
     /// The current view of the replica.
     pub view: View,
     /// A value coined for single use to detect replays of previous recovery requests.
-    pub nonce: RequestIdentifier,
+    pub nonce: Nonce,
     /// The log to use in the new view.
     pub log: Log<R, P>,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,
     /// The index of the sender.
     pub index: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Checkpoint<C> {
+    /// The last committed operation reflected in the application state.
+    pub committed: OpNumber,
+    /// The application state when the checkpoint was taken.
+    pub state: C,
 }

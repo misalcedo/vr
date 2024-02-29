@@ -2,18 +2,23 @@ use crate::client_table::ClientTable;
 use crate::configuration::Configuration;
 use crate::log::Log;
 use crate::mail::Outbox;
+use crate::nonce::Nonce;
 use crate::protocol::{
-    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Protocol, Recovery,
+    Checkpoint, Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Protocol, Recovery,
     RecoveryResponse, StartView, StartViewChange,
 };
-use crate::request::{Reply, Request, RequestIdentifier};
+use crate::request::{Reply, Request};
 use crate::service::Service;
 use crate::status::Status;
 use crate::viewstamp::{OpNumber, View};
 use rand::Rng;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::num::NonZeroUsize;
 
+/// A replica may perform the role of a primary or backup depending on the configuration and the current view.
+/// Implements a message-based viewstamped replication revisited protocol that does not wait for messages to arrive.
+/// Instead, the protocol requires returned messages to be re-queued for later (i.e. after a new message comes in).
 pub struct Replica<S, P>
 where
     S: Service<P>,
@@ -31,7 +36,7 @@ where
     start_view_changes: HashSet<usize>,
     do_view_changes: HashMap<usize, DoViewChange<P::Request, P::Prediction>>,
     recovery_responses: HashMap<usize, RecoveryResponse<P::Request, P::Prediction>>,
-    nonce: RequestIdentifier,
+    nonce: Nonce,
     checkpoints: VecDeque<OpNumber>,
 }
 
@@ -40,6 +45,7 @@ where
     S: Service<P>,
     P: Protocol,
 {
+    /// Creates a new instance of a replica.
     pub fn new(configuration: Configuration, index: usize, service: S) -> Self {
         Self {
             configuration,
@@ -59,55 +65,82 @@ where
         }
     }
 
+    /// Creates a new instance of a replica running the recovery protocol.
+    /// The caller is responsible for determining when a replica needs to recover.
     pub fn recovering<O>(
         configuration: Configuration,
         index: usize,
-        service: S,
+        checkpoint: Checkpoint<P::Checkpoint>,
         outbox: &mut O,
     ) -> Self
     where
         O: Outbox<P>,
     {
-        let mut replica = Self::new(configuration, index, service);
+        let mut replica = Self::new(configuration, index, checkpoint.state.into());
 
+        replica.committed = checkpoint.committed;
         replica.status = Status::Recovering;
 
         outbox.recovery(Recovery {
             index,
+            committed: replica.committed,
             nonce: replica.nonce,
         });
 
         replica
     }
 
-    pub fn checkpoint(&mut self) -> P::Checkpoint {
-        self.checkpoints.push_back(self.log.last_op_number());
-        self.service.checkpoint()
-    }
+    pub fn checkpoint(&mut self, suffix: Option<NonZeroUsize>) -> Checkpoint<P::Checkpoint> {
+        if let Some(suffix) = suffix.map(NonZeroUsize::get) {
+            if self.checkpoints.len() >= suffix {
+                let cutoff = self.checkpoints.len() - suffix;
+                let checkpoint = self.checkpoints.drain(..=cutoff).last();
+                let start = checkpoint.unwrap_or_default().next();
 
-    pub fn compact(&mut self, suffix: usize) {
-        if self.checkpoints.len() <= suffix {
-            return;
+                self.log.compact(start);
+            }
         }
 
-        let index = self.checkpoints.len() - suffix;
-        let checkpoint = self.checkpoints.drain(..index).last();
-        let cutoff = checkpoint.unwrap_or_default().next();
+        self.checkpoints.push_back(self.committed);
 
-        self.log.compact(cutoff);
+        Checkpoint {
+            committed: self.committed,
+            state: self.service.checkpoint(),
+        }
     }
 
     pub fn idle<O>(&mut self, outbox: &mut O)
     where
         O: Outbox<P>,
     {
-        if self.is_primary() {
-            outbox.commit(Commit {
-                view: self.view,
-                committed: self.committed,
-            });
-        } else {
-            self.start_view_change(self.view.next(), outbox);
+        match self.status {
+            Status::Normal => {
+                if self.is_primary() {
+                    outbox.commit(Commit {
+                        view: self.view,
+                        committed: self.committed,
+                    });
+                } else {
+                    self.start_view_change(self.view.next(), outbox);
+                }
+            }
+            Status::Recovering => {
+                outbox.recovery(Recovery {
+                    index: self.index,
+                    committed: self.committed,
+                    nonce: self.nonce,
+                });
+            }
+            Status::ViewChange => {
+                if self.is_backup() && self.should_do_view_change() {
+                    self.start_view_change(self.view.next(), outbox);
+                } else {
+                    outbox.start_view_change(StartViewChange {
+                        view: self.view,
+                        index: self.index,
+                    });
+                }
+            }
         }
     }
 
@@ -347,7 +380,7 @@ where
 
         self.start_view_changes.insert(message.index);
 
-        if self.start_view_changes.len() >= self.configuration.sub_majority() {
+        if self.should_do_view_change() {
             outbox.do_view_change(
                 self.configuration % self.view,
                 DoViewChange {
@@ -562,5 +595,9 @@ where
 
     fn need_view_change(&self, view: View) -> bool {
         self.status != Status::Recovering && view > self.view
+    }
+
+    fn should_do_view_change(&self) -> bool {
+        self.start_view_changes.len() >= self.configuration.sub_majority()
     }
 }

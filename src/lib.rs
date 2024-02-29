@@ -7,6 +7,7 @@ mod driver;
 mod local;
 mod log;
 mod mail;
+mod nonce;
 mod protocol;
 mod replica;
 mod request;
