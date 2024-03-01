@@ -4,8 +4,14 @@ pub struct Configuration {
     group: Group,
 }
 
+impl From<usize> for Configuration {
+    fn from(value: usize) -> Self {
+        Self::new(value, Default::default())
+    }
+}
+
 impl Configuration {
-    fn new(replicas: usize, group: Group) -> Self {
+    pub fn new(replicas: usize, group: Group) -> Self {
         Self { replicas, group }
     }
 

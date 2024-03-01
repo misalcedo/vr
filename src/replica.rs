@@ -601,3 +601,20 @@ where
         self.start_view_changes.len() >= self.configuration.sub_majority()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sender_behind_prepare() {
+        let configuration = Configuration::from(3);
+        let replica = Replica::new(configuration, 1, 0);
+    }
+
+    #[test]
+    fn sender_behind_prepare_ok() {}
+
+    #[test]
+    fn sender_behind_commit() {}
+}
