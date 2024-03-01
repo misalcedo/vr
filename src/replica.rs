@@ -4,7 +4,7 @@ use crate::log::Log;
 use crate::mail::Outbox;
 use crate::nonce::Nonce;
 use crate::protocol::{
-    Checkpoint, Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Protocol, Recovery,
+    Checkpoint, Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Recovery,
     RecoveryResponse, StartView, StartViewChange,
 };
 use crate::request::{Reply, Request};
@@ -19,31 +19,29 @@ use std::num::NonZeroUsize;
 /// A replica may perform the role of a primary or backup depending on the configuration and the current view.
 /// Implements a message-based viewstamped replication revisited protocol that does not wait for messages to arrive.
 /// Instead, the protocol requires returned messages to be re-queued for later (i.e. after a new message comes in).
-pub struct Replica<S, P>
+pub struct Replica<S>
 where
-    S: Service<P>,
-    P: Protocol,
+    S: Service,
 {
     configuration: Configuration,
     index: usize,
     service: S,
     status: Status,
     view: View,
-    log: Log<P::Request, P::Prediction>,
+    log: Log<S::Request, S::Prediction>,
     committed: OpNumber,
-    client_table: ClientTable<P::Reply>,
+    client_table: ClientTable<S::Reply>,
     prepared: BTreeMap<OpNumber, HashSet<usize>>,
     start_view_changes: HashSet<usize>,
-    do_view_changes: HashMap<usize, DoViewChange<P::Request, P::Prediction>>,
-    recovery_responses: HashMap<usize, RecoveryResponse<P::Request, P::Prediction>>,
+    do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
+    recovery_responses: HashMap<usize, RecoveryResponse<S::Request, S::Prediction>>,
     nonce: Nonce,
     checkpoints: VecDeque<OpNumber>,
 }
 
-impl<S, P> Replica<S, P>
+impl<S> Replica<S>
 where
-    S: Service<P>,
-    P: Protocol,
+    S: Service,
 {
     /// Creates a new instance of a replica.
     pub fn new(configuration: Configuration, index: usize, service: S) -> Self {
@@ -70,11 +68,11 @@ where
     pub fn recovering<O>(
         configuration: Configuration,
         index: usize,
-        checkpoint: Checkpoint<P::Checkpoint>,
+        checkpoint: Checkpoint<S::Checkpoint>,
         outbox: &mut O,
     ) -> Self
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         let mut replica = Self::new(configuration, index, checkpoint.state.into());
 
@@ -90,7 +88,11 @@ where
         replica
     }
 
-    pub fn checkpoint(&mut self, suffix: Option<NonZeroUsize>) -> Checkpoint<P::Checkpoint> {
+    pub fn view(&self) -> View {
+        self.view
+    }
+
+    pub fn checkpoint(&mut self, suffix: Option<NonZeroUsize>) -> Checkpoint<S::Checkpoint> {
         if let Some(suffix) = suffix.map(NonZeroUsize::get) {
             if self.checkpoints.len() >= suffix {
                 let cutoff = self.checkpoints.len() - suffix;
@@ -111,7 +113,7 @@ where
 
     pub fn idle<O>(&mut self, outbox: &mut O)
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         match self.status {
             Status::Normal => {
@@ -144,9 +146,9 @@ where
         }
     }
 
-    pub fn handle_request<O>(&mut self, request: Request<P::Request>, outbox: &mut O)
+    pub fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.is_backup() {
             return;
@@ -178,11 +180,11 @@ where
 
     pub fn handle_prepare<O>(
         &mut self,
-        message: Prepare<P::Request, P::Prediction>,
+        message: Prepare<S::Request, S::Prediction>,
         outbox: &mut O,
-    ) -> Option<Prepare<P::Request, P::Prediction>>
+    ) -> Option<Prepare<S::Request, S::Prediction>>
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.need_state_transfer(message.view) {
             self.state_transfer(message.view, outbox);
@@ -217,7 +219,7 @@ where
 
     pub fn handle_prepare_ok<O>(&mut self, message: PrepareOk, outbox: &mut O) -> Option<PrepareOk>
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.need_state_transfer(message.view) {
             self.state_transfer(message.view, outbox);
@@ -244,7 +246,7 @@ where
 
     pub fn handle_commit<O>(&mut self, message: Commit, outbox: &mut O) -> Option<Commit>
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.need_state_transfer(message.view) {
             self.state_transfer(message.view, outbox);
@@ -267,7 +269,7 @@ where
 
     pub fn handle_get_state<O>(&mut self, message: GetState, outbox: &mut O) -> Option<GetState>
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.need_state_transfer(message.view) {
             self.state_transfer(message.view, outbox);
@@ -292,7 +294,7 @@ where
 
     pub fn handle_recovery<O>(&mut self, message: Recovery, outbox: &mut O)
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.status != Status::Normal {
             return;
@@ -316,10 +318,10 @@ where
 
     pub fn handle_recovery_response<O>(
         &mut self,
-        message: RecoveryResponse<P::Request, P::Prediction>,
+        message: RecoveryResponse<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.status != Status::Recovering || self.nonce != message.nonce {
             return;
@@ -348,10 +350,10 @@ where
 
     pub fn handle_new_state<O>(
         &mut self,
-        message: NewState<P::Request, P::Prediction>,
+        message: NewState<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if message.view < self.view
             || self.status != Status::Normal
@@ -368,7 +370,7 @@ where
 
     pub fn handle_start_view_change<O>(&mut self, message: StartViewChange, outbox: &mut O)
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.need_view_change(message.view) {
             self.start_view_change(message.view, outbox);
@@ -395,10 +397,10 @@ where
 
     pub fn handle_do_view_change<O>(
         &mut self,
-        message: DoViewChange<P::Request, P::Prediction>,
+        message: DoViewChange<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.need_view_change(message.view) {
             self.start_view_change(message.view, outbox);
@@ -443,10 +445,10 @@ where
 
     pub fn handle_start_view<O>(
         &mut self,
-        message: StartView<P::Request, P::Prediction>,
+        message: StartView<S::Request, S::Prediction>,
         outbox: &mut O,
     ) where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if message.view < self.view {
             return;
@@ -466,7 +468,7 @@ where
 
     fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         self.view = view;
 
@@ -480,7 +482,7 @@ where
 
     fn state_transfer<O>(&mut self, view: View, outbox: &mut O)
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         if self.view < view {
             self.log.truncate(self.committed);
@@ -505,9 +507,11 @@ where
 
     fn commit_operations<O>(&mut self, committed: OpNumber, outbox: &mut O)
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         while self.committed < committed {
+            self.committed.increment();
+
             let entry = &self.log[self.committed];
             let request = entry.request();
             let reply = Reply {
@@ -515,8 +519,6 @@ where
                 id: request.id,
                 payload: self.service.invoke(&request.payload, entry.prediction()),
             };
-
-            self.committed.increment();
 
             if self.is_primary() {
                 outbox.reply(request.client, &reply);
@@ -528,7 +530,7 @@ where
 
     fn start_preparing_operations<O>(&mut self, outbox: &mut O)
     where
-        O: Outbox<P>,
+        O: Outbox<S>,
     {
         let mut current = self.committed.next();
 

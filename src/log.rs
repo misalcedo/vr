@@ -155,14 +155,14 @@ impl<R, P> Index<OpNumber> for Log<R, P> {
     type Output = Entry<R, P>;
 
     fn index(&self, index: OpNumber) -> &Self::Output {
-        let offset = index - self.first_op_number();
+        let offset = index - self.range.0;
         self.entries.index(offset)
     }
 }
 
 impl<R, P> IndexMut<OpNumber> for Log<R, P> {
     fn index_mut(&mut self, index: OpNumber) -> &mut Self::Output {
-        let offset = index - self.first_op_number();
+        let offset = index - self.range.0;
         self.entries.index_mut(offset)
     }
 }

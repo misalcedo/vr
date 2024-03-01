@@ -1,9 +1,10 @@
 use crate::mail::Outbox;
 use crate::protocol::{
-    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Protocol, Recovery,
-    RecoveryResponse, StartView, StartViewChange,
+    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Recovery, RecoveryResponse,
+    StartView, StartViewChange,
 };
 use crate::request::{ClientIdentifier, Reply};
+use crate::service::Protocol;
 use std::collections::VecDeque;
 use std::iter::FusedIterator;
 
@@ -90,6 +91,10 @@ where
 {
     pub fn is_empty(&self) -> bool {
         self.replies.is_empty() && self.send.is_empty() && self.broadcast.is_empty()
+    }
+
+    pub fn replies(&self) -> usize {
+        self.replies.len()
     }
 
     pub fn drain_replies(

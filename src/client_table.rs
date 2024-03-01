@@ -15,10 +15,6 @@ impl<R> CachedRequest<R> {
         }
     }
 
-    pub fn request(&self) -> RequestIdentifier {
-        self.request
-    }
-
     pub fn reply(&self) -> Option<&Reply<R>> {
         self.reply.as_ref()
     }

@@ -3,8 +3,7 @@
 mod client;
 mod client_table;
 mod configuration;
-mod driver;
-mod local;
+pub mod local;
 mod log;
 mod mail;
 mod nonce;
@@ -14,3 +13,8 @@ mod request;
 mod service;
 mod status;
 mod viewstamp;
+
+pub use client::Client;
+pub use configuration::Configuration;
+pub use replica::Replica;
+pub use service::{Protocol, Service};

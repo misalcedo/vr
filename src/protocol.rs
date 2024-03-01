@@ -4,19 +4,6 @@ use crate::request::Request;
 use crate::viewstamp::{OpNumber, View};
 use serde::{Deserialize, Serialize};
 
-/// A trait to associate all the necessary types together.
-/// All associated types must be serializable and not borrow data since replicas need to store these values.
-pub trait Protocol {
-    type Request: Payload;
-    type Prediction: Payload;
-    type Reply: Payload;
-    type Checkpoint: Payload;
-}
-
-pub trait Payload: Clone + Serialize + Deserialize<'static> {}
-
-impl<P> Payload for P where P: Clone + Serialize + Deserialize<'static> {}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Prepare<R, P> {
     /// The current view of the replica.

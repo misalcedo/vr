@@ -1,8 +1,9 @@
 use crate::protocol::{
-    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Protocol, Recovery,
-    RecoveryResponse, StartView, StartViewChange,
+    Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Recovery, RecoveryResponse,
+    StartView, StartViewChange,
 };
 use crate::request::{ClientIdentifier, Reply};
+use crate::service::Protocol;
 
 pub trait Outbox<P>
 where

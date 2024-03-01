@@ -1,14 +1,28 @@
-use crate::protocol::Protocol;
+use serde::{Deserialize, Serialize};
 
-pub trait Service<P>: From<P::Checkpoint>
-where
-    P: Protocol,
-{
-    fn predict(&self, request: &P::Request) -> P::Prediction;
+pub trait Payload: Clone + Serialize + Deserialize<'static> {}
 
-    fn checkpoint(&self) -> P::Checkpoint;
+impl<P> Payload for P where P: Clone + Serialize + Deserialize<'static> {}
 
-    fn invoke(&mut self, request: &P::Request, prediction: &P::Prediction) -> P::Reply;
+/// A trait to associate all the necessary types together.
+/// All associated types must be serializable and not borrow data since replicas need to store these values.
+pub trait Protocol {
+    type Request: Payload;
+    type Prediction: Payload;
+    type Reply: Payload;
+    type Checkpoint: Payload;
+}
+
+pub trait Service: Protocol + From<<Self as Protocol>::Checkpoint> {
+    fn predict(&self, request: &<Self as Protocol>::Request) -> <Self as Protocol>::Prediction;
+
+    fn checkpoint(&self) -> <Self as Protocol>::Checkpoint;
+
+    fn invoke(
+        &mut self,
+        request: &<Self as Protocol>::Request,
+        prediction: &<Self as Protocol>::Prediction,
+    ) -> <Self as Protocol>::Reply;
 }
 
 #[cfg(test)]
@@ -22,20 +36,20 @@ mod tests {
         type Checkpoint = Self;
     }
 
-    impl Service<i32> for i32 {
-        fn predict(&self, request: &<i32 as Protocol>::Request) -> <i32 as Protocol>::Prediction {
+    impl Service for i32 {
+        fn predict(&self, _: &<Self as Protocol>::Request) -> <Self as Protocol>::Prediction {
             ()
         }
 
-        fn checkpoint(&self) -> <i32 as Protocol>::Checkpoint {
+        fn checkpoint(&self) -> <Self as Protocol>::Checkpoint {
             *self
         }
 
         fn invoke(
             &mut self,
-            request: &<i32 as Protocol>::Request,
-            prediction: &<i32 as Protocol>::Prediction,
-        ) -> <i32 as Protocol>::Reply {
+            request: &<Self as Protocol>::Request,
+            _: &<Self as Protocol>::Prediction,
+        ) -> <Self as Protocol>::Reply {
             *self += *request;
             *self
         }

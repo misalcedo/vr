@@ -19,20 +19,29 @@ impl Client {
         }
     }
 
+    pub fn identifier(&self) -> ClientIdentifier {
+        self.identifier
+    }
+
+    pub fn last_request(&self) -> Option<RequestIdentifier> {
+        self.last_request
+    }
+
     pub fn update_view<P>(&mut self, reply: Reply<P>) {
         self.view = self.view.max(reply.view);
     }
 
     pub fn new_request<P>(&mut self, payload: P) -> Request<P> {
+        self.last_request.as_mut().map(RequestIdentifier::increment);
+
         let request = self
             .last_request
-            .get_or_insert_with(Default::default)
-            .next();
+            .get_or_insert_with(RequestIdentifier::default);
 
         Request {
             payload,
             client: self.identifier,
-            id: request,
+            id: *request,
         }
     }
 }
