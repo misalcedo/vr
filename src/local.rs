@@ -5,12 +5,14 @@ use crate::protocol::{
 };
 use crate::request::{ClientIdentifier, Reply};
 use std::collections::VecDeque;
+use std::iter::FusedIterator;
 
 pub struct Envelope<D, P> {
     pub destination: D,
     pub payload: P,
 }
 
+#[derive(Debug)]
 pub enum ProtocolPayload<P>
 where
     P: Protocol,
@@ -25,6 +27,39 @@ where
     StartView(StartView<P::Request, P::Prediction>),
     Recovery(Recovery),
     RecoveryResponse(RecoveryResponse<P::Request, P::Prediction>),
+}
+
+impl<P> ProtocolPayload<P>
+where
+    P: Protocol,
+{
+    pub fn unwrap_prepare(self) -> Prepare<P::Request, P::Prediction> {
+        let Self::Prepare(message) = self else {
+            panic!("called `ProtocolPayload::unwrap_prepare` on a unsupported variant",)
+        };
+        message
+    }
+
+    pub fn unwrap_prepare_ok(self) -> PrepareOk {
+        let Self::PrepareOk(message) = self else {
+            panic!("called `ProtocolPayload::unwrap_prepare_ok` on a unsupported variant",)
+        };
+        message
+    }
+
+    pub fn unwrap_commit(self) -> Commit {
+        let Self::Commit(message) = self else {
+            panic!("called `ProtocolPayload::unwrap_commit` on a unsupported variant",)
+        };
+        message
+    }
+
+    pub fn unwrap_get_state(self) -> GetState {
+        let Self::GetState(message) = self else {
+            panic!("called `ProtocolPayload::unwrap_get_state` on a unsupported variant",)
+        };
+        message
+    }
 }
 
 pub struct BufferedOutbox<P>
@@ -46,6 +81,45 @@ where
             send: Default::default(),
             broadcast: Default::default(),
         }
+    }
+}
+
+impl<P> BufferedOutbox<P>
+where
+    P: Protocol,
+{
+    pub fn is_empty(&self) -> bool {
+        self.replies.is_empty() && self.send.is_empty() && self.broadcast.is_empty()
+    }
+
+    pub fn drain_replies(
+        &mut self,
+    ) -> impl Iterator<Item = Envelope<ClientIdentifier, Reply<P::Reply>>>
+           + DoubleEndedIterator
+           + ExactSizeIterator
+           + FusedIterator
+           + '_ {
+        self.replies.drain(..)
+    }
+
+    pub fn drain_send(
+        &mut self,
+    ) -> impl Iterator<Item = Envelope<usize, ProtocolPayload<P>>>
+           + DoubleEndedIterator
+           + ExactSizeIterator
+           + FusedIterator
+           + '_ {
+        self.send.drain(..)
+    }
+
+    pub fn drain_broadcast(
+        &mut self,
+    ) -> impl Iterator<Item = ProtocolPayload<P>>
+           + DoubleEndedIterator
+           + ExactSizeIterator
+           + FusedIterator
+           + '_ {
+        self.broadcast.drain(..)
     }
 }
 

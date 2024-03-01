@@ -17,7 +17,7 @@ pub trait Payload: Clone + Serialize + Deserialize<'static> {}
 
 impl<P> Payload for P where P: Clone + Serialize + Deserialize<'static> {}
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Prepare<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -31,7 +31,7 @@ pub struct Prepare<R, P> {
     pub committed: OpNumber,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PrepareOk {
     /// The current view of the replica.
     pub view: View,
@@ -41,7 +41,7 @@ pub struct PrepareOk {
     pub index: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Commit {
     /// The current view of the replica.
     pub view: View,
@@ -49,7 +49,7 @@ pub struct Commit {
     pub committed: OpNumber,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetState {
     /// The current view of the replica.
     pub view: View,
@@ -59,7 +59,7 @@ pub struct GetState {
     pub index: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NewState<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -69,7 +69,7 @@ pub struct NewState<R, P> {
     pub committed: OpNumber,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StartViewChange {
     /// The current view of the replica.
     pub view: View,
@@ -77,7 +77,7 @@ pub struct StartViewChange {
     pub index: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DoViewChange<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -89,7 +89,7 @@ pub struct DoViewChange<R, P> {
     pub index: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StartView<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -99,7 +99,7 @@ pub struct StartView<R, P> {
     pub committed: OpNumber,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Recovery {
     /// The index of the replica that needs to get the new state.
     pub index: usize,
@@ -109,7 +109,7 @@ pub struct Recovery {
     pub nonce: Nonce,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecoveryResponse<R, P> {
     /// The current view of the replica.
     pub view: View,
@@ -123,7 +123,7 @@ pub struct RecoveryResponse<R, P> {
     pub index: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Checkpoint<C> {
     /// The last committed operation reflected in the application state.
     pub committed: OpNumber,

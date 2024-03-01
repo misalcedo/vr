@@ -582,7 +582,7 @@ where
     }
 
     fn should_ignore_normal(&self, view: View) -> bool {
-        self.view != view && self.status != Status::Normal
+        self.view != view || self.status != Status::Normal
     }
 
     fn need_state_transfer(&self, view: View) -> bool {
@@ -590,7 +590,7 @@ where
     }
 
     fn should_ignore_view_change(&self, view: View) -> bool {
-        self.view != view && self.status != Status::ViewChange
+        self.view != view || self.status != Status::ViewChange
     }
 
     fn need_view_change(&self, view: View) -> bool {
@@ -605,16 +605,246 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local::BufferedOutbox;
 
     #[test]
     fn sender_behind_prepare() {
         let configuration = Configuration::from(3);
-        let replica = Replica::new(configuration, 1, 0);
+        let mut replica = Replica::new(configuration, 0, 0);
+        let mut outbox = BufferedOutbox::default();
+
+        replica.view.increment();
+        replica.view.increment();
+
+        let message = Prepare {
+            view: View::default().next(),
+            op_number: OpNumber::default().next(),
+            request: Request {
+                payload: 2,
+                client: Default::default(),
+                id: Default::default(),
+            },
+            prediction: (),
+            committed: OpNumber::default(),
+        };
+
+        assert_eq!(replica.handle_prepare(message, &mut outbox), None);
+        assert!(outbox.is_empty());
     }
 
     #[test]
-    fn sender_behind_prepare_ok() {}
+    fn sender_ahead_prepare() {
+        let configuration = Configuration::from(3);
+        let mut replica = Replica::new(configuration, 1, 0);
+        let mut outbox = BufferedOutbox::default();
+
+        let message = Prepare {
+            view: View::default().next(),
+            op_number: OpNumber::default().next(),
+            request: Request {
+                payload: 2,
+                client: Default::default(),
+                id: Default::default(),
+            },
+            prediction: (),
+            committed: OpNumber::default(),
+        };
+
+        assert_eq!(
+            replica.handle_prepare(message.clone(), &mut outbox),
+            Some(message)
+        );
+
+        let mut messages = Vec::from_iter(outbox.drain_send());
+        let outbound = GetState {
+            view: replica.view,
+            op_number: replica.log.last_op_number(),
+            index: replica.index,
+        };
+        let envelope = messages.pop().unwrap();
+
+        assert_ne!(envelope.destination, replica.index);
+        assert_eq!(envelope.payload.unwrap_get_state(), outbound);
+        assert!(messages.is_empty());
+        assert!(outbox.is_empty());
+    }
 
     #[test]
-    fn sender_behind_commit() {}
+    fn sender_behind_prepare_ok() {
+        let configuration = Configuration::from(3);
+        let mut replica = Replica::new(configuration, 2, 0);
+        let mut outbox = BufferedOutbox::default();
+
+        replica.view.increment();
+        replica.view.increment();
+
+        let message = PrepareOk {
+            view: View::default().next(),
+            op_number: OpNumber::default().next(),
+            index: 0,
+        };
+
+        assert_eq!(replica.handle_prepare_ok(message, &mut outbox), None);
+        assert!(outbox.is_empty());
+    }
+
+    #[test]
+    fn sender_ahead_prepare_ok() {
+        let configuration = Configuration::from(3);
+        let mut replica = Replica::new(configuration, 1, 0);
+        let mut outbox = BufferedOutbox::default();
+
+        let message = PrepareOk {
+            view: View::default().next(),
+            op_number: OpNumber::default().next(),
+            index: 0,
+        };
+
+        assert_eq!(
+            replica.handle_prepare_ok(message.clone(), &mut outbox),
+            Some(message)
+        );
+
+        let mut messages = Vec::from_iter(outbox.drain_send());
+        let outbound = GetState {
+            view: replica.view,
+            op_number: replica.log.last_op_number(),
+            index: replica.index,
+        };
+        let envelope = messages.pop().unwrap();
+
+        assert_ne!(envelope.destination, replica.index);
+        assert_eq!(envelope.payload.unwrap_get_state(), outbound);
+        assert!(messages.is_empty());
+        assert!(outbox.is_empty());
+    }
+
+    #[test]
+    fn sender_behind_commit() {
+        let configuration = Configuration::from(3);
+        let mut replica = Replica::new(configuration, 0, 0);
+        let mut outbox = BufferedOutbox::default();
+
+        replica.view.increment();
+        replica.view.increment();
+
+        let message = Commit {
+            view: View::default().next(),
+            committed: OpNumber::default().next(),
+        };
+
+        assert_eq!(replica.handle_commit(message, &mut outbox), None);
+        assert!(outbox.is_empty());
+    }
+
+    #[test]
+    fn sender_ahead_commit() {
+        let configuration = Configuration::from(3);
+        let mut replica = Replica::new(configuration, 0, 0);
+        let mut outbox = BufferedOutbox::default();
+
+        let message = Commit {
+            view: View::default().next(),
+            committed: OpNumber::default().next(),
+        };
+
+        assert_eq!(
+            replica.handle_commit(message.clone(), &mut outbox),
+            Some(message)
+        );
+
+        let mut messages = Vec::from_iter(outbox.drain_send());
+        let outbound = GetState {
+            view: replica.view,
+            op_number: replica.log.last_op_number(),
+            index: replica.index,
+        };
+        let envelope = messages.pop().unwrap();
+
+        assert_ne!(envelope.destination, replica.index);
+        assert_eq!(envelope.payload.unwrap_get_state(), outbound);
+        assert!(messages.is_empty());
+        assert!(outbox.is_empty());
+    }
+
+    #[test]
+    fn sender_behind_get_state() {
+        let configuration = Configuration::from(3);
+        let mut replica = Replica::new(configuration, 0, 0);
+        let mut outbox = BufferedOutbox::default();
+
+        replica.view.increment();
+        replica.view.increment();
+
+        let message = GetState {
+            view: View::default().next(),
+            op_number: OpNumber::default(),
+            index: 1,
+        };
+
+        assert_eq!(replica.handle_get_state(message, &mut outbox), None);
+        assert!(outbox.is_empty());
+    }
+
+    #[test]
+    fn sender_ahead_get_state() {
+        let configuration = Configuration::from(3);
+        let mut replica = Replica::new(configuration, 0, 0);
+        let mut outbox = BufferedOutbox::default();
+
+        let message = GetState {
+            view: View::default().next(),
+            op_number: OpNumber::default().next(),
+            index: 1,
+        };
+
+        assert_eq!(
+            replica.handle_get_state(message.clone(), &mut outbox),
+            Some(message)
+        );
+
+        let mut messages = Vec::from_iter(outbox.drain_send());
+        let outbound = GetState {
+            view: replica.view,
+            op_number: replica.log.last_op_number(),
+            index: replica.index,
+        };
+        let envelope = messages.pop().unwrap();
+
+        assert_ne!(envelope.destination, replica.index);
+        assert_eq!(envelope.payload.unwrap_get_state(), outbound);
+        assert!(messages.is_empty());
+        assert!(outbox.is_empty());
+    }
+
+    #[test]
+    fn sender_behind_new_state() {
+        let configuration = Configuration::from(3);
+        let mut replica = Replica::new(configuration, 0, 0);
+        let mut outbox = BufferedOutbox::default();
+
+        replica.view.increment();
+        replica.view.increment();
+        replica.log.push(
+            replica.view,
+            Request {
+                payload: 2,
+                client: Default::default(),
+                id: Default::default(),
+            },
+            (),
+        );
+
+        let message = NewState {
+            view: View::default().next(),
+            log: Log::default(),
+            committed: OpNumber::default().next(),
+        };
+
+        replica.handle_new_state(message.clone(), &mut outbox);
+
+        assert_ne!(replica.log, message.log);
+        assert_ne!(replica.committed, message.committed);
+        assert!(outbox.is_empty());
+    }
 }

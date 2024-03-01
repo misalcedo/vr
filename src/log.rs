@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::ops::{Index, IndexMut};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Entry<R, P> {
     request: Request<R>,
     prediction: P,
@@ -28,7 +28,7 @@ impl<R, P> Entry<R, P> {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Log<R, P> {
     view: View,
     range: (OpNumber, OpNumber),
