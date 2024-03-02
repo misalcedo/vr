@@ -37,6 +37,6 @@ pub struct Group(u128);
 
 impl Default for Group {
     fn default() -> Self {
-        Self(uuid::Uuid::now_v7().as_u128())
+        Self(uuid::Uuid::new_v4().as_u128())
     }
 }

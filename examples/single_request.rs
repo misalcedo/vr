@@ -50,7 +50,7 @@ fn main() {
     let delta = 1;
     let request = client.new_request(delta);
 
-    primary.handle_request(request, &mut outbox);
+    primary.handle_request(request.clone(), &mut outbox);
 
     let mut messages = Vec::from_iter(outbox.drain_broadcast());
     let prepare = messages.pop().unwrap().unwrap_prepare();
@@ -72,8 +72,8 @@ fn main() {
     let reply = replies.pop().unwrap();
 
     assert!(outbox.is_empty());
-    assert_eq!(reply.destination, client.identifier());
+    assert_eq!(reply.destination, request.client);
     assert_eq!(reply.payload.payload, delta);
     assert_eq!(reply.payload.view, primary.view());
-    assert_eq!(Some(reply.payload.id), client.last_request());
+    assert_eq!(reply.payload.id, request.id);
 }

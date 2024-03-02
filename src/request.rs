@@ -10,23 +10,18 @@ impl Default for ClientIdentifier {
     }
 }
 
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone, Debug, Default, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize,
+)]
 pub struct RequestIdentifier(u128);
 
-impl Default for RequestIdentifier {
-    fn default() -> Self {
-        Self(uuid::Uuid::now_v7().as_u128())
-    }
-}
-
 impl RequestIdentifier {
-    pub fn increment(&mut self) -> Self {
-        *self = Self::default();
-        *self
+    pub fn increment(&mut self) {
+        self.0 += 1;
     }
 
     pub fn next(&self) -> Self {
-        Self::default()
+        Self(self.0 + 1)
     }
 }
 
