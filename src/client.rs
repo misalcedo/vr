@@ -19,6 +19,10 @@ impl Client {
         }
     }
 
+    pub fn identifier(&self) -> ClientIdentifier {
+        self.identifier
+    }
+
     pub fn update_view<P>(&mut self, reply: &Reply<P>) {
         self.view = self.view.max(reply.view);
     }

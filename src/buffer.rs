@@ -6,6 +6,7 @@ use crate::protocol::{
 use crate::request::{ClientIdentifier, Reply};
 use crate::service::Protocol;
 use std::collections::VecDeque;
+use std::fmt::{Debug, Formatter};
 use std::iter::FusedIterator;
 
 pub struct Envelope<D, P> {
@@ -13,7 +14,7 @@ pub struct Envelope<D, P> {
     pub payload: P,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub enum ProtocolPayload<P>
 where
     P: Protocol,
@@ -28,6 +29,48 @@ where
     StartView(StartView<P::Request, P::Prediction>),
     Recovery(Recovery),
     RecoveryResponse(RecoveryResponse<P::Request, P::Prediction>),
+}
+
+impl<P> Clone for ProtocolPayload<P>
+where
+    P: Protocol,
+{
+    fn clone(&self) -> Self {
+        match self {
+            ProtocolPayload::Prepare(message) => Self::Prepare(message.clone()),
+            ProtocolPayload::PrepareOk(message) => Self::PrepareOk(message.clone()),
+            ProtocolPayload::Commit(message) => Self::Commit(message.clone()),
+            ProtocolPayload::GetState(message) => Self::GetState(message.clone()),
+            ProtocolPayload::NewState(message) => Self::NewState(message.clone()),
+            ProtocolPayload::StartViewChange(message) => Self::StartViewChange(message.clone()),
+            ProtocolPayload::DoViewChange(message) => Self::DoViewChange(message.clone()),
+            ProtocolPayload::StartView(message) => Self::StartView(message.clone()),
+            ProtocolPayload::Recovery(message) => Self::Recovery(message.clone()),
+            ProtocolPayload::RecoveryResponse(message) => Self::RecoveryResponse(message.clone()),
+        }
+    }
+}
+
+impl<P, Req, Pre> Debug for ProtocolPayload<P>
+where
+    P: Protocol<Request = Req, Prediction = Pre>,
+    Req: Debug,
+    Pre: Debug,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProtocolPayload::Prepare(message) => write!(f, "{message:?}"),
+            ProtocolPayload::PrepareOk(message) => write!(f, "{message:?}"),
+            ProtocolPayload::Commit(message) => write!(f, "{message:?}"),
+            ProtocolPayload::GetState(message) => write!(f, "{message:?}"),
+            ProtocolPayload::NewState(message) => write!(f, "{message:?}"),
+            ProtocolPayload::StartViewChange(message) => write!(f, "{message:?}"),
+            ProtocolPayload::DoViewChange(message) => write!(f, "{message:?}"),
+            ProtocolPayload::StartView(message) => write!(f, "{message:?}"),
+            ProtocolPayload::Recovery(message) => write!(f, "{message:?}"),
+            ProtocolPayload::RecoveryResponse(message) => write!(f, "{message:?}"),
+        }
+    }
 }
 
 impl<P> ProtocolPayload<P>

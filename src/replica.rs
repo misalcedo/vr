@@ -88,6 +88,10 @@ where
         replica
     }
 
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
     pub fn view(&self) -> View {
         self.view
     }
