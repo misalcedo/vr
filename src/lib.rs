@@ -1,9 +1,9 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
 
+pub mod buffer;
 mod client;
 mod client_table;
 mod configuration;
-pub mod local;
 mod log;
 mod mail;
 mod nonce;

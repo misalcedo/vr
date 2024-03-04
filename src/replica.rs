@@ -1,7 +1,7 @@
 use crate::client_table::ClientTable;
 use crate::configuration::Configuration;
 use crate::log::Log;
-use crate::mail::Outbox;
+use crate::mail::{Mailbox, Outbox};
 use crate::nonce::Nonce;
 use crate::protocol::{
     Checkpoint, Commit, DoViewChange, GetState, NewState, Prepare, PrepareOk, Recovery,
@@ -178,33 +178,34 @@ where
         }
     }
 
-    pub fn handle_prepare<O>(
+    pub fn handle_prepare<M>(
         &mut self,
         message: Prepare<S::Request, S::Prediction>,
-        outbox: &mut O,
-    ) -> Option<Prepare<S::Request, S::Prediction>>
-    where
-        O: Outbox<S>,
+        mailbox: &mut M,
+    ) where
+        M: Mailbox<S>,
     {
         if self.need_state_transfer(message.view) {
-            self.state_transfer(message.view, outbox);
-            return Some(message);
+            self.state_transfer(message.view, mailbox);
+            mailbox.push_prepare(message);
+            return;
         }
 
         if self.should_ignore_normal(message.view) || self.log.contains(&message.op_number) {
-            return None;
+            return;
         }
 
         let next = self.log.next_op_number();
         if next < message.op_number || next < message.committed {
-            self.state_transfer(message.view, outbox);
-            return Some(message);
+            self.state_transfer(message.view, mailbox);
+            mailbox.push_prepare(message);
+            return;
         }
 
         self.client_table.start(&message.request);
         self.log
             .push(self.view, message.request, message.prediction);
-        outbox.prepare_ok(
+        mailbox.prepare_ok(
             self.configuration % self.view,
             PrepareOk {
                 view: self.view,
@@ -212,22 +213,21 @@ where
                 index: self.index,
             },
         );
-        self.commit_operations(message.committed, outbox);
-
-        None
+        self.commit_operations(message.committed, mailbox);
     }
 
-    pub fn handle_prepare_ok<O>(&mut self, message: PrepareOk, outbox: &mut O) -> Option<PrepareOk>
+    pub fn handle_prepare_ok<M>(&mut self, message: PrepareOk, mailbox: &mut M)
     where
-        O: Outbox<S>,
+        M: Mailbox<S>,
     {
         if self.need_state_transfer(message.view) {
-            self.state_transfer(message.view, outbox);
-            return Some(message);
+            self.state_transfer(message.view, mailbox);
+            mailbox.push_prepare_ok(message);
+            return;
         }
 
         if self.should_ignore_normal(message.view) || message.op_number <= self.committed {
-            return None;
+            return;
         }
 
         let prepared = self.prepared.entry(message.op_number).or_default();
@@ -238,49 +238,48 @@ where
 
         if committed {
             self.prepared.retain(|&o, _| o > message.op_number);
-            self.commit_operations(message.op_number, outbox);
+            self.commit_operations(message.op_number, mailbox);
         }
-
-        None
     }
 
-    pub fn handle_commit<O>(&mut self, message: Commit, outbox: &mut O) -> Option<Commit>
+    pub fn handle_commit<M>(&mut self, message: Commit, mailbox: &mut M)
     where
-        O: Outbox<S>,
+        M: Mailbox<S>,
     {
         if self.need_state_transfer(message.view) {
-            self.state_transfer(message.view, outbox);
-            return Some(message);
+            self.state_transfer(message.view, mailbox);
+            mailbox.push_commit(message);
+            return;
         }
 
         if self.should_ignore_normal(message.view) || message.committed <= self.committed {
-            return None;
+            return;
         }
 
         if !self.log.contains(&message.committed) {
-            self.state_transfer(message.view, outbox);
-            return Some(message);
+            self.state_transfer(message.view, mailbox);
+            mailbox.push_commit(message);
+            return;
         }
 
-        self.commit_operations(message.committed, outbox);
-
-        None
+        self.commit_operations(message.committed, mailbox);
     }
 
-    pub fn handle_get_state<O>(&mut self, message: GetState, outbox: &mut O) -> Option<GetState>
+    pub fn handle_get_state<M>(&mut self, message: GetState, mailbox: &mut M)
     where
-        O: Outbox<S>,
+        M: Mailbox<S>,
     {
         if self.need_state_transfer(message.view) {
-            self.state_transfer(message.view, outbox);
-            return Some(message);
+            self.state_transfer(message.view, mailbox);
+            mailbox.push_get_state(message);
+            return;
         }
 
         if self.should_ignore_normal(message.view) {
-            return None;
+            return;
         }
 
-        outbox.new_state(
+        mailbox.new_state(
             message.index,
             NewState {
                 view: self.view,
@@ -288,8 +287,6 @@ where
                 committed: self.committed,
             },
         );
-
-        None
     }
 
     pub fn handle_recovery<O>(&mut self, message: Recovery, outbox: &mut O)
@@ -607,13 +604,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::BufferedOutbox;
+    use crate::buffer::{BufferedMailbox, ProtocolPayload};
 
     #[test]
     fn sender_behind_prepare() {
         let configuration = Configuration::from(3);
         let mut replica = Replica::new(configuration, 0, 0);
-        let mut outbox = BufferedOutbox::default();
+        let mut mailbox = BufferedMailbox::default();
 
         replica.view.increment();
         replica.view.increment();
@@ -630,15 +627,17 @@ mod tests {
             committed: OpNumber::default(),
         };
 
-        assert_eq!(replica.handle_prepare(message, &mut outbox), None);
-        assert!(outbox.is_empty());
+        replica.handle_prepare(message, &mut mailbox);
+
+        assert_eq!(Vec::from_iter(mailbox.drain_inbound()), vec![]);
+        assert!(mailbox.is_empty());
     }
 
     #[test]
     fn sender_ahead_prepare() {
         let configuration = Configuration::from(3);
         let mut replica = Replica::new(configuration, 1, 0);
-        let mut outbox = BufferedOutbox::default();
+        let mut mailbox = BufferedMailbox::default();
 
         let message = Prepare {
             view: View::default().next(),
@@ -652,12 +651,14 @@ mod tests {
             committed: OpNumber::default(),
         };
 
+        replica.handle_prepare(message.clone(), &mut mailbox);
+
         assert_eq!(
-            replica.handle_prepare(message.clone(), &mut outbox),
+            mailbox.pop_inbound().map(ProtocolPayload::unwrap_prepare),
             Some(message)
         );
 
-        let mut messages = Vec::from_iter(outbox.drain_send());
+        let mut messages = Vec::from_iter(mailbox.drain_send());
         let outbound = GetState {
             view: replica.view,
             op_number: replica.log.last_op_number(),
@@ -668,14 +669,14 @@ mod tests {
         assert_ne!(envelope.destination, replica.index);
         assert_eq!(envelope.payload.unwrap_get_state(), outbound);
         assert!(messages.is_empty());
-        assert!(outbox.is_empty());
+        assert!(mailbox.is_empty());
     }
 
     #[test]
     fn sender_behind_prepare_ok() {
         let configuration = Configuration::from(3);
         let mut replica = Replica::new(configuration, 2, 0);
-        let mut outbox = BufferedOutbox::default();
+        let mut mailbox = BufferedMailbox::default();
 
         replica.view.increment();
         replica.view.increment();
@@ -686,15 +687,17 @@ mod tests {
             index: 0,
         };
 
-        assert_eq!(replica.handle_prepare_ok(message, &mut outbox), None);
-        assert!(outbox.is_empty());
+        replica.handle_prepare_ok(message, &mut mailbox);
+
+        assert_eq!(Vec::from_iter(mailbox.drain_inbound()), vec![]);
+        assert!(mailbox.is_empty());
     }
 
     #[test]
     fn sender_ahead_prepare_ok() {
         let configuration = Configuration::from(3);
         let mut replica = Replica::new(configuration, 1, 0);
-        let mut outbox = BufferedOutbox::default();
+        let mut mailbox = BufferedMailbox::default();
 
         let message = PrepareOk {
             view: View::default().next(),
@@ -702,12 +705,16 @@ mod tests {
             index: 0,
         };
 
+        replica.handle_prepare_ok(message.clone(), &mut mailbox);
+
         assert_eq!(
-            replica.handle_prepare_ok(message.clone(), &mut outbox),
+            mailbox
+                .pop_inbound()
+                .map(ProtocolPayload::unwrap_prepare_ok),
             Some(message)
         );
 
-        let mut messages = Vec::from_iter(outbox.drain_send());
+        let mut messages = Vec::from_iter(mailbox.drain_send());
         let outbound = GetState {
             view: replica.view,
             op_number: replica.log.last_op_number(),
@@ -718,14 +725,14 @@ mod tests {
         assert_ne!(envelope.destination, replica.index);
         assert_eq!(envelope.payload.unwrap_get_state(), outbound);
         assert!(messages.is_empty());
-        assert!(outbox.is_empty());
+        assert!(mailbox.is_empty());
     }
 
     #[test]
     fn sender_behind_commit() {
         let configuration = Configuration::from(3);
         let mut replica = Replica::new(configuration, 0, 0);
-        let mut outbox = BufferedOutbox::default();
+        let mut mailbox = BufferedMailbox::default();
 
         replica.view.increment();
         replica.view.increment();
@@ -735,27 +742,31 @@ mod tests {
             committed: OpNumber::default().next(),
         };
 
-        assert_eq!(replica.handle_commit(message, &mut outbox), None);
-        assert!(outbox.is_empty());
+        replica.handle_commit(message, &mut mailbox);
+
+        assert_eq!(Vec::from_iter(mailbox.drain_inbound()), vec![]);
+        assert!(mailbox.is_empty());
     }
 
     #[test]
     fn sender_ahead_commit() {
         let configuration = Configuration::from(3);
         let mut replica = Replica::new(configuration, 0, 0);
-        let mut outbox = BufferedOutbox::default();
+        let mut mailbox = BufferedMailbox::default();
 
         let message = Commit {
             view: View::default().next(),
             committed: OpNumber::default().next(),
         };
 
+        replica.handle_commit(message.clone(), &mut mailbox);
+
         assert_eq!(
-            replica.handle_commit(message.clone(), &mut outbox),
+            mailbox.pop_inbound().map(ProtocolPayload::unwrap_commit),
             Some(message)
         );
 
-        let mut messages = Vec::from_iter(outbox.drain_send());
+        let mut messages = Vec::from_iter(mailbox.drain_send());
         let outbound = GetState {
             view: replica.view,
             op_number: replica.log.last_op_number(),
@@ -766,14 +777,14 @@ mod tests {
         assert_ne!(envelope.destination, replica.index);
         assert_eq!(envelope.payload.unwrap_get_state(), outbound);
         assert!(messages.is_empty());
-        assert!(outbox.is_empty());
+        assert!(mailbox.is_empty());
     }
 
     #[test]
     fn sender_behind_get_state() {
         let configuration = Configuration::from(3);
         let mut replica = Replica::new(configuration, 0, 0);
-        let mut outbox = BufferedOutbox::default();
+        let mut mailbox = BufferedMailbox::default();
 
         replica.view.increment();
         replica.view.increment();
@@ -784,15 +795,17 @@ mod tests {
             index: 1,
         };
 
-        assert_eq!(replica.handle_get_state(message, &mut outbox), None);
-        assert!(outbox.is_empty());
+        replica.handle_get_state(message, &mut mailbox);
+
+        assert_eq!(Vec::from_iter(mailbox.drain_inbound()), vec![]);
+        assert!(mailbox.is_empty());
     }
 
     #[test]
     fn sender_ahead_get_state() {
         let configuration = Configuration::from(3);
         let mut replica = Replica::new(configuration, 0, 0);
-        let mut outbox = BufferedOutbox::default();
+        let mut mailbox = BufferedMailbox::default();
 
         let message = GetState {
             view: View::default().next(),
@@ -800,12 +813,14 @@ mod tests {
             index: 1,
         };
 
+        replica.handle_get_state(message.clone(), &mut mailbox);
+
         assert_eq!(
-            replica.handle_get_state(message.clone(), &mut outbox),
+            mailbox.pop_inbound().map(ProtocolPayload::unwrap_get_state),
             Some(message)
         );
 
-        let mut messages = Vec::from_iter(outbox.drain_send());
+        let mut messages = Vec::from_iter(mailbox.drain_send());
         let outbound = GetState {
             view: replica.view,
             op_number: replica.log.last_op_number(),
@@ -816,14 +831,14 @@ mod tests {
         assert_ne!(envelope.destination, replica.index);
         assert_eq!(envelope.payload.unwrap_get_state(), outbound);
         assert!(messages.is_empty());
-        assert!(outbox.is_empty());
+        assert!(mailbox.is_empty());
     }
 
     #[test]
     fn sender_behind_new_state() {
         let configuration = Configuration::from(3);
         let mut replica = Replica::new(configuration, 0, 0);
-        let mut outbox = BufferedOutbox::default();
+        let mut outbox = BufferedMailbox::default();
 
         replica.view.increment();
         replica.view.increment();
