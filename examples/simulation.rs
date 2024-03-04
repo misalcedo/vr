@@ -1,3 +1,4 @@
+use log::{info, trace};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
@@ -131,7 +132,7 @@ where
     pub fn requeue(&mut self, index: usize, inbox: &mut BufferedMailbox<P>) {
         if let Some(sender) = self.senders.get(index) {
             for message in inbox.drain_inbound() {
-                println!("Re-queuing {message:?} on replica {index}...");
+                trace!("Re-queuing {message:?} on replica {index}...");
 
                 sender
                     .send(Message::Protocol(message))
@@ -143,9 +144,10 @@ where
     pub fn process_outbound(&mut self, source: usize, outbox: &mut BufferedMailbox<P>) {
         for message in outbox.drain_replies() {
             if let Some(sender) = self.clients.get(&message.destination) {
-                println!(
+                trace!(
                     "Sending reply {:?} to client {:?} from replica {source}...",
-                    &message.payload, &message.destination
+                    &message.payload,
+                    &message.destination
                 );
 
                 sender
@@ -156,9 +158,10 @@ where
 
         for message in outbox.drain_send() {
             if let Some(sender) = self.senders.get(message.destination) {
-                println!(
+                trace!(
                     "Sending protocol message {:?} from {source} to {}...",
-                    &message.payload, &message.destination
+                    &message.payload,
+                    &message.destination
                 );
 
                 sender
@@ -168,7 +171,7 @@ where
         }
 
         for message in outbox.drain_broadcast() {
-            println!("Broadcasting message {message:?} from {source} to the group...");
+            trace!("Broadcasting message {message:?} from {source} to the group...");
 
             for (index, sender) in self.senders.iter().enumerate() {
                 if source != index {
@@ -182,6 +185,8 @@ where
 }
 
 fn main() {
+    env_logger::init();
+
     let configuration = Configuration::from(5);
     let checkpoint = 0;
 
@@ -201,7 +206,7 @@ fn main() {
         .and_then(Result::ok)
         .unwrap_or(2);
 
-    println!(
+    info!(
         "Running the simulation with {} replicas and {client_count} clients.",
         configuration.replicas()
     );
@@ -233,7 +238,7 @@ fn main() {
                     Ok(message) => {
                         interface.requeue(replica.index(), &mut mailbox);
 
-                        println!("Processing {message:?} on replica {index}...");
+                        trace!("Processing {message:?} on replica {index}...");
 
                         match message {
                             Message::Request(request) => {
@@ -274,7 +279,7 @@ fn main() {
                         }
                     }
                     Err(_) => {
-                        println!(
+                        trace!(
                             "Replica {} is idle in view {:?}...",
                             replica.index(),
                             replica.view()
@@ -294,7 +299,7 @@ fn main() {
                 Some(start) => match receiver.try_recv() {
                     Ok(reply) => {
                         client.update_view(&reply);
-                        println!(
+                        info!(
                                 "Received reply for request {:?} with view {:?} and payload {} after {} microseconds.",
                                 reply.id, reply.view, reply.payload, start.elapsed().as_micros()
                             );
@@ -307,7 +312,7 @@ fn main() {
                     let request = client.new_request(1);
                     let primary = client.primary();
 
-                    println!("Sending request {request:?} to replica {primary}.");
+                    trace!("Sending request {request:?} to replica {primary}.");
 
                     network.send(primary, request);
 

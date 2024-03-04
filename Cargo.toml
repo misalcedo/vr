@@ -17,7 +17,8 @@ debug = true
 default = []
 
 [dev-dependencies]
-postcard = { version = "1.0.8", features = ["alloc"] }
+log = { version = "0.4.21" }
+env_logger = "0.11.2"
 
 [dependencies]
 bytes = "1.5.0"
