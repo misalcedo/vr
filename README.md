@@ -28,12 +28,7 @@ checkpoint will be removed from the log.
 
 ## Simulation
 
-A simulation of the protocol using threads and channels is included in the examples.
-The executable supports commands during execution:
-
-- `Q` or `q` stops the simulation,
-- `C {{I}}` or `c {{I}}` crashes the replica with index `{{I}}`.
-- `R {{I}}` or `r {{I}}` recovers the replica with index `{{I}}`.
+A simulation of the protocol using async tasks and channels is included in the examples.
 
 ```console
 cargo run --example simulation

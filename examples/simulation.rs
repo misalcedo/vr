@@ -1,11 +1,10 @@
-use log::{error, info, trace};
-use std::collections::{HashMap, HashSet, VecDeque};
+use log::{error, info, trace, warn};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
-use std::io::stdin;
 use std::num::NonZeroUsize;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::thread;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinSet;
 use viewstamped_replication::buffer::{BufferedMailbox, ProtocolPayload};
 use viewstamped_replication::{
     Client, ClientIdentifier, Configuration, Protocol, Replica, Reply, Request, Service,
@@ -18,9 +17,9 @@ pub struct Options {
     commit_timeout: Duration,
     view_timeout: Duration,
     reply_timeout: Duration,
+    checkpoint_internal: Duration,
     suffix: usize,
-    checkpoint_threshold: usize,
-    max_replies: usize,
+    requests_per_client: usize,
 }
 
 #[derive(Default)]
@@ -91,8 +90,8 @@ where
     P: Protocol,
 {
     configuration: Configuration,
-    senders: Vec<Sender<Command<P>>>,
-    clients: HashMap<ClientIdentifier, Sender<Reply<P::Reply>>>,
+    senders: Vec<UnboundedSender<Command<P>>>,
+    clients: HashMap<ClientIdentifier, UnboundedSender<Reply<P::Reply>>>,
 }
 
 impl<P> Clone for Network<P>
@@ -125,16 +124,19 @@ where
         }
     }
 
-    pub fn bind(&mut self) -> Receiver<Command<P>> {
-        let (sender, receiver) = channel();
+    pub fn bind(&mut self) -> UnboundedReceiver<Command<P>> {
+        let (sender, receiver) = unbounded_channel();
 
         self.senders.push(sender);
 
         receiver
     }
 
-    pub fn bind_client(&mut self, identifier: ClientIdentifier) -> Receiver<Reply<P::Reply>> {
-        let (sender, receiver) = channel();
+    pub fn bind_client(
+        &mut self,
+        identifier: ClientIdentifier,
+    ) -> UnboundedReceiver<Reply<P::Reply>> {
+        let (sender, receiver) = unbounded_channel();
 
         self.clients.insert(identifier, sender);
 
@@ -159,23 +161,25 @@ where
 
     pub fn crash(&mut self, index: usize) {
         if let Some(sender) = self.senders.get(index) {
-            sender.send(Command::Crash).expect("unable to send message");
+            if let Err(_) = sender.send(Command::Crash) {
+                warn!("unable to send message to {index}")
+            }
         }
     }
 
     pub fn recover(&mut self, index: usize) {
         if let Some(sender) = self.senders.get(index) {
-            sender
-                .send(Command::Recover)
-                .expect("unable to send message");
+            if let Err(_) = sender.send(Command::Recover) {
+                warn!("unable to send message to {index}")
+            }
         }
     }
 
-    pub fn checkpoint(&mut self, index: usize, suffix: usize) {
-        if let Some(sender) = self.senders.get(index) {
-            sender
-                .send(Command::Checkpoint(suffix))
-                .expect("unable to send message");
+    pub fn checkpoint(&mut self, suffix: usize) {
+        for (index, sender) in self.senders.iter().enumerate() {
+            if let Err(_) = sender.send(Command::Checkpoint(suffix)) {
+                warn!("unable to send message to {index}")
+            }
         }
     }
 
@@ -184,9 +188,9 @@ where
             for message in inbox.drain_inbound() {
                 trace!("Re-queuing {message:?} on replica {index}...");
 
-                sender
-                    .send(Command::Protocol(message))
-                    .expect("unable to send message");
+                if let Err(_) = sender.send(Command::Protocol(message)) {
+                    warn!("unable to send message to {index}")
+                }
             }
         }
     }
@@ -200,9 +204,9 @@ where
                     &message.destination
                 );
 
-                sender
-                    .send(message.payload)
-                    .expect("unable to send message");
+                if let Err(_) = sender.send(message.payload) {
+                    warn!("unable to send message to client {:?}", message.destination)
+                }
             }
         }
 
@@ -214,9 +218,9 @@ where
                     &message.destination
                 );
 
-                sender
-                    .send(Command::Protocol(message.payload))
-                    .expect("unable to send message");
+                if let Err(_) = sender.send(Command::Protocol(message.payload)) {
+                    warn!("unable to send message to {:?}", message.destination)
+                }
             }
         }
 
@@ -225,16 +229,17 @@ where
 
             for (index, sender) in self.senders.iter().enumerate() {
                 if source != index {
-                    sender
-                        .send(Command::Protocol(message.clone()))
-                        .expect("unable to send message");
+                    if let Err(_) = sender.send(Command::Protocol(message.clone())) {
+                        warn!("unable to send message to {index}")
+                    }
                 }
             }
         }
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::init();
 
     let options = Options {
@@ -243,10 +248,11 @@ fn main() {
         commit_timeout: Duration::from_millis(100),
         view_timeout: Duration::from_secs(1),
         reply_timeout: Duration::from_secs(1),
+        checkpoint_internal: Duration::from_millis(50),
         suffix: 3,
-        checkpoint_threshold: 1000,
-        max_replies: 1000,
+        requests_per_client: 1000,
     };
+    let start = Instant::now();
     let configuration = Configuration::from(options.f * 2 + 1);
 
     let mut network = Network::<Adder>::new(configuration);
@@ -262,226 +268,229 @@ fn main() {
         options.clients
     );
 
-    let mut clients: Vec<(
-        Client,
-        Receiver<Reply<<Adder as Protocol>::Reply>>,
-        Option<Instant>,
-    )> = Vec::with_capacity(options.clients);
+    let mut clients: Vec<(Client, UnboundedReceiver<Reply<<Adder as Protocol>::Reply>>)> =
+        Vec::with_capacity(options.clients);
     for _ in 0..options.clients {
         let client = Client::new(configuration);
         let receiver = network.bind_client(client.identifier());
 
-        clients.push((client, receiver, None));
+        clients.push((client, receiver));
     }
+
+    let mut tasks = JoinSet::new();
 
     for index in 0..configuration.replicas() {
         let receiver = receivers
             .pop_front()
             .expect("no receiver found for replica");
-        let mut interface = network.clone();
 
-        thread::spawn(move || {
-            let mut mailbox = BufferedMailbox::default();
-            let mut replica = Replica::new(configuration, index, Default::default());
-            let mut checkpoint = replica.checkpoint(None);
-            let mut crashed = false;
-
-            loop {
-                let timeout = if replica.is_primary() {
-                    options.commit_timeout
-                } else {
-                    options.view_timeout
-                };
-
-                match receiver.recv_timeout(timeout) {
-                    Ok(Command::Recover) if crashed => {
-                        trace!("Recovering replica {}...", replica.index());
-
-                        replica = Replica::recovering(
-                            configuration,
-                            index,
-                            checkpoint.clone(),
-                            &mut mailbox,
-                        );
-                        crashed = false;
-                    }
-                    Ok(_) if crashed => {}
-                    Ok(Command::Recover) => {}
-                    Ok(Command::Crash) => {
-                        trace!("Crashing replica {}...", replica.index());
-                        crashed = true;
-                    }
-                    Ok(Command::Checkpoint(suffix)) => {
-                        trace!(
-                            "Checkpointing replica {} with suffix {suffix}...",
-                            replica.index()
-                        );
-
-                        checkpoint = replica.checkpoint(NonZeroUsize::new(suffix));
-
-                        trace!(
-                            "Checkpoint for replica {} includes up to op-number {:?}...",
-                            replica.index(),
-                            checkpoint.committed
-                        );
-                    }
-                    Ok(Command::Request(request)) => {
-                        trace!("Processing {request:?} on replica {index}...");
-
-                        replica.handle_request(request, &mut mailbox);
-                    }
-                    Ok(Command::Protocol(message)) => {
-                        interface.requeue(replica.index(), &mut mailbox);
-
-                        trace!("Processing {message:?} on replica {index}...");
-
-                        match message {
-                            ProtocolPayload::Prepare(message) => {
-                                replica.handle_prepare(message, &mut mailbox);
-                            }
-                            ProtocolPayload::PrepareOk(message) => {
-                                replica.handle_prepare_ok(message, &mut mailbox);
-                            }
-                            ProtocolPayload::Commit(message) => {
-                                replica.handle_commit(message, &mut mailbox);
-                            }
-                            ProtocolPayload::GetState(message) => {
-                                replica.handle_get_state(message, &mut mailbox);
-                            }
-                            ProtocolPayload::NewState(message) => {
-                                replica.handle_new_state(message, &mut mailbox);
-                            }
-                            ProtocolPayload::StartViewChange(message) => {
-                                replica.handle_start_view_change(message, &mut mailbox);
-                            }
-                            ProtocolPayload::DoViewChange(message) => {
-                                replica.handle_do_view_change(message, &mut mailbox);
-                            }
-                            ProtocolPayload::StartView(message) => {
-                                replica.handle_start_view(message, &mut mailbox);
-                            }
-                            ProtocolPayload::Recovery(message) => {
-                                replica.handle_recovery(message, &mut mailbox);
-                            }
-                            ProtocolPayload::RecoveryResponse(message) => {
-                                replica.handle_recovery_response(message, &mut mailbox);
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        if !crashed {
-                            trace!(
-                                "Replica {} is idle in view {:?}...",
-                                replica.index(),
-                                replica.view()
-                            );
-                            replica.idle(&mut mailbox);
-                        }
-                    }
-                }
-
-                interface.process_outbound(replica.index(), &mut mailbox);
-            }
-        });
+        tokio::spawn(run_replica(
+            options,
+            Replica::new(configuration, index, Default::default()),
+            receiver,
+            network.clone(),
+        ));
     }
 
-    let mut interface = network.clone();
-    thread::spawn(move || {
-        let mut replies = HashSet::with_capacity(options.max_replies);
-        let mut requests = HashSet::with_capacity(options.max_replies);
+    for (client, receiver) in clients {
+        tasks.spawn(run_client(options, client, receiver, network.clone()));
+    }
 
-        loop {
-            if !replies.is_empty() && replies.len() % options.checkpoint_threshold == 0 {
-                for i in 0..configuration.replicas() {
-                    interface.checkpoint(i, options.suffix);
-                }
+    loop {
+        match tokio::time::timeout(options.checkpoint_internal, tasks.join_next()).await {
+            Ok(Some(task)) => {
+                trace!("Task finished: {:?}", task);
             }
+            Ok(None) => {
+                println!(
+                    "Processed {} requests in {} milliseconds",
+                    options.clients * options.requests_per_client,
+                    start.elapsed().as_millis()
+                );
+                break;
+            }
+            Err(_) => network.checkpoint(options.suffix),
+        }
+    }
+}
 
-            for (client, receiver, timestamp) in clients.iter_mut() {
-                match timestamp.take() {
-                    Some(start) => match receiver.try_recv() {
-                        Ok(reply) => {
-                            replies.insert(reply.id);
-                            client.update_view(&reply);
+async fn run_replica(
+    options: Options,
+    mut replica: Replica<Adder>,
+    mut receiver: UnboundedReceiver<Command<Adder>>,
+    mut network: Network<Adder>,
+) {
+    let mut mailbox = BufferedMailbox::default();
+    let mut checkpoint = replica.checkpoint(None);
+    let mut crashed = false;
+    let mut timeout = if replica.is_primary() {
+        options.commit_timeout
+    } else {
+        options.view_timeout
+    };
 
-                            info!(
-                            "Client {:?} received reply #{} for request {:?} with view {:?} and payload {} after {} microseconds.",
-                            client.identifier(), replies.len(), reply.id, reply.view, reply.payload, start.elapsed().as_micros()
-                        );
-                        }
-                        Err(_) => {
-                            let duration = start.elapsed();
-                            if duration >= options.reply_timeout {
-                                error!(
-                                    "Timed-out waiting for reply on client {:?} after {}...",
-                                    client.identifier(),
-                                    duration.as_millis()
-                                );
-                                let request = client.last_request(1);
-                                interface.broadcast(request);
-                            }
+    loop {
+        match tokio::time::timeout(timeout, receiver.recv()).await {
+            Ok(None) => {
+                panic!("replica channel unexpected closed.")
+            }
+            Ok(Some(Command::Recover)) if crashed => {
+                trace!("Recovering replica {}...", replica.index());
 
-                            *timestamp = Some(start);
-                        }
-                    },
-                    None => {
-                        if requests.len() < options.max_replies {
-                            let request = client.new_request(1);
-                            let primary = client.primary();
+                replica = Replica::recovering(
+                    replica.configuration(),
+                    replica.index(),
+                    checkpoint.clone(),
+                    &mut mailbox,
+                );
+                crashed = false;
+            }
+            Ok(Some(_)) if crashed => {}
+            Ok(Some(Command::Recover)) => {}
+            Ok(Some(Command::Crash)) => {
+                trace!("Crashing replica {}...", replica.index());
+                crashed = true;
+            }
+            Ok(Some(Command::Checkpoint(suffix))) => {
+                trace!(
+                    "Checkpointing replica {} with suffix {suffix}...",
+                    replica.index()
+                );
 
-                            trace!("Sending request {request:?} to replica {primary}.");
+                checkpoint = replica.checkpoint(NonZeroUsize::new(suffix));
 
-                            requests.insert(request.id);
-                            interface.send(primary, request);
+                trace!(
+                    "Checkpoint for replica {} includes up to op-number {:?}...",
+                    replica.index(),
+                    checkpoint.committed
+                );
+            }
+            Ok(Some(Command::Request(request))) => {
+                trace!("Processing {request:?} on replica {}...", replica.index());
 
-                            *timestamp = Some(Instant::now());
-                        }
+                replica.handle_request(request, &mut mailbox);
+            }
+            Ok(Some(Command::Protocol(message))) => {
+                network.requeue(replica.index(), &mut mailbox);
+
+                trace!("Processing {message:?} on replica {}...", replica.index());
+
+                match message {
+                    ProtocolPayload::Prepare(message) => {
+                        replica.handle_prepare(message, &mut mailbox);
+                    }
+                    ProtocolPayload::PrepareOk(message) => {
+                        replica.handle_prepare_ok(message, &mut mailbox);
+                    }
+                    ProtocolPayload::Commit(message) => {
+                        replica.handle_commit(message, &mut mailbox);
+                    }
+                    ProtocolPayload::GetState(message) => {
+                        replica.handle_get_state(message, &mut mailbox);
+                    }
+                    ProtocolPayload::NewState(message) => {
+                        replica.handle_new_state(message, &mut mailbox);
+                    }
+                    ProtocolPayload::StartViewChange(message) => {
+                        replica.handle_start_view_change(message, &mut mailbox);
+                    }
+                    ProtocolPayload::DoViewChange(message) => {
+                        replica.handle_do_view_change(message, &mut mailbox);
+                    }
+                    ProtocolPayload::StartView(message) => {
+                        replica.handle_start_view(message, &mut mailbox);
+                    }
+                    ProtocolPayload::Recovery(message) => {
+                        replica.handle_recovery(message, &mut mailbox);
+                    }
+                    ProtocolPayload::RecoveryResponse(message) => {
+                        replica.handle_recovery_response(message, &mut mailbox);
                     }
                 }
             }
-
-            if replies.len() >= options.max_replies {
-                println!(
-                    "Received {} replies from the system. Exiting...",
-                    replies.len()
-                );
-                std::process::exit(0);
+            Err(_) => {
+                if !crashed {
+                    trace!(
+                        "Replica {} is idle in view {:?}...",
+                        replica.index(),
+                        replica.view()
+                    );
+                    replica.idle(&mut mailbox);
+                }
             }
         }
-    });
 
-    let mut crashed = HashSet::new();
-    let mut line = String::new();
+        network.process_outbound(replica.index(), &mut mailbox);
 
-    println!("Type commands: Q (Quit), C (Crash), R (Recover).");
-    println!("For example, to crash the replica with index: C 1");
+        timeout = if replica.is_primary() {
+            options.commit_timeout
+        } else {
+            options.view_timeout
+        };
+    }
+}
+
+async fn run_client(
+    options: Options,
+    mut client: Client,
+    mut receiver: UnboundedReceiver<Reply<<Adder as Protocol>::Reply>>,
+    mut network: Network<Adder>,
+) {
+    if options.requests_per_client == 0 {
+        return;
+    }
+
+    let mut replies = 0;
+
+    let mut request = client.new_request(1);
+    let mut primary = client.primary();
+    let mut start = Instant::now();
+
+    trace!("Sending request {request:?} to replica {primary}.");
+
+    network.send(primary, request.clone());
 
     loop {
-        line.clear();
+        match tokio::time::timeout(options.reply_timeout, receiver.recv()).await {
+            Ok(Some(reply)) => {
+                info!(
+                            "Client {:?} received reply #{} for request {:?} with view {:?} and payload {} after {} microseconds.",
+                            client.identifier(), replies, reply.id, reply.view, reply.payload, start.elapsed().as_micros()
+                        );
 
-        stdin()
-            .read_line(&mut line)
-            .expect("unable to read from std-in");
+                client.update_view(&reply);
 
-        match line.trim().split_once(" ") {
-            Some(("C" | "c", index)) => {
-                if let Ok(index) = index.parse() {
-                    crashed.insert(index);
-                    network.crash(index);
-                    println!("Crashed replicas: {crashed:?}.");
-                }
+                replies += 1;
+                request = client.new_request(1);
+                primary = client.primary();
+                start = Instant::now();
+
+                trace!("Sending request {request:?} to replica {primary}.");
+
+                network.send(primary, request.clone());
             }
-            Some(("R" | "r", index)) => {
-                if let Ok(index) = index.parse() {
-                    crashed.remove(&index);
-                    network.recover(index);
-                    println!("Crashed replicas: {crashed:?}.");
-                }
+            Ok(None) => {
+                panic!("client channel unexpected closed");
             }
-            None if line == "Q" || line == "q" => {
-                std::process::exit(0);
+            Err(_) => {
+                error!(
+                    "Timed-out waiting for reply on client {:?} after {}...",
+                    client.identifier(),
+                    options.reply_timeout.as_millis()
+                );
+
+                network.broadcast(request.clone());
             }
-            _ => {}
+        }
+
+        if replies >= options.requests_per_client {
+            info!(
+                "Client {:?} received {} replies from the system.",
+                client.identifier(),
+                replies
+            );
+
+            return;
         }
     }
 }

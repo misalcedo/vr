@@ -88,6 +88,10 @@ where
         replica
     }
 
+    pub fn configuration(&self) -> Configuration {
+        self.configuration
+    }
+
     pub fn index(&self) -> usize {
         self.index
     }
