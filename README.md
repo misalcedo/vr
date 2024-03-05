@@ -26,6 +26,21 @@ For example, imagine a configuration that takes a checkpoint every 5 minutes and
 The log will be compacted on the 4th checkpoint and any operations whose application state is reflected in 1st
 checkpoint will be removed from the log.
 
+## Simulation
+
+A simulation of the protocol using threads and channels is included in the examples.
+The executable accepts a single argument parsed as an integer to denote the number of unique clients (i.e. concurrent
+requests).
+The executable supports commands during execution:
+
+- `Q` or `q` stops the simulation,
+- `C {{I}}` or `c {{I}}` crashes the replica with index `{{I}}`.
+- `R {{I}}` or `r {{I}}` recovers the replica with index `{{I}}`.
+
+```console
+RUST_LOG=info cargo run --example simulation -- 10
+```
+
 ## TODOs
 
 - Define mechanism for recovering replicas to fetch configuration upon receiving a protocol message.
