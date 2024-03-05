@@ -61,7 +61,7 @@ impl<R, P> Ord for Log<R, P> {
 
 impl<R, P> PartialOrd for Log<R, P> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.view, self.range.1).partial_cmp(&(other.view, other.range.1))
+        Some(self.cmp(other))
     }
 }
 

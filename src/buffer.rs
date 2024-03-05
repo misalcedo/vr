@@ -147,18 +147,14 @@ where
 
     pub fn drain_inbound(
         &mut self,
-    ) -> impl Iterator<Item = ProtocolPayload<P>>
-           + DoubleEndedIterator
-           + ExactSizeIterator
-           + FusedIterator
-           + '_ {
+    ) -> impl DoubleEndedIterator<Item = ProtocolPayload<P>> + ExactSizeIterator + FusedIterator + '_
+    {
         self.inbound.drain(..)
     }
 
     pub fn drain_replies(
         &mut self,
-    ) -> impl Iterator<Item = Envelope<ClientIdentifier, Reply<P::Reply>>>
-           + DoubleEndedIterator
+    ) -> impl DoubleEndedIterator<Item = Envelope<ClientIdentifier, Reply<P::Reply>>>
            + ExactSizeIterator
            + FusedIterator
            + '_ {
@@ -167,8 +163,7 @@ where
 
     pub fn drain_send(
         &mut self,
-    ) -> impl Iterator<Item = Envelope<usize, ProtocolPayload<P>>>
-           + DoubleEndedIterator
+    ) -> impl DoubleEndedIterator<Item = Envelope<usize, ProtocolPayload<P>>>
            + ExactSizeIterator
            + FusedIterator
            + '_ {
@@ -177,11 +172,8 @@ where
 
     pub fn drain_broadcast(
         &mut self,
-    ) -> impl Iterator<Item = ProtocolPayload<P>>
-           + DoubleEndedIterator
-           + ExactSizeIterator
-           + FusedIterator
-           + '_ {
+    ) -> impl DoubleEndedIterator<Item = ProtocolPayload<P>> + ExactSizeIterator + FusedIterator + '_
+    {
         self.broadcast.drain(..)
     }
 }

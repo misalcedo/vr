@@ -51,7 +51,7 @@ impl<R> ClientTable<R> {
         let last_request = self
             .cache
             .entry(request.client)
-            .or_insert_with(|| CachedRequest::new(&request));
+            .or_insert_with(|| CachedRequest::new(request));
 
         last_request.reply = Some(reply);
     }
