@@ -1,9 +1,8 @@
-use log::{info, trace};
+use log::{error, info, trace};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::io::stdin;
 use std::num::NonZeroUsize;
-use std::str::FromStr;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,6 +10,18 @@ use viewstamped_replication::buffer::{BufferedMailbox, ProtocolPayload};
 use viewstamped_replication::{
     Client, ClientIdentifier, Configuration, Protocol, Replica, Reply, Request, Service,
 };
+
+#[derive(Copy, Clone, Debug)]
+pub struct Options {
+    f: usize,
+    clients: usize,
+    commit_timeout: Duration,
+    view_timeout: Duration,
+    reply_timeout: Duration,
+    suffix: usize,
+    checkpoint_threshold: usize,
+    max_replies: usize,
+}
 
 #[derive(Default)]
 pub struct Adder(i32);
@@ -100,7 +111,7 @@ where
 impl<P, Req, Pre, Rep> Network<P>
 where
     P: Protocol<Request = Req, Prediction = Pre, Reply = Rep>,
-    Req: Debug,
+    Req: Clone + Debug,
     Pre: Debug,
     Rep: Debug,
 {
@@ -134,6 +145,14 @@ where
         if let Some(sender) = self.senders.get(index) {
             sender
                 .send(Command::Request(request))
+                .expect("unable to send message");
+        }
+    }
+
+    pub fn broadcast(&mut self, request: Request<P::Request>) {
+        for sender in self.senders.iter() {
+            sender
+                .send(Command::Request(request.clone()))
                 .expect("unable to send message");
         }
     }
@@ -218,7 +237,17 @@ where
 fn main() {
     env_logger::init();
 
-    let configuration = Configuration::from(5);
+    let options = Options {
+        f: 2,
+        clients: 10,
+        commit_timeout: Duration::from_millis(100),
+        view_timeout: Duration::from_secs(1),
+        reply_timeout: Duration::from_secs(1),
+        suffix: 3,
+        checkpoint_threshold: 1000,
+        max_replies: 1000,
+    };
+    let configuration = Configuration::from(options.f * 2 + 1);
 
     let mut network = Network::<Adder>::new(configuration);
     let mut receivers = VecDeque::with_capacity(configuration.replicas());
@@ -227,26 +256,18 @@ fn main() {
         receivers.push_back(network.bind());
     }
 
-    let client_count: usize = std::env::args()
-        .skip(1)
-        .next()
-        .as_ref()
-        .map(String::as_str)
-        .map(usize::from_str)
-        .and_then(Result::ok)
-        .unwrap_or(2);
-
-    info!(
-        "Running the simulation with {} replicas and {client_count} clients.",
-        configuration.replicas()
+    println!(
+        "Running the simulation with {} replicas and {} clients.",
+        configuration.replicas(),
+        options.clients
     );
 
     let mut clients: Vec<(
         Client,
         Receiver<Reply<<Adder as Protocol>::Reply>>,
         Option<Instant>,
-    )> = Vec::with_capacity(client_count);
-    for _ in 0..client_count {
+    )> = Vec::with_capacity(options.clients);
+    for _ in 0..options.clients {
         let client = Client::new(configuration);
         let receiver = network.bind_client(client.identifier());
 
@@ -266,9 +287,15 @@ fn main() {
             let mut crashed = false;
 
             loop {
-                match receiver.recv_timeout(Duration::from_secs(1)) {
+                let timeout = if replica.is_primary() {
+                    options.commit_timeout
+                } else {
+                    options.view_timeout
+                };
+
+                match receiver.recv_timeout(timeout) {
                     Ok(Command::Recover) if crashed => {
-                        info!("Recovering replica {}...", replica.index());
+                        trace!("Recovering replica {}...", replica.index());
 
                         replica = Replica::recovering(
                             configuration,
@@ -281,7 +308,7 @@ fn main() {
                     Ok(_) if crashed => {}
                     Ok(Command::Recover) => {}
                     Ok(Command::Crash) => {
-                        info!("Crashing replica {}...", replica.index());
+                        trace!("Crashing replica {}...", replica.index());
                         crashed = true;
                     }
                     Ok(Command::Checkpoint(suffix)) => {
@@ -360,12 +387,13 @@ fn main() {
 
     let mut interface = network.clone();
     thread::spawn(move || {
-        let mut replies = 0u128;
+        let mut replies = HashSet::with_capacity(options.max_replies);
+        let mut requests = HashSet::with_capacity(options.max_replies);
 
         loop {
-            if replies > 0 && replies % 10000 == 0 {
+            if !replies.is_empty() && replies.len() % options.checkpoint_threshold == 0 {
                 for i in 0..configuration.replicas() {
-                    interface.checkpoint(i, 5);
+                    interface.checkpoint(i, options.suffix);
                 }
             }
 
@@ -373,29 +401,51 @@ fn main() {
                 match timestamp.take() {
                     Some(start) => match receiver.try_recv() {
                         Ok(reply) => {
-                            replies += 1;
+                            replies.insert(reply.id);
                             client.update_view(&reply);
 
                             info!(
-                            "Client {:?} received reply #{replies} for request {:?} with view {:?} and payload {} after {} microseconds.",
-                            client.identifier(), reply.id, reply.view, reply.payload, start.elapsed().as_micros()
+                            "Client {:?} received reply #{} for request {:?} with view {:?} and payload {} after {} microseconds.",
+                            client.identifier(), replies.len(), reply.id, reply.view, reply.payload, start.elapsed().as_micros()
                         );
                         }
                         Err(_) => {
+                            let duration = start.elapsed();
+                            if duration >= options.reply_timeout {
+                                error!(
+                                    "Timed-out waiting for reply on client {:?} after {}...",
+                                    client.identifier(),
+                                    duration.as_millis()
+                                );
+                                let request = client.last_request(1);
+                                interface.broadcast(request);
+                            }
+
                             *timestamp = Some(start);
                         }
                     },
                     None => {
-                        let request = client.new_request(1);
-                        let primary = client.primary();
+                        if requests.len() < options.max_replies {
+                            let request = client.new_request(1);
+                            let primary = client.primary();
 
-                        trace!("Sending request {request:?} to replica {primary}.");
+                            trace!("Sending request {request:?} to replica {primary}.");
 
-                        interface.send(primary, request);
+                            requests.insert(request.id);
+                            interface.send(primary, request);
 
-                        *timestamp = Some(Instant::now());
+                            *timestamp = Some(Instant::now());
+                        }
                     }
                 }
+            }
+
+            if replies.len() >= options.max_replies {
+                println!(
+                    "Received {} replies from the system. Exiting...",
+                    replies.len()
+                );
+                std::process::exit(0);
             }
         }
     });
@@ -418,14 +468,14 @@ fn main() {
                 if let Ok(index) = index.parse() {
                     crashed.insert(index);
                     network.crash(index);
-                    info!("Crashed replicas: {crashed:?}.");
+                    println!("Crashed replicas: {crashed:?}.");
                 }
             }
             Some(("R" | "r", index)) => {
                 if let Ok(index) = index.parse() {
                     crashed.remove(&index);
                     network.recover(index);
-                    info!("Crashed replicas: {crashed:?}.");
+                    println!("Crashed replicas: {crashed:?}.");
                 }
             }
             None if line == "Q" || line == "q" => {

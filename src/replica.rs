@@ -122,10 +122,28 @@ where
         match self.status {
             Status::Normal => {
                 if self.is_primary() {
-                    outbox.commit(Commit {
-                        view: self.view,
-                        committed: self.committed,
-                    });
+                    if self.committed == self.log.last_op_number() {
+                        outbox.commit(Commit {
+                            view: self.view,
+                            committed: self.committed,
+                        });
+                    } else {
+                        let mut op_number = self.committed.next();
+
+                        while self.log.contains(&op_number) {
+                            let entry = &self.log[op_number];
+
+                            outbox.prepare(Prepare {
+                                view: self.view,
+                                op_number,
+                                request: entry.request().clone(),
+                                prediction: entry.prediction().clone(),
+                                committed: self.committed,
+                            });
+
+                            op_number.increment();
+                        }
+                    }
                 } else {
                     self.start_view_change(self.view.next(), outbox);
                 }
@@ -576,11 +594,11 @@ where
         }
     }
 
-    fn is_primary(&self) -> bool {
+    pub fn is_primary(&self) -> bool {
         (self.configuration % self.view) == self.index
     }
 
-    fn is_backup(&self) -> bool {
+    pub fn is_backup(&self) -> bool {
         !self.is_primary()
     }
 

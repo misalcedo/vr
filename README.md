@@ -29,8 +29,6 @@ checkpoint will be removed from the log.
 ## Simulation
 
 A simulation of the protocol using threads and channels is included in the examples.
-The executable accepts a single argument parsed as an integer to denote the number of unique clients (i.e. concurrent
-requests).
 The executable supports commands during execution:
 
 - `Q` or `q` stops the simulation,
@@ -38,8 +36,10 @@ The executable supports commands during execution:
 - `R {{I}}` or `r {{I}}` recovers the replica with index `{{I}}`.
 
 ```console
-RUST_LOG=info cargo run --example simulation -- 10
+cargo run --example simulation
 ```
+
+Note: the simulation tends to drop replies at more than 1,000 replies. The exact cause is yet unknown.
 
 ## TODOs
 
