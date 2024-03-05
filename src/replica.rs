@@ -122,28 +122,7 @@ where
         match self.status {
             Status::Normal => {
                 if self.is_primary() {
-                    if self.committed == self.log.last_op_number() {
-                        outbox.commit(Commit {
-                            view: self.view,
-                            committed: self.committed,
-                        });
-                    } else {
-                        let mut op_number = self.committed.next();
-
-                        while self.log.contains(&op_number) {
-                            let entry = &self.log[op_number];
-
-                            outbox.prepare(Prepare {
-                                view: self.view,
-                                op_number,
-                                request: entry.request().clone(),
-                                prediction: entry.prediction().clone(),
-                                committed: self.committed,
-                            });
-
-                            op_number.increment();
-                        }
-                    }
+                    self.idle_primary(outbox);
                 } else {
                     self.start_view_change(self.view.next(), outbox);
                 }
@@ -590,6 +569,34 @@ where
             _ => {
                 self.start_view_changes = Default::default();
                 self.do_view_changes = Default::default();
+            }
+        }
+    }
+
+    fn idle_primary<O>(&mut self, outbox: &mut O)
+    where
+        O: Outbox<S>,
+    {
+        if self.committed == self.log.last_op_number() {
+            outbox.commit(Commit {
+                view: self.view,
+                committed: self.committed,
+            });
+        } else {
+            let mut op_number = self.committed.next();
+
+            while self.log.contains(&op_number) {
+                let entry = &self.log[op_number];
+
+                outbox.prepare(Prepare {
+                    view: self.view,
+                    op_number,
+                    request: entry.request().clone(),
+                    prediction: entry.prediction().clone(),
+                    committed: self.committed,
+                });
+
+                op_number.increment();
             }
         }
     }
