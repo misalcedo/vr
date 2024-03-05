@@ -1,16 +1,22 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
 
-pub mod client;
+pub mod buffer;
+mod client;
 mod client_table;
-pub mod driver;
-pub mod health;
-pub mod identifiers;
-mod mailbox;
-pub mod model;
-pub mod replica;
+mod configuration;
+mod log;
+mod mail;
+mod nonce;
+mod protocol;
+mod replica;
+mod request;
 mod service;
-mod stamps;
-mod state;
+mod status;
+mod viewstamp;
 
-pub use service::Service;
-pub use state::State;
+pub use client::Client;
+pub use configuration::Configuration;
+pub use mail::{Inbox, Mailbox, Outbox};
+pub use replica::Replica;
+pub use request::{ClientIdentifier, Reply, Request};
+pub use service::{Protocol, Service};

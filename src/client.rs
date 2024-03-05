@@ -1,86 +1,61 @@
-use crate::identifiers::{ClientIdentifier, GroupIdentifier, ReplicaIdentifier, RequestIdentifier};
-use crate::mailbox::Address;
-use crate::model::{Message, Request};
-use crate::stamps::View;
+use crate::configuration::Configuration;
+use crate::request::{ClientIdentifier, Reply, Request, RequestIdentifier};
+use crate::viewstamp::View;
 
 pub struct Client {
-    identifier: ClientIdentifier,
+    configuration: Configuration,
     view: View,
-    request: RequestIdentifier,
-    group: GroupIdentifier,
+    identifier: ClientIdentifier,
+    last_request: RequestIdentifier,
 }
 
 impl Client {
-    pub fn new(group: GroupIdentifier) -> Self {
+    pub fn new(configuration: Configuration) -> Self {
         Self {
-            identifier: Default::default(),
+            configuration,
             view: Default::default(),
-            request: Default::default(),
-            group,
+            identifier: Default::default(),
+            last_request: Default::default(),
         }
-    }
-
-    pub fn address(&self) -> Address {
-        self.identifier.into()
     }
 
     pub fn identifier(&self) -> ClientIdentifier {
         self.identifier
     }
 
-    pub fn primary(&self) -> ReplicaIdentifier {
-        self.group.primary(self.view)
+    pub fn update_view<P>(&mut self, reply: &Reply<P>) {
+        self.view = self.view.max(reply.view);
     }
 
-    pub fn group(&self) -> GroupIdentifier {
-        self.group
-    }
+    pub fn new_request<P>(&mut self, payload: P) -> Request<P> {
+        self.last_request.increment();
 
-    pub fn view(&self) -> View {
-        self.view
-    }
-
-    pub fn last_request(&self) -> RequestIdentifier {
-        self.request
-    }
-
-    pub fn new_message(&mut self, payload: &[u8]) -> Message {
-        self.request.increment();
-        self.message(payload, None)
-    }
-
-    pub fn new_request(&mut self, payload: &[u8]) -> Request {
-        self.request.increment();
-        self.request(payload, None)
-    }
-
-    pub fn message(&self, payload: &[u8], request: Option<RequestIdentifier>) -> Message {
-        Message {
-            from: self.identifier.into(),
-            to: self.primary().into(),
-            view: self.view,
-            payload: self.request(payload, request).into(),
-        }
-    }
-
-    pub fn broadcast(&self, payload: &[u8]) -> Message {
-        Message {
-            from: self.identifier.into(),
-            to: self.group.into(),
-            view: self.view,
-            payload: self.request(payload, None).into(),
-        }
-    }
-
-    pub fn request(&self, payload: &[u8], request: Option<RequestIdentifier>) -> Request {
         Request {
-            op: Vec::from(payload),
-            c: self.identifier,
-            s: request.unwrap_or(self.request),
+            payload,
+            client: self.identifier,
+            id: self.last_request,
         }
     }
 
-    pub fn set_view(&mut self, view: View) {
-        self.view = view;
+    pub fn primary(&self) -> usize {
+        self.configuration % self.view
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn requests() {
+        let configuration = Configuration::from(5);
+        let mut client = Client::new(configuration);
+
+        let request_a = client.new_request(5);
+        let request_b = client.new_request(5);
+
+        assert_ne!(request_a.id, request_b.id);
+        assert_eq!(request_a.id.cmp(&request_b.id), Ordering::Less);
     }
 }
