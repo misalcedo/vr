@@ -1,6 +1,8 @@
 use log::{info, trace};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter};
+use std::io::stdin;
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
@@ -10,6 +12,7 @@ use viewstamped_replication::{
     Client, ClientIdentifier, Configuration, Protocol, Replica, Reply, Request, Service,
 };
 
+#[derive(Default)]
 pub struct Adder(i32);
 
 impl Protocol for Adder {
@@ -44,15 +47,18 @@ impl Service for Adder {
     }
 }
 
-pub enum Message<P>
+pub enum Command<P>
 where
     P: Protocol,
 {
     Request(Request<P::Request>),
     Protocol(ProtocolPayload<P>),
+    Checkpoint(usize),
+    Crash,
+    Recover,
 }
 
-impl<P, Req, Pre> Debug for Message<P>
+impl<P, Req, Pre> Debug for Command<P>
 where
     P: Protocol<Request = Req, Prediction = Pre>,
     Req: Debug,
@@ -60,8 +66,11 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Message::Request(request) => write!(f, "{request:?}"),
-            Message::Protocol(message) => write!(f, "{message:?}"),
+            Self::Request(request) => write!(f, "{request:?}"),
+            Self::Protocol(message) => write!(f, "{message:?}"),
+            Self::Checkpoint(suffix) => write!(f, "Checkpoint({suffix}"),
+            Self::Crash => write!(f, "Kill"),
+            Self::Recover => write!(f, "Recover"),
         }
     }
 }
@@ -71,7 +80,7 @@ where
     P: Protocol,
 {
     configuration: Configuration,
-    senders: Vec<Sender<Message<P>>>,
+    senders: Vec<Sender<Command<P>>>,
     clients: HashMap<ClientIdentifier, Sender<Reply<P::Reply>>>,
 }
 
@@ -105,7 +114,7 @@ where
         }
     }
 
-    pub fn bind(&mut self) -> Receiver<Message<P>> {
+    pub fn bind(&mut self) -> Receiver<Command<P>> {
         let (sender, receiver) = channel();
 
         self.senders.push(sender);
@@ -124,7 +133,29 @@ where
     pub fn send(&mut self, index: usize, request: Request<P::Request>) {
         if let Some(sender) = self.senders.get(index) {
             sender
-                .send(Message::Request(request))
+                .send(Command::Request(request))
+                .expect("unable to send message");
+        }
+    }
+
+    pub fn crash(&mut self, index: usize) {
+        if let Some(sender) = self.senders.get(index) {
+            sender.send(Command::Crash).expect("unable to send message");
+        }
+    }
+
+    pub fn recover(&mut self, index: usize) {
+        if let Some(sender) = self.senders.get(index) {
+            sender
+                .send(Command::Recover)
+                .expect("unable to send message");
+        }
+    }
+
+    pub fn checkpoint(&mut self, index: usize, suffix: usize) {
+        if let Some(sender) = self.senders.get(index) {
+            sender
+                .send(Command::Checkpoint(suffix))
                 .expect("unable to send message");
         }
     }
@@ -135,7 +166,7 @@ where
                 trace!("Re-queuing {message:?} on replica {index}...");
 
                 sender
-                    .send(Message::Protocol(message))
+                    .send(Command::Protocol(message))
                     .expect("unable to send message");
             }
         }
@@ -165,7 +196,7 @@ where
                 );
 
                 sender
-                    .send(Message::Protocol(message.payload))
+                    .send(Command::Protocol(message.payload))
                     .expect("unable to send message");
             }
         }
@@ -176,7 +207,7 @@ where
             for (index, sender) in self.senders.iter().enumerate() {
                 if source != index {
                     sender
-                        .send(Message::Protocol(message.clone()))
+                        .send(Command::Protocol(message.clone()))
                         .expect("unable to send message");
                 }
             }
@@ -188,7 +219,6 @@ fn main() {
     env_logger::init();
 
     let configuration = Configuration::from(5);
-    let checkpoint = 0;
 
     let mut network = Network::<Adder>::new(configuration);
     let mut receivers = VecDeque::with_capacity(configuration.replicas());
@@ -231,60 +261,95 @@ fn main() {
 
         thread::spawn(move || {
             let mut mailbox = BufferedMailbox::default();
-            let mut replica = Replica::new(configuration, index, Adder::from(checkpoint));
+            let mut replica = Replica::new(configuration, index, Default::default());
+            let mut checkpoint = replica.checkpoint(None);
+            let mut crashed = false;
 
             loop {
-                match receiver.recv_timeout(Duration::from_secs(3)) {
-                    Ok(message) => {
+                match receiver.recv_timeout(Duration::from_secs(1)) {
+                    Ok(Command::Recover) if crashed => {
+                        info!("Recovering replica {}...", replica.index());
+
+                        replica = Replica::recovering(
+                            configuration,
+                            index,
+                            checkpoint.clone(),
+                            &mut mailbox,
+                        );
+                        crashed = false;
+                    }
+                    Ok(_) if crashed => {}
+                    Ok(Command::Recover) => {}
+                    Ok(Command::Crash) => {
+                        info!("Crashing replica {}...", replica.index());
+                        crashed = true;
+                    }
+                    Ok(Command::Checkpoint(suffix)) => {
+                        trace!(
+                            "Checkpointing replica {} with suffix {suffix}...",
+                            replica.index()
+                        );
+
+                        checkpoint = replica.checkpoint(NonZeroUsize::new(suffix));
+
+                        trace!(
+                            "Checkpoint for replica {} includes up to op-number {:?}...",
+                            replica.index(),
+                            checkpoint.committed
+                        );
+                    }
+                    Ok(Command::Request(request)) => {
+                        trace!("Processing {request:?} on replica {index}...");
+
+                        replica.handle_request(request, &mut mailbox);
+                    }
+                    Ok(Command::Protocol(message)) => {
                         interface.requeue(replica.index(), &mut mailbox);
 
                         trace!("Processing {message:?} on replica {index}...");
 
                         match message {
-                            Message::Request(request) => {
-                                replica.handle_request(request, &mut mailbox);
+                            ProtocolPayload::Prepare(message) => {
+                                replica.handle_prepare(message, &mut mailbox);
                             }
-                            Message::Protocol(message) => match message {
-                                ProtocolPayload::Prepare(message) => {
-                                    replica.handle_prepare(message, &mut mailbox);
-                                }
-                                ProtocolPayload::PrepareOk(message) => {
-                                    replica.handle_prepare_ok(message, &mut mailbox);
-                                }
-                                ProtocolPayload::Commit(message) => {
-                                    replica.handle_commit(message, &mut mailbox);
-                                }
-                                ProtocolPayload::GetState(message) => {
-                                    replica.handle_get_state(message, &mut mailbox);
-                                }
-                                ProtocolPayload::NewState(message) => {
-                                    replica.handle_new_state(message, &mut mailbox);
-                                }
-                                ProtocolPayload::StartViewChange(message) => {
-                                    replica.handle_start_view_change(message, &mut mailbox);
-                                }
-                                ProtocolPayload::DoViewChange(message) => {
-                                    replica.handle_do_view_change(message, &mut mailbox);
-                                }
-                                ProtocolPayload::StartView(message) => {
-                                    replica.handle_start_view(message, &mut mailbox);
-                                }
-                                ProtocolPayload::Recovery(message) => {
-                                    replica.handle_recovery(message, &mut mailbox);
-                                }
-                                ProtocolPayload::RecoveryResponse(message) => {
-                                    replica.handle_recovery_response(message, &mut mailbox);
-                                }
-                            },
+                            ProtocolPayload::PrepareOk(message) => {
+                                replica.handle_prepare_ok(message, &mut mailbox);
+                            }
+                            ProtocolPayload::Commit(message) => {
+                                replica.handle_commit(message, &mut mailbox);
+                            }
+                            ProtocolPayload::GetState(message) => {
+                                replica.handle_get_state(message, &mut mailbox);
+                            }
+                            ProtocolPayload::NewState(message) => {
+                                replica.handle_new_state(message, &mut mailbox);
+                            }
+                            ProtocolPayload::StartViewChange(message) => {
+                                replica.handle_start_view_change(message, &mut mailbox);
+                            }
+                            ProtocolPayload::DoViewChange(message) => {
+                                replica.handle_do_view_change(message, &mut mailbox);
+                            }
+                            ProtocolPayload::StartView(message) => {
+                                replica.handle_start_view(message, &mut mailbox);
+                            }
+                            ProtocolPayload::Recovery(message) => {
+                                replica.handle_recovery(message, &mut mailbox);
+                            }
+                            ProtocolPayload::RecoveryResponse(message) => {
+                                replica.handle_recovery_response(message, &mut mailbox);
+                            }
                         }
                     }
                     Err(_) => {
-                        trace!(
-                            "Replica {} is idle in view {:?}...",
-                            replica.index(),
-                            replica.view()
-                        );
-                        replica.idle(&mut mailbox);
+                        if !crashed {
+                            trace!(
+                                "Replica {} is idle in view {:?}...",
+                                replica.index(),
+                                replica.view()
+                            );
+                            replica.idle(&mut mailbox);
+                        }
                     }
                 }
 
@@ -293,32 +358,80 @@ fn main() {
         });
     }
 
-    loop {
-        for (client, receiver, timestamp) in clients.iter_mut() {
-            match timestamp.take() {
-                Some(start) => match receiver.try_recv() {
-                    Ok(reply) => {
-                        client.update_view(&reply);
-                        info!(
-                                "Received reply for request {:?} with view {:?} and payload {} after {} microseconds.",
-                                reply.id, reply.view, reply.payload, start.elapsed().as_micros()
-                            );
-                    }
-                    Err(_) => {
-                        *timestamp = Some(start);
-                    }
-                },
-                None => {
-                    let request = client.new_request(1);
-                    let primary = client.primary();
+    let mut interface = network.clone();
+    thread::spawn(move || {
+        let mut replies = 0u128;
 
-                    trace!("Sending request {request:?} to replica {primary}.");
-
-                    network.send(primary, request);
-
-                    *timestamp = Some(Instant::now());
+        loop {
+            if replies > 0 && replies % 10000 == 0 {
+                for i in 0..configuration.replicas() {
+                    interface.checkpoint(i, 5);
                 }
             }
+
+            for (client, receiver, timestamp) in clients.iter_mut() {
+                match timestamp.take() {
+                    Some(start) => match receiver.try_recv() {
+                        Ok(reply) => {
+                            replies += 1;
+                            client.update_view(&reply);
+
+                            info!(
+                            "Client {:?} received reply #{replies} for request {:?} with view {:?} and payload {} after {} microseconds.",
+                            client.identifier(), reply.id, reply.view, reply.payload, start.elapsed().as_micros()
+                        );
+                        }
+                        Err(_) => {
+                            *timestamp = Some(start);
+                        }
+                    },
+                    None => {
+                        let request = client.new_request(1);
+                        let primary = client.primary();
+
+                        trace!("Sending request {request:?} to replica {primary}.");
+
+                        interface.send(primary, request);
+
+                        *timestamp = Some(Instant::now());
+                    }
+                }
+            }
+        }
+    });
+
+    let mut crashed = HashSet::new();
+    let mut line = String::new();
+
+    println!("Type commands: Q (Quit), C (Crash), R (Recover).");
+    println!("For example, to crash the replica with index: C 1");
+
+    loop {
+        line.clear();
+
+        stdin()
+            .read_line(&mut line)
+            .expect("unable to read from std-in");
+
+        match line.trim().split_once(" ") {
+            Some(("C" | "c", index)) => {
+                if let Ok(index) = index.parse() {
+                    crashed.insert(index);
+                    network.crash(index);
+                    info!("Crashed replicas: {crashed:?}.");
+                }
+            }
+            Some(("R" | "r", index)) => {
+                if let Ok(index) = index.parse() {
+                    crashed.remove(&index);
+                    network.recover(index);
+                    info!("Crashed replicas: {crashed:?}.");
+                }
+            }
+            None if line == "Q" || line == "q" => {
+                std::process::exit(0);
+            }
+            _ => {}
         }
     }
 }
