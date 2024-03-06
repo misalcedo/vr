@@ -34,8 +34,6 @@ A simulation of the protocol using async tasks and channels is included in the e
 cargo run --example simulation
 ```
 
-Note: the simulation tends to drop replies at more than 1,000 replies. The exact cause is yet unknown.
-
 ## TODOs
 
 - Define mechanism for recovering replicas to fetch configuration upon receiving a protocol message.
