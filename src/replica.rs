@@ -490,10 +490,10 @@ where
         }
 
         let replicas = self.configuration.replicas();
-        let mut replica = rand::thread_rng().gen_range(0..replicas);
+        let mut replica = self.configuration % view;
 
-        if replica == self.index {
-            replica += (replica + 1) % replicas;
+        while replica == self.index {
+            replica = rand::thread_rng().gen_range(0..replicas);
         }
 
         outbox.get_state(
