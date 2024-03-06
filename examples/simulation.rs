@@ -244,7 +244,7 @@ async fn main() {
 
     let options = Options {
         f: 2,
-        clients: 100,
+        clients: 1000,
         commit_timeout: Duration::from_millis(100),
         view_timeout: Duration::from_secs(1),
         reply_timeout: Duration::from_secs(1),
