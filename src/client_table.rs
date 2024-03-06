@@ -33,11 +33,14 @@ impl<R> Default for ClientTable<R> {
 }
 
 impl<R> ClientTable<R> {
-    pub fn compare<T>(&self, request: &Request<T>) -> Ordering {
-        self.cache
-            .get(&request.client)
-            .map(|cached| request.id.cmp(&cached.request))
-            .unwrap_or(Ordering::Greater)
+    pub fn compare<T>(&self, request: &Request<T>) -> Result<Ordering, RequestIdentifier> {
+        match self.cache.get(&request.client) {
+            None => Ok(Ordering::Greater),
+            Some(cached) => match request.id.cmp(&cached.request) {
+                Ordering::Greater if cached.reply.is_none() => Err(cached.request),
+                ordering => Ok(ordering),
+            },
+        }
     }
 
     pub fn reply<T>(&self, request: &Request<T>) -> Option<&Reply<R>> {
@@ -87,20 +90,20 @@ mod tests {
             payload: (),
         };
 
-        assert_eq!(table.compare(&oldest), Ordering::Greater);
+        assert_eq!(table.compare(&oldest), Ok(Ordering::Greater));
         assert_eq!(table.reply(&oldest), None);
 
         table.start(&oldest);
         table.finish(&oldest, reply.clone());
 
-        assert_eq!(table.compare(&current), Ordering::Greater);
+        assert_eq!(table.compare(&current), Ok(Ordering::Greater));
         assert_eq!(table.reply(&oldest), Some(&reply));
 
         table.start(&current);
 
         assert_eq!(table.reply(&current), None);
-        assert_eq!(table.compare(&oldest), Ordering::Less);
-        assert_eq!(table.compare(&current), Ordering::Equal);
-        assert_eq!(table.compare(&newer), Ordering::Greater);
+        assert_eq!(table.compare(&oldest), Ok(Ordering::Less));
+        assert_eq!(table.compare(&current), Ok(Ordering::Equal));
+        assert_eq!(table.compare(&newer), Err(current.id));
     }
 }

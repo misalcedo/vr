@@ -160,7 +160,7 @@ where
         }
 
         match self.client_table.compare(&request) {
-            Ordering::Greater => {
+            Ok(Ordering::Greater) => {
                 let prediction = self.service.predict(&request.payload);
                 let (entry, op_number) = self.log.push(self.view, request, prediction);
 
@@ -174,12 +174,13 @@ where
                     committed: self.committed,
                 });
             }
-            Ordering::Equal => {
+            Ok(Ordering::Equal) => {
                 if let Some(reply) = self.client_table.reply(&request) {
                     outbox.reply(request.client, reply);
                 }
             }
-            Ordering::Less => (),
+            Ok(Ordering::Less) => (),
+            Err(_) => (),
         }
     }
 
