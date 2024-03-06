@@ -34,6 +34,11 @@ A simulation of the protocol using async tasks and channels is included in the e
 cargo run --example simulation
 ```
 
+## State Transfers
+
+- The protocol does not state what to do when a replica receives a `GetState` message for a newer operation than is in
+  its log. For now, we drop the message.
+
 ## TODOs
 
 - Define mechanism for recovering replicas to fetch configuration upon receiving a protocol message.

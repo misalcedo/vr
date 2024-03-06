@@ -494,8 +494,8 @@ where
         }
 
         let replicas = self.configuration.replicas();
-        let mut replica = self.configuration % view;
 
+        let mut replica = self.index;
         while replica == self.index {
             replica = rand::thread_rng().gen_range(0..replicas);
         }
