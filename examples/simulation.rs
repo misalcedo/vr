@@ -297,15 +297,19 @@ async fn main() {
         client_tasks.spawn(run_client(options, client, receiver, network.clone()));
     }
 
+    let mut total = 0;
+
     loop {
         match tokio::time::timeout(options.checkpoint_internal, client_tasks.join_next()).await {
-            Ok(Some(task)) => {
-                trace!("Task finished: {:?}", task);
+            Ok(Some(Ok(client_total))) => {
+                total += client_total;
+            }
+            Ok(Some(Err(e))) => {
+                warn!("unable to join client task: {e}");
             }
             Ok(None) => {
                 println!(
-                    "Processed {} requests in {} milliseconds",
-                    options.clients * options.requests_per_client,
+                    "Processed {total} requests in {} milliseconds",
                     start.elapsed().as_millis()
                 );
                 break;
@@ -438,9 +442,9 @@ async fn run_client(
     mut client: Client,
     mut receiver: UnboundedReceiver<Reply<<Adder as Protocol>::Reply>>,
     mut network: Network<Adder>,
-) {
+) -> usize {
     if options.requests_per_client == 0 {
-        return;
+        return 0;
     }
 
     let mut replies = 0;
@@ -493,7 +497,7 @@ async fn run_client(
                 replies
             );
 
-            return;
+            return replies;
         }
     }
 }
