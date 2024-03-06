@@ -44,6 +44,7 @@ cargo run --example simulation
 - Support fetching the checkpoints from other replicas when recovering.
 - Support copy-on-write semantics in log compaction to reduce the cost of checkpoints.
 - Make non-determinism and checkpointing optional for services to implement.
+- Evicting client table to limit memory usage.
 
 ## Links
 
