@@ -133,7 +133,7 @@ impl<R, P> Log<R, P> {
         }
 
         let old_start = self.range.0;
-        let index = (start - old_start) - 1;
+        let index = start - old_start;
 
         self.range.0 = start;
         self.entries.drain(..index);
@@ -164,5 +164,44 @@ impl<R, P> IndexMut<OpNumber> for Log<R, P> {
     fn index_mut(&mut self, index: OpNumber) -> &mut Self::Output {
         let offset = index - self.range.0;
         self.entries.index_mut(offset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::request::RequestIdentifier;
+    use crate::ClientIdentifier;
+
+    #[test]
+    fn compact() {
+        let view = View::default();
+        let request = Request {
+            payload: (),
+            client: ClientIdentifier::default(),
+            id: RequestIdentifier::default(),
+        };
+
+        let mut log = Log::default();
+        let mut new_start = OpNumber::default().next();
+
+        new_start.increment_by(300);
+
+        for _ in 1..=1000 {
+            log.push(view, request.clone(), ());
+        }
+
+        let end = log.range.1;
+
+        log.compact(new_start);
+
+        assert_eq!(log.range, (new_start, end));
+        assert_eq!(log.entries.len(), (end - new_start) + 1);
+
+        new_start.increment_by(300);
+        log.compact(new_start);
+
+        assert_eq!(log.range, (new_start, end));
+        assert_eq!(log.entries.len(), (end - new_start) + 1);
     }
 }
