@@ -1,4 +1,4 @@
-use log::{error, info, trace, warn};
+use log::{info, trace, warn};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::num::NonZeroUsize;
@@ -145,17 +145,17 @@ where
 
     pub fn send(&mut self, index: usize, request: Request<P::Request>) {
         if let Some(sender) = self.senders.get(index) {
-            sender
-                .send(Command::Request(request))
-                .expect("unable to send message");
+            if let Err(_) = sender.send(Command::Request(request.clone())) {
+                warn!("unable to send message to {index}")
+            }
         }
     }
 
     pub fn broadcast(&mut self, request: Request<P::Request>) {
-        for sender in self.senders.iter() {
-            sender
-                .send(Command::Request(request.clone()))
-                .expect("unable to send message");
+        for (index, sender) in self.senders.iter().enumerate() {
+            if let Err(_) = sender.send(Command::Request(request.clone())) {
+                warn!("unable to send message to {index}")
+            }
         }
     }
 
@@ -244,7 +244,7 @@ async fn main() {
 
     let options = Options {
         f: 2,
-        clients: 10,
+        clients: 100,
         commit_timeout: Duration::from_millis(100),
         view_timeout: Duration::from_secs(1),
         reply_timeout: Duration::from_secs(1),
@@ -277,14 +277,15 @@ async fn main() {
         clients.push((client, receiver));
     }
 
-    let mut tasks = JoinSet::new();
+    let mut replica_tasks = JoinSet::new();
+    let mut client_tasks = JoinSet::new();
 
     for index in 0..configuration.replicas() {
         let receiver = receivers
             .pop_front()
             .expect("no receiver found for replica");
 
-        tokio::spawn(run_replica(
+        replica_tasks.spawn(run_replica(
             options,
             Replica::new(configuration, index, Default::default()),
             receiver,
@@ -293,11 +294,11 @@ async fn main() {
     }
 
     for (client, receiver) in clients {
-        tasks.spawn(run_client(options, client, receiver, network.clone()));
+        client_tasks.spawn(run_client(options, client, receiver, network.clone()));
     }
 
     loop {
-        match tokio::time::timeout(options.checkpoint_internal, tasks.join_next()).await {
+        match tokio::time::timeout(options.checkpoint_internal, client_tasks.join_next()).await {
             Ok(Some(task)) => {
                 trace!("Task finished: {:?}", task);
             }
@@ -312,6 +313,8 @@ async fn main() {
             Err(_) => network.checkpoint(options.suffix),
         }
     }
+
+    replica_tasks.shutdown().await;
 }
 
 async fn run_replica(
@@ -410,7 +413,7 @@ async fn run_replica(
             }
             Err(_) => {
                 if !crashed {
-                    trace!(
+                    println!(
                         "Replica {} is idle in view {:?}...",
                         replica.index(),
                         replica.view()
@@ -473,7 +476,7 @@ async fn run_client(
                 panic!("client channel unexpected closed");
             }
             Err(_) => {
-                error!(
+                warn!(
                     "Timed-out waiting for reply on client {:?} after {} milliseconds...",
                     client.identifier(),
                     options.reply_timeout.as_millis()
