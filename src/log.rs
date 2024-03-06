@@ -128,7 +128,7 @@ impl<R, P> Log<R, P> {
     }
 
     pub fn compact(&mut self, start: OpNumber) {
-        if start == self.range.0 {
+        if start == self.range.0 || start > self.range.1 {
             return;
         }
 
