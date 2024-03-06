@@ -283,6 +283,10 @@ where
             return;
         }
 
+        if !self.log.contains(&message.op_number) {
+            return;
+        }
+
         mailbox.new_state(
             message.index,
             NewState {
