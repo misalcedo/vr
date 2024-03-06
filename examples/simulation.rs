@@ -1,5 +1,6 @@
 use clap::Parser;
 use log::{info, trace, warn};
+use rand::{thread_rng, Rng};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::num::NonZeroUsize;
@@ -38,6 +39,9 @@ pub struct Options {
     /// Total number of requests each client will make.
     #[arg(short, long, default_value_t = 1000)]
     requests_per_client: usize,
+    /// Total number of requests each client will make.
+    #[arg(short, long, default_value_t = 0.00)]
+    network_drop_rate: f64,
 }
 
 #[derive(Default)]
@@ -108,6 +112,7 @@ where
     P: Protocol,
 {
     configuration: Configuration,
+    drop_rate: f64,
     senders: Vec<UnboundedSender<Command<P>>>,
     clients: HashMap<ClientIdentifier, UnboundedSender<Reply<P::Reply>>>,
 }
@@ -119,6 +124,7 @@ where
     fn clone(&self) -> Self {
         Self {
             configuration: self.configuration,
+            drop_rate: self.drop_rate,
             senders: self.senders.clone(),
             clients: self.clients.clone(),
         }
@@ -132,11 +138,12 @@ where
     Pre: Debug,
     Rep: Debug,
 {
-    pub fn new(configuration: Configuration) -> Self {
+    pub fn new(configuration: Configuration, drop_rate: f64) -> Self {
         let senders = Vec::with_capacity(configuration.replicas());
 
         Self {
             configuration,
+            drop_rate,
             senders,
             clients: Default::default(),
         }
@@ -162,6 +169,10 @@ where
     }
 
     pub fn send(&mut self, index: usize, request: Request<P::Request>) {
+        if self.should_drop() {
+            return;
+        }
+
         if let Some(sender) = self.senders.get(index) {
             if let Err(_) = sender.send(Command::Request(request.clone())) {
                 warn!("unable to send message to {index}")
@@ -170,6 +181,10 @@ where
     }
 
     pub fn broadcast(&mut self, request: Request<P::Request>) {
+        if self.should_drop() {
+            return;
+        }
+
         for (index, sender) in self.senders.iter().enumerate() {
             if let Err(_) = sender.send(Command::Request(request.clone())) {
                 warn!("unable to send message to {index}")
@@ -215,6 +230,10 @@ where
 
     pub fn process_outbound(&mut self, source: usize, outbox: &mut BufferedMailbox<P>) {
         for message in outbox.drain_replies() {
+            if self.should_drop() {
+                continue;
+            }
+
             if let Some(sender) = self.clients.get(&message.destination) {
                 trace!(
                     "Sending reply {:?} to client {:?} from replica {source}...",
@@ -229,6 +248,10 @@ where
         }
 
         for message in outbox.drain_send() {
+            if self.should_drop() {
+                continue;
+            }
+
             if let Some(sender) = self.senders.get(message.destination) {
                 trace!(
                     "Sending protocol message {:?} from {source} to {}...",
@@ -246,6 +269,10 @@ where
             trace!("Broadcasting message {message:?} from {source} to the group...");
 
             for (index, sender) in self.senders.iter().enumerate() {
+                if self.should_drop() {
+                    continue;
+                }
+
                 if source != index {
                     if let Err(_) = sender.send(Command::Protocol(message.clone())) {
                         warn!("unable to send message to {index}")
@@ -253,6 +280,10 @@ where
                 }
             }
         }
+    }
+
+    fn should_drop(&self) -> bool {
+        thread_rng().gen_bool(self.drop_rate)
     }
 }
 
@@ -264,7 +295,7 @@ async fn main() {
     let start = Instant::now();
     let configuration = Configuration::from(options.f * 2 + 1);
 
-    let mut network = Network::<Adder>::new(configuration);
+    let mut network = Network::<Adder>::new(configuration, options.network_drop_rate);
     let mut receivers = VecDeque::with_capacity(configuration.replicas());
 
     for _ in 0..configuration.replicas() {
