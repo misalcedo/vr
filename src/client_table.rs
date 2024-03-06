@@ -33,18 +33,17 @@ impl<R> Default for ClientTable<R> {
 }
 
 impl<R> ClientTable<R> {
-    pub fn get_mut<T>(&mut self, request: &Request<T>) -> (&mut CachedRequest<R>, Ordering) {
-        let comparison = self
-            .cache
+    pub fn compare<T>(&self, request: &Request<T>) -> Ordering {
+        self.cache
             .get(&request.client)
             .map(|cached| request.id.cmp(&cached.request))
-            .unwrap_or(Ordering::Greater);
-        let cached = self
-            .cache
-            .entry(request.client)
-            .or_insert_with(|| CachedRequest::new(request));
+            .unwrap_or(Ordering::Greater)
+    }
 
-        (cached, comparison)
+    pub fn reply<T>(&self, request: &Request<T>) -> Option<&Reply<R>> {
+        self.cache
+            .get(&request.client)
+            .and_then(CachedRequest::reply)
     }
 
     pub fn finish<T>(&mut self, request: &Request<T>, reply: Reply<R>) {

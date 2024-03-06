@@ -159,12 +159,12 @@ where
             return;
         }
 
-        let (cached_request, comparison) = self.client_table.get_mut(&request);
-
-        match comparison {
+        match self.client_table.compare(&request) {
             Ordering::Greater => {
                 let prediction = self.service.predict(&request.payload);
                 let (entry, op_number) = self.log.push(self.view, request, prediction);
+
+                self.client_table.start(entry.request());
 
                 outbox.prepare(Prepare {
                     view: self.view,
@@ -175,7 +175,7 @@ where
                 });
             }
             Ordering::Equal => {
-                if let Some(reply) = cached_request.reply() {
+                if let Some(reply) = self.client_table.reply(&request) {
                     outbox.reply(request.client, reply);
                 }
             }
@@ -239,9 +239,7 @@ where
 
         prepared.insert(message.index);
 
-        let committed = prepared.len() >= self.configuration.sub_majority();
-
-        if committed {
+        if prepared.len() >= self.configuration.sub_majority() {
             self.prepared.retain(|&o, _| o > message.op_number);
             self.commit_operations(message.op_number, mailbox);
         }

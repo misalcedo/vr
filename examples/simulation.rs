@@ -474,7 +474,7 @@ async fn run_client(
             }
             Err(_) => {
                 error!(
-                    "Timed-out waiting for reply on client {:?} after {}...",
+                    "Timed-out waiting for reply on client {:?} after {} milliseconds...",
                     client.identifier(),
                     options.reply_timeout.as_millis()
                 );
