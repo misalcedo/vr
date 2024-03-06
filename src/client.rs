@@ -37,14 +37,6 @@ impl Client {
         }
     }
 
-    pub fn last_request<P>(&mut self, payload: P) -> Request<P> {
-        Request {
-            payload,
-            client: self.identifier,
-            id: self.last_request,
-        }
-    }
-
     pub fn primary(&self) -> usize {
         self.configuration % self.view
     }

@@ -66,3 +66,41 @@ impl<R> PartialEq<RequestIdentifier> for CachedRequest<R> {
         self.request == *other
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::viewstamp::View;
+    use crate::{Client, Configuration};
+
+    #[test]
+    fn requests() {
+        let mut table = ClientTable::default();
+        let mut client = Client::new(Configuration::from(3));
+        let view = View::default();
+        let oldest = client.new_request(1);
+        let current = client.new_request(1);
+        let newer = client.new_request(1);
+        let reply = Reply {
+            view,
+            id: oldest.id,
+            payload: (),
+        };
+
+        assert_eq!(table.compare(&oldest), Ordering::Greater);
+        assert_eq!(table.reply(&oldest), None);
+
+        table.start(&oldest);
+        table.finish(&oldest, reply.clone());
+
+        assert_eq!(table.compare(&current), Ordering::Greater);
+        assert_eq!(table.reply(&oldest), Some(&reply));
+
+        table.start(&current);
+
+        assert_eq!(table.reply(&current), None);
+        assert_eq!(table.compare(&oldest), Ordering::Less);
+        assert_eq!(table.compare(&current), Ordering::Equal);
+        assert_eq!(table.compare(&newer), Ordering::Greater);
+    }
+}
