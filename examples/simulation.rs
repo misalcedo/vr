@@ -1,3 +1,4 @@
+use clap::Parser;
 use log::{info, trace, warn};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
@@ -10,15 +11,32 @@ use viewstamped_replication::{
     Client, ClientIdentifier, Configuration, Protocol, Replica, Reply, Request, Service,
 };
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Parser)]
+#[command(author, version, about, long_about)]
 pub struct Options {
+    /// The supported number of failures for this configuration.
+    #[arg(short, long, default_value_t = 2)]
     f: usize,
+    /// Total number of concurrent clients.
+    #[arg(short, long, default_value_t = 1000)]
     clients: usize,
-    commit_timeout: Duration,
-    view_timeout: Duration,
-    reply_timeout: Duration,
-    checkpoint_internal: Duration,
+    #[arg(long, default_value_t = 100)]
+    /// Timeout in milliseconds for the primary considering itself idle.
+    commit_timeout: u64,
+    /// Timeout in milliseconds for backups considering themselves idle.
+    #[arg(long, default_value_t = 1000)]
+    view_timeout: u64,
+    /// Timeout in milliseconds for clients to broadcast their request.
+    #[arg(long, default_value_t = 1000)]
+    reply_timeout: u64,
+    /// Interval in milliseconds to ask replicas to take a checkpoint on.
+    #[arg(long, default_value_t = 50)]
+    checkpoint_internal: u64,
+    /// Number of checkpoints to maintain in the log.
+    #[arg(short, long, default_value_t = 3)]
     suffix: usize,
+    /// Total number of requests each client will make.
+    #[arg(short, long, default_value_t = 1000)]
     requests_per_client: usize,
 }
 
@@ -242,16 +260,7 @@ where
 async fn main() {
     env_logger::init();
 
-    let options = Options {
-        f: 2,
-        clients: 1000,
-        commit_timeout: Duration::from_millis(100),
-        view_timeout: Duration::from_secs(1),
-        reply_timeout: Duration::from_secs(1),
-        checkpoint_internal: Duration::from_millis(50),
-        suffix: 3,
-        requests_per_client: 1000,
-    };
+    let options = Options::parse();
     let start = Instant::now();
     let configuration = Configuration::from(options.f * 2 + 1);
 
@@ -297,10 +306,11 @@ async fn main() {
         client_tasks.spawn(run_client(options, client, receiver, network.clone()));
     }
 
+    let interval = Duration::from_millis(options.checkpoint_internal);
     let mut total = 0;
 
     loop {
-        match tokio::time::timeout(options.checkpoint_internal, client_tasks.join_next()).await {
+        match tokio::time::timeout(interval, client_tasks.join_next()).await {
             Ok(Some(Ok(client_total))) => {
                 total += client_total;
             }
@@ -331,9 +341,9 @@ async fn run_replica(
     let mut checkpoint = replica.checkpoint(None);
     let mut crashed = false;
     let mut timeout = if replica.is_primary() {
-        options.commit_timeout
+        Duration::from_millis(options.commit_timeout)
     } else {
-        options.view_timeout
+        Duration::from_millis(options.view_timeout)
     };
 
     loop {
@@ -430,9 +440,9 @@ async fn run_replica(
         network.process_outbound(replica.index(), &mut mailbox);
 
         timeout = if replica.is_primary() {
-            options.commit_timeout
+            Duration::from_millis(options.commit_timeout)
         } else {
-            options.view_timeout
+            Duration::from_millis(options.view_timeout)
         };
     }
 }
@@ -457,8 +467,10 @@ async fn run_client(
 
     network.send(primary, request.clone());
 
+    let timeout = Duration::from_millis(options.reply_timeout);
+
     loop {
-        match tokio::time::timeout(options.reply_timeout, receiver.recv()).await {
+        match tokio::time::timeout(timeout, receiver.recv()).await {
             Ok(Some(reply)) => {
                 info!(
                             "Client {:?} received reply #{} for request {:?} with view {:?} and payload {} after {} microseconds.",
@@ -483,7 +495,7 @@ async fn run_client(
                 warn!(
                     "Timed-out waiting for reply on client {:?} after {} milliseconds...",
                     client.identifier(),
-                    options.reply_timeout.as_millis()
+                    options.reply_timeout
                 );
 
                 network.broadcast(request.clone());
