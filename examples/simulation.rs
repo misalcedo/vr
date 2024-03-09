@@ -33,7 +33,7 @@ pub struct Options {
     /// Interval in milliseconds to ask replicas to take a checkpoint on.
     #[arg(long, default_value_t = 50)]
     checkpoint_internal: u64,
-    /// Number of checkpoints to maintain in the log.
+    /// Number of operations to maintain in the log.
     #[arg(short, long, default_value_t = 3)]
     suffix: usize,
     /// Total number of requests each client will make.
@@ -369,7 +369,7 @@ async fn run_replica(
     mut network: Network<Adder>,
 ) {
     let mut mailbox = BufferedMailbox::default();
-    let mut checkpoint = replica.checkpoint(None).expect("missing checkpoint");
+    let mut checkpoint = replica.checkpoint(None);
     let mut crashed = false;
     let mut timeout = if replica.is_primary() {
         Duration::from_millis(options.commit_timeout)
@@ -405,9 +405,12 @@ async fn run_replica(
                     replica.index()
                 );
 
-                match replica.checkpoint(NonZeroUsize::new(suffix)) {
-                    Some(c) => checkpoint = c,
-                    None => replica.idle(&mut mailbox),
+                let old_checkpoint = checkpoint.committed;
+
+                checkpoint = replica.checkpoint(NonZeroUsize::new(suffix));
+
+                if old_checkpoint == checkpoint.committed  {
+                    replica.idle(&mut mailbox);
                 }
 
                 trace!(

@@ -71,19 +71,19 @@ where
     P: Clone,
 {
     pub fn after(&self, latest: OpNumber) -> Self {
-        let entries = latest - self.range.0;
+        let index = latest - self.range.0;
 
         Self {
             view: self.view,
             range: (latest.next(), self.range.1),
-            entries: self.entries.iter().skip(entries + 1).cloned().collect(),
+            entries: self.entries.iter().skip(index + 1).cloned().collect(),
         }
     }
 }
 
 impl<R, P> Log<R, P> {
     pub fn contains(&self, op_number: &OpNumber) -> bool {
-        (self.range.0..=self.range.1).contains(op_number)
+        !self.entries.is_empty() && (self.range.0..=self.range.1).contains(op_number)
     }
 
     pub fn push(
@@ -127,8 +127,29 @@ impl<R, P> Log<R, P> {
         self.entries.get(index - self.range.0)
     }
 
-    pub fn compact(&mut self, end: OpNumber) {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn constrain(&mut self, length: usize) {
+        if self.entries.len() < length {
+            return;
+        }
+
+        let drop = self.entries.len() - length;
+
+        self.entries.drain(..drop).count();
+
+        if self.entries.is_empty() {
+            self.range.0 = self.range.1;
+        } else {
+            self.range.0.increment_by(drop);
+        }
+    }
+
+    pub fn cut(&mut self, end: OpNumber) {
         let offset = end - self.range.0;
+
         self.entries.drain(..=offset);
 
         if self.entries.is_empty() {
@@ -173,7 +194,7 @@ mod tests {
     use crate::ClientIdentifier;
 
     #[test]
-    fn compact() {
+    fn constrain() {
         let view = View::default();
         let request = Request {
             payload: (),
@@ -192,28 +213,29 @@ mod tests {
 
         let end = log.range.1;
 
-        log.compact(new_start);
+        log.constrain(700);
 
         assert_eq!(log.range, (new_start.next(), end));
         assert_eq!(log.entries.len(), end - new_start);
 
         new_start.increment_by(300);
-        log.compact(new_start);
+        log.constrain(400);
 
         assert_eq!(log.range, (new_start.next(), end));
         assert_eq!(log.entries.len(), end - new_start);
     }
 
     #[test]
-    #[should_panic]
-    fn compact_empty() {
+    fn constrain_empty() {
         let mut log = Log::<(), ()>::default();
 
-        log.compact(OpNumber::default());
+        assert!(!log.contains(&OpNumber::default()));
+
+        log.constrain(0);
     }
 
     #[test]
-    fn compact_to_empty() {
+    fn constrain_to_empty() {
         let view = View::default();
         let request = Request {
             payload: (),
@@ -229,10 +251,11 @@ mod tests {
 
         let end = log.range.1;
 
-        log.compact(end);
+        log.constrain(0);
 
         assert_eq!(log.range, (end, end));
         assert_eq!(log.entries.len(), 0);
+        assert!(!log.contains(&end));
 
         log.push(view, request.clone(), ());
 
@@ -243,27 +266,5 @@ mod tests {
 
         assert_eq!(log.range, (end.next(), end.next().next()));
         assert_eq!(log.entries.len(), 2);
-    }
-
-    #[test]
-    #[should_panic]
-    fn compact_past_empty() {
-        let view = View::default();
-        let request = Request {
-            payload: (),
-            client: ClientIdentifier::default(),
-            id: RequestIdentifier::default(),
-        };
-
-        let mut log = Log::default();
-        let mut new_start = OpNumber::default();
-
-        new_start.increment_by(300);
-
-        for _ in 1..=100 {
-            log.push(view, request.clone(), ());
-        }
-
-        log.compact(new_start);
     }
 }

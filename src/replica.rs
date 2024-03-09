@@ -13,7 +13,7 @@ use crate::status::Status;
 use crate::viewstamp::{OpNumber, View};
 use rand::Rng;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 /// A replica may perform the role of a primary or backup depending on the configuration and the current view.
@@ -36,7 +36,6 @@ where
     do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
     recovery_responses: HashMap<usize, RecoveryResponse<S::Request, S::Prediction>>,
     nonce: Nonce,
-    checkpoints: VecDeque<OpNumber>,
 }
 
 impl<S> Replica<S>
@@ -59,7 +58,6 @@ where
             do_view_changes: Default::default(),
             recovery_responses: Default::default(),
             nonce: Default::default(),
-            checkpoints: Default::default(),
         }
     }
 
@@ -103,27 +101,15 @@ where
     pub fn checkpoint(
         &mut self,
         suffix: Option<NonZeroUsize>,
-    ) -> Option<Checkpoint<S::Checkpoint>> {
-        if self.checkpoints.contains(&self.committed) {
-            return None;
+    ) -> Checkpoint<S::Checkpoint> {
+        if let Some(suffix) = suffix {
+            self.log.constrain(suffix.get());
         }
 
-        if let Some(suffix) = suffix.map(NonZeroUsize::get) {
-            if self.checkpoints.len() >= suffix {
-                let cutoff = self.checkpoints.len() - suffix;
-                let checkpoint = self.checkpoints.drain(..=cutoff).last();
-                let end = checkpoint.unwrap_or_default();
-
-                self.log.compact(end);
-            }
-        }
-
-        self.checkpoints.push_back(self.committed);
-
-        Some(Checkpoint {
+        Checkpoint {
             committed: self.committed,
             state: self.service.checkpoint(),
-        })
+        }
     }
 
     pub fn idle<O>(&mut self, outbox: &mut O)
