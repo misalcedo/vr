@@ -102,8 +102,15 @@ where
         &mut self,
         suffix: Option<NonZeroUsize>,
     ) -> Checkpoint<S::Checkpoint> {
-        if let Some(suffix) = suffix {
-            self.log.constrain(suffix.get());
+        if let Some(suffix) = suffix.map(NonZeroUsize::get) {
+            let mut new_start = self.log.first_op_number();
+            let trimmed = self.log.len().checked_sub(suffix).unwrap_or_default();
+
+            new_start.increment_by(trimmed);
+
+            if self.committed >= new_start {
+                self.log.constrain(suffix);
+            }
         }
 
         Checkpoint {

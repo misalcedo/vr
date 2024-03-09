@@ -131,6 +131,10 @@ impl<R, P> Log<R, P> {
         self.entries.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     pub fn constrain(&mut self, length: usize) {
         if self.entries.len() < length {
             return;

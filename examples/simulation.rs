@@ -31,7 +31,7 @@ pub struct Options {
     #[arg(long, default_value_t = 1000)]
     reply_timeout: u64,
     /// Interval in milliseconds to ask replicas to take a checkpoint on.
-    #[arg(long, default_value_t = 50)]
+    #[arg(long, default_value_t = 100)]
     checkpoint_internal: u64,
     /// Number of operations to maintain in the log.
     #[arg(short, long, default_value_t = 3)]
@@ -409,7 +409,7 @@ async fn run_replica(
 
                 checkpoint = replica.checkpoint(NonZeroUsize::new(suffix));
 
-                if old_checkpoint == checkpoint.committed  {
+                if old_checkpoint == checkpoint.committed && replica.is_primary()  {
                     replica.idle(&mut mailbox);
                 }
 
