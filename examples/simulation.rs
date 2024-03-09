@@ -404,10 +404,13 @@ async fn run_replica(
                     replica.index()
                 );
 
-                if let Some(new_checkpoint) = replica.checkpoint_with_suffix(suffix) {
-                    checkpoint = new_checkpoint;
-                } else if replica.is_primary() {
-                    replica.idle(&mut mailbox);
+                match replica.checkpoint_with_suffix(suffix) {
+                    Some(new_checkpoint) => {
+                        checkpoint = new_checkpoint;
+                    }
+                    None => {
+                        replica.resend_pending(&mut mailbox);
+                    }
                 }
 
                 trace!(

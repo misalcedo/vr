@@ -131,7 +131,10 @@ where
         match self.status {
             Status::Normal => {
                 if self.is_primary() {
-                    self.idle_primary(outbox);
+                    outbox.commit(Commit {
+                        view: self.view,
+                        committed: self.committed,
+                    });
                 } else {
                     self.start_view_change(self.view.next(), outbox);
                 }
@@ -152,6 +155,30 @@ where
                         index: self.index,
                     });
                 }
+            }
+        }
+    }
+
+    pub fn resend_pending<O>(&mut self, outbox: &mut O)
+        where
+            O: Outbox<S>,
+    {
+        match self.status {
+            Status::Normal => {
+                self.prepare_pending(outbox);
+            }
+            Status::Recovering => {
+                outbox.recovery(Recovery {
+                    index: self.index,
+                    committed: self.committed,
+                    nonce: self.nonce,
+                });
+            }
+            Status::ViewChange => {
+                outbox.start_view_change(StartViewChange {
+                    view: self.view,
+                    index: self.index,
+                });
             }
         }
     }
@@ -353,7 +380,7 @@ where
                 self.log = primary_response.log;
                 self.set_status(Status::Normal);
                 self.commit_operations(primary_response.committed, outbox);
-                self.start_preparing_operations(outbox);
+                self.prepare_pending(outbox);
             }
         }
     }
@@ -375,7 +402,7 @@ where
         self.view = message.view;
         self.log.extend(message.log);
         self.commit_operations(message.committed, outbox);
-        self.start_preparing_operations(outbox);
+        self.prepare_pending(outbox);
     }
 
     pub fn handle_start_view_change<O>(&mut self, message: StartViewChange, outbox: &mut O)
@@ -448,7 +475,7 @@ where
                 });
 
                 self.commit_operations(committed, outbox);
-                self.start_preparing_operations(outbox);
+                self.prepare_pending(outbox);
             }
         }
     }
@@ -473,7 +500,7 @@ where
 
         self.set_status(Status::Normal);
         self.commit_operations(message.committed, outbox);
-        self.start_preparing_operations(outbox);
+        self.prepare_pending(outbox);
     }
 
     fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
@@ -538,7 +565,7 @@ where
         }
     }
 
-    fn start_preparing_operations<O>(&mut self, outbox: &mut O)
+    fn prepare_pending<O>(&mut self, outbox: &mut O)
     where
         O: Outbox<S>,
     {
@@ -550,7 +577,15 @@ where
 
             self.client_table.start(request);
 
-            if self.is_backup() {
+            if self.is_primary() {
+                outbox.prepare(Prepare {
+                    view: self.view,
+                    op_number: current,
+                    request: entry.request().clone(),
+                    prediction: entry.prediction().clone(),
+                    committed: self.committed,
+                });
+            } else {
                 outbox.prepare_ok(
                     self.configuration % self.view,
                     PrepareOk {
@@ -581,34 +616,6 @@ where
             _ => {
                 self.start_view_changes = Default::default();
                 self.do_view_changes = Default::default();
-            }
-        }
-    }
-
-    fn idle_primary<O>(&mut self, outbox: &mut O)
-    where
-        O: Outbox<S>,
-    {
-        if self.committed == self.log.last_op_number() {
-            outbox.commit(Commit {
-                view: self.view,
-                committed: self.committed,
-            });
-        } else {
-            let mut op_number = self.committed.next();
-
-            while self.log.contains(&op_number) {
-                let entry = &self.log[op_number];
-
-                outbox.prepare(Prepare {
-                    view: self.view,
-                    op_number,
-                    request: entry.request().clone(),
-                    prediction: entry.prediction().clone(),
-                    committed: self.committed,
-                });
-
-                op_number.increment();
             }
         }
     }
