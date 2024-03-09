@@ -14,7 +14,6 @@ use crate::viewstamp::{OpNumber, View};
 use rand::Rng;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::num::NonZeroUsize;
 
 /// A replica may perform the role of a primary or backup depending on the configuration and the current view.
 /// Implements a message-based viewstamped replication revisited protocol that does not wait for messages to arrive.
@@ -98,24 +97,30 @@ where
         self.view
     }
 
-    pub fn checkpoint(
-        &mut self,
-        suffix: Option<NonZeroUsize>,
-    ) -> Checkpoint<S::Checkpoint> {
-        if let Some(suffix) = suffix.map(NonZeroUsize::get) {
-            let mut new_start = self.log.first_op_number();
-            let trimmed = self.log.len().checked_sub(suffix).unwrap_or_default();
-
-            new_start.increment_by(trimmed);
-
-            if self.committed >= new_start {
-                self.log.constrain(suffix);
-            }
-        }
-
+    pub fn checkpoint(&self) -> Checkpoint<S::Checkpoint> {
         Checkpoint {
             committed: self.committed,
             state: self.service.checkpoint(),
+        }
+    }
+
+    pub fn checkpoint_with_suffix(&mut self, suffix: usize) -> Option<Checkpoint<S::Checkpoint>> {
+        let mut new_start = self.log.first_op_number();
+        let trimmed = self.log.len().checked_sub(suffix).unwrap_or_default();
+
+        new_start.increment_by(trimmed);
+
+        if self.committed >= new_start {
+            let checkpoint = Checkpoint {
+                committed: self.committed,
+                state: self.service.checkpoint(),
+            };
+
+            self.log.constrain(suffix);
+
+            Some(checkpoint)
+        } else {
+            None
         }
     }
 

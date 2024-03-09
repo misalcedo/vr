@@ -3,7 +3,6 @@ use log::{info, trace, warn};
 use rand::{thread_rng, Rng};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
-use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinSet;
@@ -369,7 +368,7 @@ async fn run_replica(
     mut network: Network<Adder>,
 ) {
     let mut mailbox = BufferedMailbox::default();
-    let mut checkpoint = replica.checkpoint(None);
+    let mut checkpoint = replica.checkpoint();
     let mut crashed = false;
     let mut timeout = if replica.is_primary() {
         Duration::from_millis(options.commit_timeout)
@@ -405,11 +404,9 @@ async fn run_replica(
                     replica.index()
                 );
 
-                let old_checkpoint = checkpoint.committed;
-
-                checkpoint = replica.checkpoint(NonZeroUsize::new(suffix));
-
-                if old_checkpoint == checkpoint.committed && replica.is_primary()  {
+                if let Some(new_checkpoint) = replica.checkpoint_with_suffix(suffix) {
+                    checkpoint = new_checkpoint;
+                } else if replica.is_primary() {
                     replica.idle(&mut mailbox);
                 }
 
