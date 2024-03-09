@@ -369,7 +369,7 @@ async fn run_replica(
     mut network: Network<Adder>,
 ) {
     let mut mailbox = BufferedMailbox::default();
-    let mut checkpoint = replica.checkpoint(None);
+    let mut checkpoint = replica.checkpoint(None).expect("missing checkpoint");
     let mut crashed = false;
     let mut timeout = if replica.is_primary() {
         Duration::from_millis(options.commit_timeout)
@@ -405,7 +405,10 @@ async fn run_replica(
                     replica.index()
                 );
 
-                checkpoint = replica.checkpoint(NonZeroUsize::new(suffix));
+                match replica.checkpoint(NonZeroUsize::new(suffix)) {
+                    Some(c) => checkpoint = c,
+                    None => replica.idle(&mut mailbox),
+                }
 
                 trace!(
                     "Checkpoint for replica {} includes up to op-number {:?}...",

@@ -100,7 +100,14 @@ where
         self.view
     }
 
-    pub fn checkpoint(&mut self, suffix: Option<NonZeroUsize>) -> Checkpoint<S::Checkpoint> {
+    pub fn checkpoint(
+        &mut self,
+        suffix: Option<NonZeroUsize>,
+    ) -> Option<Checkpoint<S::Checkpoint>> {
+        if self.checkpoints.contains(&self.committed) {
+            return None;
+        }
+
         if let Some(suffix) = suffix.map(NonZeroUsize::get) {
             if self.checkpoints.len() >= suffix {
                 let cutoff = self.checkpoints.len() - suffix;
@@ -113,10 +120,10 @@ where
 
         self.checkpoints.push_back(self.committed);
 
-        Checkpoint {
+        Some(Checkpoint {
             committed: self.committed,
             state: self.service.checkpoint(),
-        }
+        })
     }
 
     pub fn idle<O>(&mut self, outbox: &mut O)
