@@ -20,20 +20,20 @@ pub struct Options {
     /// Total number of concurrent clients.
     #[arg(short, long, default_value_t = 1000)]
     clients: usize,
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 50)]
     /// Timeout in milliseconds for the primary considering itself idle.
     commit_timeout: u64,
     /// Timeout in milliseconds for backups considering themselves idle.
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 500)]
     view_timeout: u64,
     /// Timeout in milliseconds for clients to broadcast their request.
     #[arg(long, default_value_t = 1000)]
     reply_timeout: u64,
-    /// Interval in milliseconds to ask replicas to take a checkpoint on.
-    #[arg(long, default_value_t = 500)]
-    checkpoint_internal: u64,
+    /// Interval in milliseconds to print progress of processed requests.
+    #[arg(long, default_value_t = 1000)]
+    progress_internal: u64,
     /// Number of operations to maintain in the log.
-    #[arg(short, long, default_value_t = 3)]
+    #[arg(short, long, default_value_t = 100)]
     suffix: usize,
     /// Total number of requests each client will make.
     #[arg(short, long, default_value_t = 1000)]
@@ -84,7 +84,6 @@ where
 {
     Request(Request<P::Request>),
     Protocol(ProtocolPayload<P>),
-    Checkpoint(usize),
     Crash,
     Recover,
 }
@@ -99,7 +98,6 @@ where
         match self {
             Self::Request(request) => write!(f, "{request:?}"),
             Self::Protocol(message) => write!(f, "{message:?}"),
-            Self::Checkpoint(suffix) => write!(f, "Checkpoint({suffix}"),
             Self::Crash => write!(f, "Kill"),
             Self::Recover => write!(f, "Recover"),
         }
@@ -202,14 +200,6 @@ where
     pub fn recover(&mut self, index: usize) {
         if let Some(sender) = self.senders.get(index) {
             if let Err(_) = sender.send(Command::Recover) {
-                warn!("unable to send message to {index}")
-            }
-        }
-    }
-
-    pub fn checkpoint(&mut self, suffix: usize) {
-        for (index, sender) in self.senders.iter().enumerate() {
-            if let Err(_) = sender.send(Command::Checkpoint(suffix)) {
                 warn!("unable to send message to {index}")
             }
         }
@@ -336,7 +326,7 @@ async fn main() {
         client_tasks.spawn(run_client(options, client, receiver, network.clone()));
     }
 
-    let interval = Duration::from_millis(options.checkpoint_internal);
+    let interval = Duration::from_millis(options.progress_internal);
     let mut total = 0;
 
     loop {
@@ -349,12 +339,17 @@ async fn main() {
             }
             Ok(None) => {
                 println!(
-                    "Processed {total} requests in {} milliseconds",
+                    "Finished processing {total} requests in {} milliseconds",
                     start.elapsed().as_millis()
                 );
                 break;
             }
-            Err(_) => network.checkpoint(options.suffix),
+            Err(_) => {
+                println!(
+                    "Processed {total} requests in {} milliseconds",
+                    start.elapsed().as_millis()
+                );
+            }
         }
     }
 
@@ -370,6 +365,7 @@ async fn run_replica(
     let mut mailbox = BufferedMailbox::default();
     let mut checkpoint = replica.checkpoint();
     let mut crashed = false;
+    let mut view = replica.view();
     let mut timeout = if replica.is_primary() {
         Duration::from_millis(options.commit_timeout)
     } else {
@@ -377,6 +373,15 @@ async fn run_replica(
     };
 
     loop {
+        if let Some(new_checkpoint) = replica.checkpoint_with_suffix(options.suffix) {
+            checkpoint = new_checkpoint;
+            trace!(
+                "Checkpoint for replica {} includes up to (and including) op-number {:?}.",
+                replica.index(),
+                checkpoint.committed
+            );
+        }
+
         match tokio::time::timeout(timeout, receiver.recv()).await {
             Ok(None) => {
                 panic!("replica channel unexpected closed.")
@@ -398,30 +403,8 @@ async fn run_replica(
                 trace!("Crashing replica {}...", replica.index());
                 crashed = true;
             }
-            Ok(Some(Command::Checkpoint(suffix))) => {
-                trace!(
-                    "Checkpointing replica {} with suffix {suffix}...",
-                    replica.index()
-                );
-
-                match replica.checkpoint_with_suffix(suffix) {
-                    Some(new_checkpoint) => {
-                        checkpoint = new_checkpoint;
-                    }
-                    None => {
-                        replica.resend_pending(&mut mailbox);
-                    }
-                }
-
-                trace!(
-                    "Checkpoint for replica {} includes up to op-number {:?}...",
-                    replica.index(),
-                    checkpoint.committed
-                );
-            }
             Ok(Some(Command::Request(request))) => {
                 trace!("Processing {request:?} on replica {}...", replica.index());
-
                 replica.handle_request(request, &mut mailbox);
             }
             Ok(Some(Command::Protocol(message))) => {
@@ -476,11 +459,15 @@ async fn run_replica(
 
         network.process_outbound(replica.index(), &mut mailbox);
 
-        timeout = if replica.is_primary() {
-            Duration::from_millis(options.commit_timeout)
-        } else {
-            Duration::from_millis(options.view_timeout)
-        };
+        let current_view = replica.view();
+        if view != current_view {
+            view = current_view;
+            timeout = if replica.is_primary() {
+                Duration::from_millis(options.commit_timeout)
+            } else {
+                Duration::from_millis(options.view_timeout)
+            };
+        }
     }
 }
 

@@ -131,10 +131,14 @@ where
         match self.status {
             Status::Normal => {
                 if self.is_primary() {
-                    outbox.commit(Commit {
-                        view: self.view,
-                        committed: self.committed,
-                    });
+                    if self.committed == self.log.last_op_number() {
+                        outbox.commit(Commit {
+                            view: self.view,
+                            committed: self.committed,
+                        });
+                    } else {
+                        self.prepare_pending(outbox);
+                    }
                 } else {
                     self.start_view_change(self.view.next(), outbox);
                 }
@@ -148,6 +152,7 @@ where
             }
             Status::ViewChange => {
                 if self.is_backup() && self.should_do_view_change() {
+                    // The new primary is unresponsive. Start a new view change.
                     self.start_view_change(self.view.next(), outbox);
                 } else {
                     outbox.start_view_change(StartViewChange {
@@ -160,8 +165,8 @@ where
     }
 
     pub fn resend_pending<O>(&mut self, outbox: &mut O)
-        where
-            O: Outbox<S>,
+    where
+        O: Outbox<S>,
     {
         match self.status {
             Status::Normal => {
