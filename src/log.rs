@@ -127,16 +127,15 @@ impl<R, P> Log<R, P> {
         self.entries.get(index - self.range.0)
     }
 
-    pub fn compact(&mut self, start: OpNumber) {
-        if start == self.range.0 || start > self.range.1 {
-            return;
+    pub fn compact(&mut self, end: OpNumber) {
+        let offset = end - self.range.0;
+        self.entries.drain(..=offset);
+
+        if self.entries.is_empty() {
+            self.range = (end, end);
+        } else {
+            self.range.0 = end.next();
         }
-
-        let old_start = self.range.0;
-        let index = start - old_start;
-
-        self.range.0 = start;
-        self.entries.drain(..index);
     }
 
     pub fn truncate(&mut self, last: OpNumber) {
@@ -183,7 +182,7 @@ mod tests {
         };
 
         let mut log = Log::default();
-        let mut new_start = OpNumber::default().next();
+        let mut new_start = OpNumber::default();
 
         new_start.increment_by(300);
 
@@ -195,13 +194,76 @@ mod tests {
 
         log.compact(new_start);
 
-        assert_eq!(log.range, (new_start, end));
-        assert_eq!(log.entries.len(), (end - new_start) + 1);
+        assert_eq!(log.range, (new_start.next(), end));
+        assert_eq!(log.entries.len(), end - new_start);
 
         new_start.increment_by(300);
         log.compact(new_start);
 
-        assert_eq!(log.range, (new_start, end));
-        assert_eq!(log.entries.len(), (end - new_start) + 1);
+        assert_eq!(log.range, (new_start.next(), end));
+        assert_eq!(log.entries.len(), end - new_start);
+    }
+
+    #[test]
+    #[should_panic]
+    fn compact_empty() {
+        let mut log = Log::<(), ()>::default();
+
+        log.compact(OpNumber::default());
+    }
+
+    #[test]
+    fn compact_to_empty() {
+        let view = View::default();
+        let request = Request {
+            payload: (),
+            client: ClientIdentifier::default(),
+            id: RequestIdentifier::default(),
+        };
+
+        let mut log = Log::default();
+
+        for _ in 1..=300 {
+            log.push(view, request.clone(), ());
+        }
+
+        let end = log.range.1;
+
+        log.compact(end);
+
+        assert_eq!(log.range, (end, end));
+        assert_eq!(log.entries.len(), 0);
+
+        log.push(view, request.clone(), ());
+
+        assert_eq!(log.range, (end.next(), end.next()));
+        assert_eq!(log.entries.len(), 1);
+
+        log.push(view, request.clone(), ());
+
+        assert_eq!(log.range, (end.next(), end.next().next()));
+        assert_eq!(log.entries.len(), 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn compact_past_empty() {
+        let view = View::default();
+        let request = Request {
+            payload: (),
+            client: ClientIdentifier::default(),
+            id: RequestIdentifier::default(),
+        };
+
+        let mut log = Log::default();
+        let mut new_start = OpNumber::default();
+
+        new_start.increment_by(300);
+
+        for _ in 1..=100 {
+            log.push(view, request.clone(), ());
+        }
+
+        log.compact(new_start);
     }
 }

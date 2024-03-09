@@ -112,9 +112,9 @@ where
             if self.checkpoints.len() >= suffix {
                 let cutoff = self.checkpoints.len() - suffix;
                 let checkpoint = self.checkpoints.drain(..=cutoff).last();
-                let start = checkpoint.unwrap_or_default().next();
+                let end = checkpoint.unwrap_or_default();
 
-                self.log.compact(start);
+                self.log.compact(end);
             }
         }
 
