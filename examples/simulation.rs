@@ -464,7 +464,7 @@ async fn run_replica(
             }
             Err(_) => {
                 if !crashed {
-                    println!(
+                    info!(
                         "Replica {} is idle in view {:?}...",
                         replica.index(),
                         replica.view()
