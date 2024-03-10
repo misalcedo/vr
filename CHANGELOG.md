@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.9.0] - 2024-03-05
+### Added
+- Support for high message drop rates.
+
+### Changed
+- Added a bound to the client channels in the simulation.
+- Split the checkpoint logic so that callers have a consistent way to checkpoint.
+
+### Fixed
+- Off-by-one error with log compactions.
+
 ## [0.8.0] - 2024-03-05
 
 ### Added
