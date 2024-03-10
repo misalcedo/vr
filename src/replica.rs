@@ -13,8 +13,7 @@ use crate::status::Status;
 use crate::viewstamp::{OpNumber, View};
 use rand::Rng;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::num::NonZeroUsize;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A replica may perform the role of a primary or backup depending on the configuration and the current view.
 /// Implements a message-based viewstamped replication revisited protocol that does not wait for messages to arrive.
@@ -36,7 +35,6 @@ where
     do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
     recovery_responses: HashMap<usize, RecoveryResponse<S::Request, S::Prediction>>,
     nonce: Nonce,
-    checkpoints: VecDeque<OpNumber>,
 }
 
 impl<S> Replica<S>
@@ -59,7 +57,6 @@ where
             do_view_changes: Default::default(),
             recovery_responses: Default::default(),
             nonce: Default::default(),
-            checkpoints: Default::default(),
         }
     }
 
@@ -88,6 +85,10 @@ where
         replica
     }
 
+    pub fn configuration(&self) -> Configuration {
+        self.configuration
+    }
+
     pub fn index(&self) -> usize {
         self.index
     }
@@ -96,22 +97,30 @@ where
         self.view
     }
 
-    pub fn checkpoint(&mut self, suffix: Option<NonZeroUsize>) -> Checkpoint<S::Checkpoint> {
-        if let Some(suffix) = suffix.map(NonZeroUsize::get) {
-            if self.checkpoints.len() >= suffix {
-                let cutoff = self.checkpoints.len() - suffix;
-                let checkpoint = self.checkpoints.drain(..=cutoff).last();
-                let start = checkpoint.unwrap_or_default().next();
-
-                self.log.compact(start);
-            }
-        }
-
-        self.checkpoints.push_back(self.committed);
-
+    pub fn checkpoint(&self) -> Checkpoint<S::Checkpoint> {
         Checkpoint {
             committed: self.committed,
             state: self.service.checkpoint(),
+        }
+    }
+
+    pub fn checkpoint_with_suffix(&mut self, suffix: usize) -> Option<Checkpoint<S::Checkpoint>> {
+        let mut new_start = self.log.first_op_number();
+        let trimmed = self.log.len().checked_sub(suffix).unwrap_or_default();
+
+        new_start.increment_by(trimmed);
+
+        if self.committed >= new_start {
+            let checkpoint = Checkpoint {
+                committed: self.committed,
+                state: self.service.checkpoint(),
+            };
+
+            self.log.constrain(suffix);
+
+            Some(checkpoint)
+        } else {
+            None
         }
     }
 
@@ -122,10 +131,14 @@ where
         match self.status {
             Status::Normal => {
                 if self.is_primary() {
-                    outbox.commit(Commit {
-                        view: self.view,
-                        committed: self.committed,
-                    });
+                    if self.committed == self.log.last_op_number() {
+                        outbox.commit(Commit {
+                            view: self.view,
+                            committed: self.committed,
+                        });
+                    } else {
+                        self.prepare_pending(outbox);
+                    }
                 } else {
                     self.start_view_change(self.view.next(), outbox);
                 }
@@ -139,6 +152,7 @@ where
             }
             Status::ViewChange => {
                 if self.is_backup() && self.should_do_view_change() {
+                    // The new primary is unresponsive. Start a new view change.
                     self.start_view_change(self.view.next(), outbox);
                 } else {
                     outbox.start_view_change(StartViewChange {
@@ -146,6 +160,30 @@ where
                         index: self.index,
                     });
                 }
+            }
+        }
+    }
+
+    pub fn resend_pending<O>(&mut self, outbox: &mut O)
+    where
+        O: Outbox<S>,
+    {
+        match self.status {
+            Status::Normal => {
+                self.prepare_pending(outbox);
+            }
+            Status::Recovering => {
+                outbox.recovery(Recovery {
+                    index: self.index,
+                    committed: self.committed,
+                    nonce: self.nonce,
+                });
+            }
+            Status::ViewChange => {
+                outbox.start_view_change(StartViewChange {
+                    view: self.view,
+                    index: self.index,
+                });
             }
         }
     }
@@ -158,12 +196,12 @@ where
             return;
         }
 
-        let (cached_request, comparison) = self.client_table.get_mut(&request);
-
-        match comparison {
-            Ordering::Greater => {
+        match self.client_table.compare(&request) {
+            Ok(Ordering::Greater) => {
                 let prediction = self.service.predict(&request.payload);
                 let (entry, op_number) = self.log.push(self.view, request, prediction);
+
+                self.client_table.start(entry.request());
 
                 outbox.prepare(Prepare {
                     view: self.view,
@@ -173,12 +211,13 @@ where
                     committed: self.committed,
                 });
             }
-            Ordering::Equal => {
-                if let Some(reply) = cached_request.reply() {
+            Ok(Ordering::Equal) => {
+                if let Some(reply) = self.client_table.reply(&request) {
                     outbox.reply(request.client, reply);
                 }
             }
-            Ordering::Less => (),
+            Ok(Ordering::Less) => (),
+            Err(_) => (),
         }
     }
 
@@ -238,9 +277,7 @@ where
 
         prepared.insert(message.index);
 
-        let committed = prepared.len() >= self.configuration.sub_majority();
-
-        if committed {
+        if prepared.len() >= self.configuration.sub_majority() {
             self.prepared.retain(|&o, _| o > message.op_number);
             self.commit_operations(message.op_number, mailbox);
         }
@@ -280,6 +317,10 @@ where
         }
 
         if self.should_ignore_normal(message.view) {
+            return;
+        }
+
+        if !self.log.contains(&message.op_number) {
             return;
         }
 
@@ -344,7 +385,7 @@ where
                 self.log = primary_response.log;
                 self.set_status(Status::Normal);
                 self.commit_operations(primary_response.committed, outbox);
-                self.start_preparing_operations(outbox);
+                self.prepare_pending(outbox);
             }
         }
     }
@@ -366,7 +407,7 @@ where
         self.view = message.view;
         self.log.extend(message.log);
         self.commit_operations(message.committed, outbox);
-        self.start_preparing_operations(outbox);
+        self.prepare_pending(outbox);
     }
 
     pub fn handle_start_view_change<O>(&mut self, message: StartViewChange, outbox: &mut O)
@@ -439,7 +480,7 @@ where
                 });
 
                 self.commit_operations(committed, outbox);
-                self.start_preparing_operations(outbox);
+                self.prepare_pending(outbox);
             }
         }
     }
@@ -464,7 +505,7 @@ where
 
         self.set_status(Status::Normal);
         self.commit_operations(message.committed, outbox);
-        self.start_preparing_operations(outbox);
+        self.prepare_pending(outbox);
     }
 
     fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
@@ -490,10 +531,10 @@ where
         }
 
         let replicas = self.configuration.replicas();
-        let mut replica = rand::thread_rng().gen_range(0..replicas);
 
-        if replica == self.index {
-            replica += (replica + 1) % replicas;
+        let mut replica = self.index;
+        while replica == self.index {
+            replica = rand::thread_rng().gen_range(0..replicas);
         }
 
         outbox.get_state(
@@ -529,7 +570,7 @@ where
         }
     }
 
-    fn start_preparing_operations<O>(&mut self, outbox: &mut O)
+    fn prepare_pending<O>(&mut self, outbox: &mut O)
     where
         O: Outbox<S>,
     {
@@ -541,7 +582,15 @@ where
 
             self.client_table.start(request);
 
-            if self.is_backup() {
+            if self.is_primary() {
+                outbox.prepare(Prepare {
+                    view: self.view,
+                    op_number: current,
+                    request: entry.request().clone(),
+                    prediction: entry.prediction().clone(),
+                    committed: self.committed,
+                });
+            } else {
                 outbox.prepare_ok(
                     self.configuration % self.view,
                     PrepareOk {
@@ -576,11 +625,11 @@ where
         }
     }
 
-    fn is_primary(&self) -> bool {
+    pub fn is_primary(&self) -> bool {
         (self.configuration % self.view) == self.index
     }
 
-    fn is_backup(&self) -> bool {
+    pub fn is_backup(&self) -> bool {
         !self.is_primary()
     }
 

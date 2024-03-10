@@ -21,6 +21,10 @@ impl OpNumber {
         self.0 += 1;
     }
 
+    pub fn increment_by(&mut self, delta: usize) {
+        self.0 += delta as u128;
+    }
+
     pub fn next(&self) -> Self {
         Self(self.0 + 1)
     }

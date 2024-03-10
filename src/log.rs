@@ -71,19 +71,19 @@ where
     P: Clone,
 {
     pub fn after(&self, latest: OpNumber) -> Self {
-        let entries = latest - self.range.0;
+        let index = latest - self.range.0;
 
         Self {
             view: self.view,
             range: (latest.next(), self.range.1),
-            entries: self.entries.iter().skip(entries + 1).cloned().collect(),
+            entries: self.entries.iter().skip(index + 1).cloned().collect(),
         }
     }
 }
 
 impl<R, P> Log<R, P> {
     pub fn contains(&self, op_number: &OpNumber) -> bool {
-        (self.range.0..=self.range.1).contains(op_number)
+        !self.entries.is_empty() && (self.range.0..=self.range.1).contains(op_number)
     }
 
     pub fn push(
@@ -127,16 +127,40 @@ impl<R, P> Log<R, P> {
         self.entries.get(index - self.range.0)
     }
 
-    pub fn compact(&mut self, start: OpNumber) {
-        if start == self.range.0 {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn constrain(&mut self, length: usize) {
+        if self.entries.len() < length {
             return;
         }
 
-        let old_start = self.range.0;
-        let index = (start - old_start) - 1;
+        let drop = self.entries.len() - length;
 
-        self.range.0 = start;
-        self.entries.drain(..index);
+        self.entries.drain(..drop).count();
+
+        if self.entries.is_empty() {
+            self.range.0 = self.range.1;
+        } else {
+            self.range.0.increment_by(drop);
+        }
+    }
+
+    pub fn cut(&mut self, end: OpNumber) {
+        let offset = end - self.range.0;
+
+        self.entries.drain(..=offset);
+
+        if self.entries.is_empty() {
+            self.range = (end, end);
+        } else {
+            self.range.0 = end.next();
+        }
     }
 
     pub fn truncate(&mut self, last: OpNumber) {
@@ -164,5 +188,87 @@ impl<R, P> IndexMut<OpNumber> for Log<R, P> {
     fn index_mut(&mut self, index: OpNumber) -> &mut Self::Output {
         let offset = index - self.range.0;
         self.entries.index_mut(offset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::request::RequestIdentifier;
+    use crate::ClientIdentifier;
+
+    #[test]
+    fn constrain() {
+        let view = View::default();
+        let request = Request {
+            payload: (),
+            client: ClientIdentifier::default(),
+            id: RequestIdentifier::default(),
+        };
+
+        let mut log = Log::default();
+        let mut new_start = OpNumber::default();
+
+        new_start.increment_by(300);
+
+        for _ in 1..=1000 {
+            log.push(view, request.clone(), ());
+        }
+
+        let end = log.range.1;
+
+        log.constrain(700);
+
+        assert_eq!(log.range, (new_start.next(), end));
+        assert_eq!(log.entries.len(), end - new_start);
+
+        new_start.increment_by(300);
+        log.constrain(400);
+
+        assert_eq!(log.range, (new_start.next(), end));
+        assert_eq!(log.entries.len(), end - new_start);
+    }
+
+    #[test]
+    fn constrain_empty() {
+        let mut log = Log::<(), ()>::default();
+
+        assert!(!log.contains(&OpNumber::default()));
+
+        log.constrain(0);
+    }
+
+    #[test]
+    fn constrain_to_empty() {
+        let view = View::default();
+        let request = Request {
+            payload: (),
+            client: ClientIdentifier::default(),
+            id: RequestIdentifier::default(),
+        };
+
+        let mut log = Log::default();
+
+        for _ in 1..=300 {
+            log.push(view, request.clone(), ());
+        }
+
+        let end = log.range.1;
+
+        log.constrain(0);
+
+        assert_eq!(log.range, (end, end));
+        assert_eq!(log.entries.len(), 0);
+        assert!(!log.contains(&end));
+
+        log.push(view, request.clone(), ());
+
+        assert_eq!(log.range, (end.next(), end.next()));
+        assert_eq!(log.entries.len(), 1);
+
+        log.push(view, request.clone(), ());
+
+        assert_eq!(log.range, (end.next(), end.next().next()));
+        assert_eq!(log.entries.len(), 2);
     }
 }

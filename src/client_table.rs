@@ -33,18 +33,20 @@ impl<R> Default for ClientTable<R> {
 }
 
 impl<R> ClientTable<R> {
-    pub fn get_mut<T>(&mut self, request: &Request<T>) -> (&mut CachedRequest<R>, Ordering) {
-        let comparison = self
-            .cache
-            .get(&request.client)
-            .map(|cached| request.id.cmp(&cached.request))
-            .unwrap_or(Ordering::Greater);
-        let cached = self
-            .cache
-            .entry(request.client)
-            .or_insert_with(|| CachedRequest::new(request));
+    pub fn compare<T>(&self, request: &Request<T>) -> Result<Ordering, RequestIdentifier> {
+        match self.cache.get(&request.client) {
+            None => Ok(Ordering::Greater),
+            Some(cached) => match request.id.cmp(&cached.request) {
+                Ordering::Greater if cached.reply.is_none() => Err(cached.request),
+                ordering => Ok(ordering),
+            },
+        }
+    }
 
-        (cached, comparison)
+    pub fn reply<T>(&self, request: &Request<T>) -> Option<&Reply<R>> {
+        self.cache
+            .get(&request.client)
+            .and_then(CachedRequest::reply)
     }
 
     pub fn finish<T>(&mut self, request: &Request<T>, reply: Reply<R>) {
@@ -65,5 +67,43 @@ impl<R> ClientTable<R> {
 impl<R> PartialEq<RequestIdentifier> for CachedRequest<R> {
     fn eq(&self, other: &RequestIdentifier) -> bool {
         self.request == *other
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::viewstamp::View;
+    use crate::{Client, Configuration};
+
+    #[test]
+    fn requests() {
+        let mut table = ClientTable::default();
+        let mut client = Client::new(Configuration::from(3));
+        let view = View::default();
+        let oldest = client.new_request(1);
+        let current = client.new_request(1);
+        let newer = client.new_request(1);
+        let reply = Reply {
+            view,
+            id: oldest.id,
+            payload: (),
+        };
+
+        assert_eq!(table.compare(&oldest), Ok(Ordering::Greater));
+        assert_eq!(table.reply(&oldest), None);
+
+        table.start(&oldest);
+        table.finish(&oldest, reply.clone());
+
+        assert_eq!(table.compare(&current), Ok(Ordering::Greater));
+        assert_eq!(table.reply(&oldest), Some(&reply));
+
+        table.start(&current);
+
+        assert_eq!(table.reply(&current), None);
+        assert_eq!(table.compare(&oldest), Ok(Ordering::Less));
+        assert_eq!(table.compare(&current), Ok(Ordering::Equal));
+        assert_eq!(table.compare(&newer), Err(current.id));
     }
 }

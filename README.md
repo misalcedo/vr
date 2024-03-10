@@ -28,18 +28,16 @@ checkpoint will be removed from the log.
 
 ## Simulation
 
-A simulation of the protocol using threads and channels is included in the examples.
-The executable accepts a single argument parsed as an integer to denote the number of unique clients (i.e. concurrent
-requests).
-The executable supports commands during execution:
-
-- `Q` or `q` stops the simulation,
-- `C {{I}}` or `c {{I}}` crashes the replica with index `{{I}}`.
-- `R {{I}}` or `r {{I}}` recovers the replica with index `{{I}}`.
+A simulation of the protocol using async tasks and channels is included in the examples.
 
 ```console
-RUST_LOG=info cargo run --example simulation -- 10
+cargo run --example simulation
 ```
+
+## State Transfers
+
+- The protocol does not state what to do when a replica receives a `GetState` message for a newer operation than is in
+  its log. For now, we drop the message.
 
 ## TODOs
 
@@ -51,6 +49,7 @@ RUST_LOG=info cargo run --example simulation -- 10
 - Support fetching the checkpoints from other replicas when recovering.
 - Support copy-on-write semantics in log compaction to reduce the cost of checkpoints.
 - Make non-determinism and checkpointing optional for services to implement.
+- Evicting client table to limit memory usage.
 
 ## Links
 
