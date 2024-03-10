@@ -10,10 +10,15 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ## [0.9.0] - 2024-03-05
 ### Added
 - Support for high message drop rates.
+- Detection for clients sending concurrent requests.
+- Command-line argument parsing for options in the simulation.
+- Ignore `GetState` messages when the replica is missing the requested operations.
 
 ### Changed
 - Added a bound to the client channels in the simulation.
 - Split the checkpoint logic so that callers have a consistent way to checkpoint.
+- Switched the simulation to use tokio for improved efficiency.
+- Client table no longer auto-starts requests on the primary.
 
 ### Fixed
 - Off-by-one error with log compactions.
