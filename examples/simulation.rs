@@ -4,7 +4,9 @@ use rand::{thread_rng, Rng};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{
+    channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender,
+};
 use tokio::task::JoinSet;
 use viewstamped_replication::buffer::{BufferedMailbox, ProtocolPayload};
 use viewstamped_replication::{
@@ -109,9 +111,9 @@ where
     P: Protocol,
 {
     configuration: Configuration,
-    drop_rate: f64,
+    options: Options,
     senders: Vec<UnboundedSender<Command<P>>>,
-    clients: HashMap<ClientIdentifier, UnboundedSender<Reply<P::Reply>>>,
+    clients: HashMap<ClientIdentifier, Sender<Reply<P::Reply>>>,
 }
 
 impl<P> Clone for Network<P>
@@ -121,7 +123,7 @@ where
     fn clone(&self) -> Self {
         Self {
             configuration: self.configuration,
-            drop_rate: self.drop_rate,
+            options: self.options,
             senders: self.senders.clone(),
             clients: self.clients.clone(),
         }
@@ -135,12 +137,12 @@ where
     Pre: Debug,
     Rep: Debug,
 {
-    pub fn new(configuration: Configuration, drop_rate: f64) -> Self {
+    pub fn new(configuration: Configuration, options: Options) -> Self {
         let senders = Vec::with_capacity(configuration.replicas());
 
         Self {
             configuration,
-            drop_rate,
+            options,
             senders,
             clients: Default::default(),
         }
@@ -154,18 +156,15 @@ where
         receiver
     }
 
-    pub fn bind_client(
-        &mut self,
-        identifier: ClientIdentifier,
-    ) -> UnboundedReceiver<Reply<P::Reply>> {
-        let (sender, receiver) = unbounded_channel();
+    pub fn bind_client(&mut self, identifier: ClientIdentifier) -> Receiver<Reply<P::Reply>> {
+        let (sender, receiver) = channel(1);
 
         self.clients.insert(identifier, sender);
 
         receiver
     }
 
-    pub fn send(&mut self, index: usize, request: Request<P::Request>) {
+    pub async fn send(&mut self, index: usize, request: Request<P::Request>) {
         if self.should_drop() {
             return;
         }
@@ -177,7 +176,7 @@ where
         }
     }
 
-    pub fn broadcast(&mut self, request: Request<P::Request>) {
+    pub async fn broadcast(&mut self, request: Request<P::Request>) {
         if self.should_drop() {
             return;
         }
@@ -189,7 +188,7 @@ where
         }
     }
 
-    pub fn crash(&mut self, index: usize) {
+    pub async fn crash(&mut self, index: usize) {
         if let Some(sender) = self.senders.get(index) {
             if let Err(_) = sender.send(Command::Crash) {
                 warn!("unable to send message to {index}")
@@ -197,7 +196,7 @@ where
         }
     }
 
-    pub fn recover(&mut self, index: usize) {
+    pub async fn recover(&mut self, index: usize) {
         if let Some(sender) = self.senders.get(index) {
             if let Err(_) = sender.send(Command::Recover) {
                 warn!("unable to send message to {index}")
@@ -205,7 +204,7 @@ where
         }
     }
 
-    pub fn requeue(&mut self, index: usize, inbox: &mut BufferedMailbox<P>) {
+    pub async fn requeue(&mut self, index: usize, inbox: &mut BufferedMailbox<P>) {
         if let Some(sender) = self.senders.get(index) {
             for message in inbox.drain_inbound() {
                 trace!("Re-queuing {message:?} on replica {index}...");
@@ -217,7 +216,7 @@ where
         }
     }
 
-    pub fn process_outbound(&mut self, source: usize, outbox: &mut BufferedMailbox<P>) {
+    pub async fn process_outbound(&mut self, source: usize, outbox: &mut BufferedMailbox<P>) {
         for message in outbox.drain_replies() {
             if self.should_drop() {
                 continue;
@@ -230,7 +229,7 @@ where
                     &message.destination
                 );
 
-                if let Err(_) = sender.send(message.payload) {
+                if let Err(_) = sender.send(message.payload).await {
                     warn!("unable to send message to client {:?}", message.destination)
                 }
             }
@@ -272,7 +271,7 @@ where
     }
 
     fn should_drop(&self) -> bool {
-        thread_rng().gen_bool(self.drop_rate)
+        thread_rng().gen_bool(self.options.network_drop_rate)
     }
 }
 
@@ -284,7 +283,7 @@ async fn main() {
     let start = Instant::now();
     let configuration = Configuration::from(options.f * 2 + 1);
 
-    let mut network = Network::<Adder>::new(configuration, options.network_drop_rate);
+    let mut network = Network::<Adder>::new(configuration, options);
     let mut receivers = VecDeque::with_capacity(configuration.replicas());
 
     for _ in 0..configuration.replicas() {
@@ -297,7 +296,7 @@ async fn main() {
         options.clients
     );
 
-    let mut clients: Vec<(Client, UnboundedReceiver<Reply<<Adder as Protocol>::Reply>>)> =
+    let mut clients: Vec<(Client, Receiver<Reply<<Adder as Protocol>::Reply>>)> =
         Vec::with_capacity(options.clients);
     for _ in 0..options.clients {
         let client = Client::new(configuration);
@@ -408,7 +407,7 @@ async fn run_replica(
                 replica.handle_request(request, &mut mailbox);
             }
             Ok(Some(Command::Protocol(message))) => {
-                network.requeue(replica.index(), &mut mailbox);
+                network.requeue(replica.index(), &mut mailbox).await;
 
                 trace!("Processing {message:?} on replica {}...", replica.index());
 
@@ -457,7 +456,9 @@ async fn run_replica(
             }
         }
 
-        network.process_outbound(replica.index(), &mut mailbox);
+        network
+            .process_outbound(replica.index(), &mut mailbox)
+            .await;
 
         let current_view = replica.view();
         if view != current_view {
@@ -474,7 +475,7 @@ async fn run_replica(
 async fn run_client(
     options: Options,
     mut client: Client,
-    mut receiver: UnboundedReceiver<Reply<<Adder as Protocol>::Reply>>,
+    mut receiver: Receiver<Reply<<Adder as Protocol>::Reply>>,
     mut network: Network<Adder>,
 ) -> usize {
     if options.requests_per_client == 0 {
@@ -489,7 +490,7 @@ async fn run_client(
 
     trace!("Sending request {request:?} to replica {primary}.");
 
-    network.send(primary, request.clone());
+    network.send(primary, request.clone()).await;
 
     let timeout = Duration::from_millis(options.reply_timeout);
 
@@ -510,7 +511,7 @@ async fn run_client(
 
                 trace!("Sending request {request:?} to replica {primary}.");
 
-                network.send(primary, request.clone());
+                network.send(primary, request.clone()).await;
             }
             Ok(None) => {
                 panic!("client channel unexpected closed");
@@ -522,7 +523,7 @@ async fn run_client(
                     options.reply_timeout
                 );
 
-                network.broadcast(request.clone());
+                network.broadcast(request.clone()).await;
             }
         }
 
