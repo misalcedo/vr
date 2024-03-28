@@ -20,7 +20,7 @@ default = []
 clap = { version = "4.4.7", features = ["color", "derive"] }
 log = "0.4.21"
 env_logger = "0.11.3"
-tokio = { version = "1.36.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [dependencies]
 bytes = "1.5.0"
