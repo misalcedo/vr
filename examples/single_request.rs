@@ -1,53 +1,62 @@
 use viewstamped_replication::buffer::BufferedMailbox;
-use viewstamped_replication::{Client, Configuration, Protocol, Replica, Service};
+use viewstamped_replication::{
+    Client, Configuration, CustomPayload, DataService, Payload, Replica,
+};
 
 pub struct Adder(i32);
 
-impl Protocol for Adder {
-    type Request = i32;
-    type Prediction = ();
-    type Reply = i32;
-    type Checkpoint = i32;
-}
+#[derive(Copy, Clone, Debug)]
+pub struct Amount(i32);
 
-impl From<<Self as Protocol>::Checkpoint> for Adder {
-    fn from(value: <Self as Protocol>::Checkpoint) -> Self {
-        Adder(value)
+impl CustomPayload for Amount {
+    fn to_payload(&self) -> Payload {
+        Payload::from(self.0.to_be_bytes())
+    }
+
+    fn from_payload(payload: &Payload) -> Self {
+        Self(i32::from_be_bytes(
+            payload.try_into().expect("invalid payload"),
+        ))
     }
 }
 
-impl Service for Adder {
-    fn predict(&self, _: &<Self as Protocol>::Request) -> <Self as Protocol>::Prediction {
+impl DataService for Adder {
+    type Request = Amount;
+    type Prediction = ();
+    type Checkpoint = Amount;
+    type Reply = Amount;
+
+    fn restore(checkpoint: Self::Checkpoint) -> Self {
+        Self(checkpoint.0)
+    }
+
+    fn predict(&self, _: Self::Request) -> Self::Prediction {
         ()
     }
 
-    fn checkpoint(&self) -> <Self as Protocol>::Checkpoint {
-        self.0
+    fn checkpoint(&self) -> Self::Checkpoint {
+        Amount(self.0)
     }
 
-    fn invoke(
-        &mut self,
-        request: &<Self as Protocol>::Request,
-        _: &<Self as Protocol>::Prediction,
-    ) -> <Self as Protocol>::Reply {
-        self.0 += *request;
-        self.0
+    fn invoke(&mut self, request: Self::Request, _: Self::Prediction) -> Self::Reply {
+        self.0 += request.0;
+        Amount(self.0)
     }
 }
 
 fn main() {
     let configuration = Configuration::from(3);
-    let checkpoint = 0;
+    let checkpoint = Amount(0);
 
     let mut client = Client::new(configuration);
 
-    let mut primary = Replica::new(configuration, 0, Adder::from(checkpoint));
-    let mut backup1 = Replica::new(configuration, 1, Adder::from(checkpoint));
-    let mut backup2 = Replica::new(configuration, 2, Adder::from(checkpoint));
+    let mut primary = Replica::new(configuration, 0, Adder::restore(checkpoint));
+    let mut backup1 = Replica::new(configuration, 1, Adder::restore(checkpoint));
+    let mut backup2 = Replica::new(configuration, 2, Adder::restore(checkpoint));
 
     let mut mailbox = BufferedMailbox::default();
 
-    let delta = 1;
+    let delta = Amount(1);
     let request = client.new_request(delta);
 
     primary.handle_request(request.clone(), &mut mailbox);
@@ -73,7 +82,7 @@ fn main() {
 
     assert!(mailbox.is_empty());
     assert_eq!(reply.destination, request.client);
-    assert_eq!(reply.payload.payload, delta);
+    assert_eq!(reply.payload.payload, delta.to_payload());
     assert_eq!(reply.payload.view, primary.view());
     assert_eq!(reply.payload.id, request.id);
 }

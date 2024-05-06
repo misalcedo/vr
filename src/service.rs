@@ -52,8 +52,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::request::CustomPayload;
+    use super::DataService;
+    use crate::request::{CustomPayload, Payload};
 
     impl CustomPayload for i32 {
         fn to_payload(&self) -> Payload {
@@ -93,10 +93,10 @@ mod tests {
     fn adder() {
         let mut service = 0;
 
-        assert_eq!(service.predict(&42), ());
+        assert_eq!(service.predict(42), ());
         assert_eq!(service.checkpoint(), service);
-        assert_eq!(service.invoke(&45, &()), 45);
-        assert_eq!(service.invoke(&-3, &()), 42);
+        assert_eq!(service.invoke(45, ()), 45);
+        assert_eq!(service.invoke(-3, ()), 42);
         assert_eq!(service.checkpoint(), service);
         assert_eq!(service.checkpoint(), 42);
     }
