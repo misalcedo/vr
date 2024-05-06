@@ -10,7 +10,8 @@ use tokio::sync::mpsc::{
 use tokio::task::JoinSet;
 use viewstamped_replication::buffer::{BufferedMailbox, ProtocolPayload};
 use viewstamped_replication::{
-    Client, ClientIdentifier, Configuration, DataService, Replica, Reply, Request, Service,
+    Client, ClientIdentifier, Configuration, CustomPayload, DataService, Payload, Replica, Reply,
+    Request,
 };
 
 #[derive(Copy, Clone, Debug, Parser)]
@@ -48,14 +49,28 @@ pub struct Options {
 #[derive(Default)]
 pub struct Adder(i32);
 
+pub struct Amount(i32);
+
+impl CustomPayload for Amount {
+    fn to_payload(&self) -> Payload {
+        Payload::from(self.0.to_be_bytes())
+    }
+
+    fn from_payload(payload: &Payload) -> Self {
+        Self(i32::from_be_bytes(
+            payload.try_into().expect("invalid payload"),
+        ))
+    }
+}
+
 impl DataService for Adder {
-    type Request = i32;
+    type Request = Amount;
     type Prediction = ();
-    type Checkpoint = i32;
-    type Reply = i32;
+    type Checkpoint = Amount;
+    type Reply = Amount;
 
     fn restore(checkpoint: Self::Checkpoint) -> Self {
-        Self(checkpoint)
+        Self(checkpoint.0)
     }
 
     fn predict(&self, _: Self::Request) -> Self::Prediction {
@@ -63,12 +78,12 @@ impl DataService for Adder {
     }
 
     fn checkpoint(&self) -> Self::Checkpoint {
-        self.0
+        Amount(self.0)
     }
 
     fn invoke(&mut self, request: Self::Request, _: Self::Prediction) -> Self::Reply {
-        self.0 += *request;
-        self.0
+        self.0 += request.0;
+        Amount(self.0)
     }
 }
 
@@ -455,7 +470,7 @@ async fn run_client(
 
     let mut replies = 0;
 
-    let mut request = client.new_request(1);
+    let mut request = client.new_request(Amount(1));
     let mut primary = client.primary();
     let mut start = Instant::now();
 
@@ -476,7 +491,7 @@ async fn run_client(
                 client.update_view(&reply);
 
                 replies += 1;
-                request = client.new_request(1);
+                request = client.new_request(Amount(1));
                 primary = client.primary();
                 start = Instant::now();
 

@@ -18,5 +18,5 @@ pub use client::Client;
 pub use configuration::Configuration;
 pub use mail::{Inbox, Mailbox, Outbox};
 pub use replica::Replica;
-pub use request::{ClientIdentifier, Reply, Request};
+pub use request::{ClientIdentifier, CustomPayload, Payload, Reply, Request};
 pub use service::{DataService, Service};

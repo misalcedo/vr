@@ -60,7 +60,7 @@ mod tests {
             Payload::from(self.to_be_bytes())
         }
 
-        fn from_payload(payload: Payload) -> Self {
+        fn from_payload(payload: &Payload) -> Self {
             Self::from_be_bytes(payload.try_into().unwrap_or_default())
         }
     }

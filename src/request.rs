@@ -26,9 +26,15 @@ impl RequestIdentifier {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Payload {
     bytes: Vec<u8>,
+}
+
+impl AsRef<[u8]> for Payload {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes.as_ref()
+    }
 }
 
 impl Display for Payload {
@@ -37,10 +43,10 @@ impl Display for Payload {
     }
 }
 
-impl<const N: usize> TryFrom<Payload> for [u8; N] {
+impl<const N: usize> TryFrom<&Payload> for [u8; N] {
     type Error = usize;
 
-    fn try_from(value: Payload) -> Result<Self, Self::Error> {
+    fn try_from(value: &Payload) -> Result<Self, Self::Error> {
         let n = value.bytes.len();
         if n == N {
             let mut array = [0u8; N];
@@ -73,6 +79,16 @@ pub trait CustomPayload {
     fn to_payload(&self) -> Payload;
 
     fn from_payload(payload: &Payload) -> Self;
+}
+
+impl CustomPayload for () {
+    fn to_payload(&self) -> Payload {
+        Default::default()
+    }
+
+    fn from_payload(_: &Payload) -> Self {
+        ()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
