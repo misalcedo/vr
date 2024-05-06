@@ -2,29 +2,29 @@ use crate::request::{ClientIdentifier, Reply, Request, RequestIdentifier};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-pub struct CachedRequest<R> {
+pub struct CachedRequest {
     request: RequestIdentifier,
-    reply: Option<Reply<R>>,
+    reply: Option<Reply>,
 }
 
-impl<R> CachedRequest<R> {
-    fn new<T>(request: &Request<T>) -> Self {
+impl CachedRequest {
+    fn new(request: &Request) -> Self {
         Self {
             request: request.id,
             reply: None,
         }
     }
 
-    pub fn reply(&self) -> Option<&Reply<R>> {
+    pub fn reply(&self) -> Option<&Reply> {
         self.reply.as_ref()
     }
 }
 
-pub struct ClientTable<R> {
-    cache: HashMap<ClientIdentifier, CachedRequest<R>>,
+pub struct ClientTable {
+    cache: HashMap<ClientIdentifier, CachedRequest>,
 }
 
-impl<R> Default for ClientTable<R> {
+impl Default for ClientTable {
     fn default() -> Self {
         Self {
             cache: Default::default(),
@@ -32,8 +32,8 @@ impl<R> Default for ClientTable<R> {
     }
 }
 
-impl<R> ClientTable<R> {
-    pub fn compare<T>(&self, request: &Request<T>) -> Result<Ordering, RequestIdentifier> {
+impl ClientTable {
+    pub fn compare(&self, request: &Request) -> Result<Ordering, RequestIdentifier> {
         match self.cache.get(&request.client) {
             None => Ok(Ordering::Greater),
             Some(cached) => match request.id.cmp(&cached.request) {
@@ -43,13 +43,13 @@ impl<R> ClientTable<R> {
         }
     }
 
-    pub fn reply<T>(&self, request: &Request<T>) -> Option<&Reply<R>> {
+    pub fn reply(&self, request: &Request) -> Option<&Reply> {
         self.cache
             .get(&request.client)
             .and_then(CachedRequest::reply)
     }
 
-    pub fn finish<T>(&mut self, request: &Request<T>, reply: Reply<R>) {
+    pub fn finish(&mut self, request: &Request, reply: Reply) {
         let last_request = self
             .cache
             .entry(request.client)
@@ -58,13 +58,13 @@ impl<R> ClientTable<R> {
         last_request.reply = Some(reply);
     }
 
-    pub fn start<T>(&mut self, request: &Request<T>) {
+    pub fn start(&mut self, request: &Request) {
         self.cache
             .insert(request.client, CachedRequest::new(request));
     }
 }
 
-impl<R> PartialEq<RequestIdentifier> for CachedRequest<R> {
+impl PartialEq<RequestIdentifier> for CachedRequest {
     fn eq(&self, other: &RequestIdentifier) -> bool {
         self.request == *other
     }
@@ -87,7 +87,7 @@ mod tests {
         let reply = Reply {
             view,
             id: oldest.id,
-            payload: (),
+            payload: Default::default(),
         };
 
         assert_eq!(table.compare(&oldest), Ok(Ordering::Greater));

@@ -3,13 +3,9 @@ use crate::protocol::{
     StartView, StartViewChange,
 };
 use crate::request::{ClientIdentifier, Reply};
-use crate::service::Protocol;
 
-pub trait Outbox<P>
-where
-    P: Protocol,
-{
-    fn prepare(&mut self, message: Prepare<P::Request, P::Prediction>);
+pub trait Outbox {
+    fn prepare(&mut self, message: Prepare);
 
     fn prepare_ok(&mut self, index: usize, message: PrepareOk);
 
@@ -17,30 +13,23 @@ where
 
     fn get_state(&mut self, index: usize, message: GetState);
 
-    fn new_state(&mut self, index: usize, message: NewState<P::Request, P::Prediction>);
+    fn new_state(&mut self, index: usize, message: NewState);
 
     fn start_view_change(&mut self, message: StartViewChange);
 
-    fn do_view_change(&mut self, index: usize, message: DoViewChange<P::Request, P::Prediction>);
+    fn do_view_change(&mut self, index: usize, message: DoViewChange);
 
-    fn start_view(&mut self, message: StartView<P::Request, P::Prediction>);
+    fn start_view(&mut self, message: StartView);
 
     fn recovery(&mut self, message: Recovery);
 
-    fn recovery_response(
-        &mut self,
-        index: usize,
-        message: RecoveryResponse<P::Request, P::Prediction>,
-    );
+    fn recovery_response(&mut self, index: usize, message: RecoveryResponse);
 
-    fn reply(&mut self, client: ClientIdentifier, reply: &Reply<P::Reply>);
+    fn reply(&mut self, client: ClientIdentifier, reply: &Reply);
 }
 
-pub trait Inbox<P>
-where
-    P: Protocol,
-{
-    fn push_prepare(&mut self, message: Prepare<P::Request, P::Prediction>);
+pub trait Inbox {
+    fn push_prepare(&mut self, message: Prepare);
 
     fn push_prepare_ok(&mut self, message: PrepareOk);
 
@@ -48,21 +37,17 @@ where
 
     fn push_get_state(&mut self, message: GetState);
 
-    fn push_new_state(&mut self, message: NewState<P::Request, P::Prediction>);
+    fn push_new_state(&mut self, message: NewState);
 
     fn push_start_view_change(&mut self, message: StartViewChange);
 
-    fn push_do_view_change(&mut self, message: DoViewChange<P::Request, P::Prediction>);
+    fn push_do_view_change(&mut self, message: DoViewChange);
 
-    fn push_start_view(&mut self, message: StartView<P::Request, P::Prediction>);
+    fn push_start_view(&mut self, message: StartView);
 
     fn push_recovery(&mut self, message: Recovery);
 
-    fn push_recovery_response(&mut self, message: RecoveryResponse<P::Request, P::Prediction>);
+    fn push_recovery_response(&mut self, message: RecoveryResponse);
 }
 
-pub trait Mailbox<P>: Inbox<P> + Outbox<P>
-where
-    P: Protocol,
-{
-}
+pub trait Mailbox: Inbox + Outbox {}

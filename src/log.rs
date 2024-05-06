@@ -1,4 +1,4 @@
-use crate::request::Request;
+use crate::request::{Payload, Request};
 use crate::viewstamp::{OpNumber, View};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -6,36 +6,36 @@ use std::collections::VecDeque;
 use std::ops::{Index, IndexMut};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Entry<R, P> {
-    request: Request<R>,
-    prediction: P,
+pub struct Entry {
+    request: Request,
+    prediction: Payload,
 }
 
-impl<R, P> Entry<R, P> {
-    fn new(request: Request<R>, prediction: P) -> Self {
+impl Entry {
+    fn new(request: Request, prediction: Payload) -> Self {
         Self {
             request,
             prediction,
         }
     }
 
-    pub fn request(&self) -> &Request<R> {
+    pub fn request(&self) -> &Request {
         &self.request
     }
 
-    pub fn prediction(&self) -> &P {
+    pub fn prediction(&self) -> &Payload {
         &self.prediction
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Log<R, P> {
+#[derive(Clone, Debug, Eq, Serialize, Deserialize)]
+pub struct Log {
     view: View,
     range: (OpNumber, OpNumber),
-    entries: VecDeque<Entry<R, P>>,
+    entries: VecDeque<Entry>,
 }
 
-impl<R, P> Default for Log<R, P> {
+impl Default for Log {
     fn default() -> Self {
         Self {
             view: Default::default(),
@@ -45,43 +45,25 @@ impl<R, P> Default for Log<R, P> {
     }
 }
 
-impl<R, P> Eq for Log<R, P> {}
-
-impl<R, P> PartialEq for Log<R, P> {
+impl PartialEq for Log {
     fn eq(&self, other: &Self) -> bool {
         self.view == other.view && self.range == other.range
     }
 }
 
-impl<R, P> Ord for Log<R, P> {
+impl Ord for Log {
     fn cmp(&self, other: &Self) -> Ordering {
         (self.view, self.range.1).cmp(&(other.view, other.range.1))
     }
 }
 
-impl<R, P> PartialOrd for Log<R, P> {
+impl PartialOrd for Log {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<R, P> Log<R, P>
-where
-    R: Clone,
-    P: Clone,
-{
-    pub fn after(&self, latest: OpNumber) -> Self {
-        let index = latest - self.range.0;
-
-        Self {
-            view: self.view,
-            range: (latest.next(), self.range.1),
-            entries: self.entries.iter().skip(index + 1).cloned().collect(),
-        }
-    }
-}
-
-impl<R, P> Log<R, P> {
+impl Log {
     pub fn contains(&self, op_number: &OpNumber) -> bool {
         !self.entries.is_empty() && (self.range.0..=self.range.1).contains(op_number)
     }
@@ -89,9 +71,9 @@ impl<R, P> Log<R, P> {
     pub fn push(
         &mut self,
         view: View,
-        request: Request<R>,
-        prediction: P,
-    ) -> (&Entry<R, P>, OpNumber) {
+        request: Request,
+        prediction: Payload,
+    ) -> (&Entry, OpNumber) {
         self.view = view;
         self.range.1.increment();
 
@@ -123,7 +105,7 @@ impl<R, P> Log<R, P> {
         self.range.1.next()
     }
 
-    pub fn get(&self, index: OpNumber) -> Option<&Entry<R, P>> {
+    pub fn get(&self, index: OpNumber) -> Option<&Entry> {
         self.entries.get(index - self.range.0)
     }
 
@@ -173,10 +155,20 @@ impl<R, P> Log<R, P> {
         self.range.1 = tail.range.1;
         self.entries.extend(tail.entries);
     }
+
+    pub fn after(&self, latest: OpNumber) -> Self {
+        let index = latest - self.range.0;
+
+        Self {
+            view: self.view,
+            range: (latest.next(), self.range.1),
+            entries: self.entries.iter().skip(index + 1).cloned().collect(),
+        }
+    }
 }
 
-impl<R, P> Index<OpNumber> for Log<R, P> {
-    type Output = Entry<R, P>;
+impl Index<OpNumber> for Log {
+    type Output = Entry;
 
     fn index(&self, index: OpNumber) -> &Self::Output {
         let offset = index - self.range.0;
@@ -184,7 +176,7 @@ impl<R, P> Index<OpNumber> for Log<R, P> {
     }
 }
 
-impl<R, P> IndexMut<OpNumber> for Log<R, P> {
+impl IndexMut<OpNumber> for Log {
     fn index_mut(&mut self, index: OpNumber) -> &mut Self::Output {
         let offset = index - self.range.0;
         self.entries.index_mut(offset)
@@ -201,7 +193,7 @@ mod tests {
     fn constrain() {
         let view = View::default();
         let request = Request {
-            payload: (),
+            payload: Default::default(),
             client: ClientIdentifier::default(),
             id: RequestIdentifier::default(),
         };
@@ -212,7 +204,7 @@ mod tests {
         new_start.increment_by(300);
 
         for _ in 1..=1000 {
-            log.push(view, request.clone(), ());
+            log.push(view, request.clone(), Default::default());
         }
 
         let end = log.range.1;
@@ -231,7 +223,7 @@ mod tests {
 
     #[test]
     fn constrain_empty() {
-        let mut log = Log::<(), ()>::default();
+        let mut log = Log::default();
 
         assert!(!log.contains(&OpNumber::default()));
 
@@ -242,7 +234,7 @@ mod tests {
     fn constrain_to_empty() {
         let view = View::default();
         let request = Request {
-            payload: (),
+            payload: Default::default(),
             client: ClientIdentifier::default(),
             id: RequestIdentifier::default(),
         };
@@ -250,7 +242,7 @@ mod tests {
         let mut log = Log::default();
 
         for _ in 1..=300 {
-            log.push(view, request.clone(), ());
+            log.push(view, request.clone(), Default::default());
         }
 
         let end = log.range.1;
@@ -261,12 +253,12 @@ mod tests {
         assert_eq!(log.entries.len(), 0);
         assert!(!log.contains(&end));
 
-        log.push(view, request.clone(), ());
+        log.push(view, request.clone(), Default::default());
 
         assert_eq!(log.range, (end.next(), end.next()));
         assert_eq!(log.entries.len(), 1);
 
-        log.push(view, request.clone(), ());
+        log.push(view, request.clone(), Default::default());
 
         assert_eq!(log.range, (end.next(), end.next().next()));
         assert_eq!(log.entries.len(), 2);

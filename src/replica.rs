@@ -27,13 +27,13 @@ where
     service: S,
     status: Status,
     view: View,
-    log: Log<S::Request, S::Prediction>,
+    log: Log,
     committed: OpNumber,
-    client_table: ClientTable<S::Reply>,
+    client_table: ClientTable,
     prepared: BTreeMap<OpNumber, HashSet<usize>>,
     start_view_changes: HashSet<usize>,
-    do_view_changes: HashMap<usize, DoViewChange<S::Request, S::Prediction>>,
-    recovery_responses: HashMap<usize, RecoveryResponse<S::Request, S::Prediction>>,
+    do_view_changes: HashMap<usize, DoViewChange>,
+    recovery_responses: HashMap<usize, RecoveryResponse>,
     nonce: Nonce,
 }
 
@@ -65,13 +65,13 @@ where
     pub fn recovering<O>(
         configuration: Configuration,
         index: usize,
-        checkpoint: Checkpoint<S::Checkpoint>,
+        checkpoint: Checkpoint,
         outbox: &mut O,
     ) -> Self
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
-        let mut replica = Self::new(configuration, index, checkpoint.state.into());
+        let mut replica = Self::new(configuration, index, S::restore(&checkpoint.state));
 
         replica.committed = checkpoint.committed;
         replica.status = Status::Recovering;
@@ -97,14 +97,14 @@ where
         self.view
     }
 
-    pub fn checkpoint(&self) -> Checkpoint<S::Checkpoint> {
+    pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             committed: self.committed,
             state: self.service.checkpoint(),
         }
     }
 
-    pub fn checkpoint_with_suffix(&mut self, suffix: usize) -> Option<Checkpoint<S::Checkpoint>> {
+    pub fn checkpoint_with_suffix(&mut self, suffix: usize) -> Option<Checkpoint> {
         let mut new_start = self.log.first_op_number();
         let trimmed = self.log.len().checked_sub(suffix).unwrap_or_default();
 
@@ -126,7 +126,7 @@ where
 
     pub fn idle<O>(&mut self, outbox: &mut O)
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
         match self.status {
             Status::Normal => {
@@ -166,7 +166,7 @@ where
 
     pub fn resend_pending<O>(&mut self, outbox: &mut O)
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
         match self.status {
             Status::Normal => {
@@ -188,9 +188,9 @@ where
         }
     }
 
-    pub fn handle_request<O>(&mut self, request: Request<S::Request>, outbox: &mut O)
+    pub fn handle_request<O>(&mut self, request: Request, outbox: &mut O)
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
         if self.is_backup() {
             return;
@@ -221,12 +221,9 @@ where
         }
     }
 
-    pub fn handle_prepare<M>(
-        &mut self,
-        message: Prepare<S::Request, S::Prediction>,
-        mailbox: &mut M,
-    ) where
-        M: Mailbox<S>,
+    pub fn handle_prepare<M>(&mut self, message: Prepare, mailbox: &mut M)
+    where
+        M: Mailbox,
     {
         if self.need_state_transfer(message.view) {
             self.state_transfer(message.view, mailbox);
@@ -261,7 +258,7 @@ where
 
     pub fn handle_prepare_ok<M>(&mut self, message: PrepareOk, mailbox: &mut M)
     where
-        M: Mailbox<S>,
+        M: Mailbox,
     {
         if self.need_state_transfer(message.view) {
             self.state_transfer(message.view, mailbox);
@@ -285,7 +282,7 @@ where
 
     pub fn handle_commit<M>(&mut self, message: Commit, mailbox: &mut M)
     where
-        M: Mailbox<S>,
+        M: Mailbox,
     {
         if self.need_state_transfer(message.view) {
             self.state_transfer(message.view, mailbox);
@@ -308,7 +305,7 @@ where
 
     pub fn handle_get_state<M>(&mut self, message: GetState, mailbox: &mut M)
     where
-        M: Mailbox<S>,
+        M: Mailbox,
     {
         if self.need_state_transfer(message.view) {
             self.state_transfer(message.view, mailbox);
@@ -336,7 +333,7 @@ where
 
     pub fn handle_recovery<O>(&mut self, message: Recovery, outbox: &mut O)
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
         if self.status != Status::Normal {
             return;
@@ -358,12 +355,9 @@ where
         outbox.recovery_response(message.index, response);
     }
 
-    pub fn handle_recovery_response<O>(
-        &mut self,
-        message: RecoveryResponse<S::Request, S::Prediction>,
-        outbox: &mut O,
-    ) where
-        O: Outbox<S>,
+    pub fn handle_recovery_response<O>(&mut self, message: RecoveryResponse, outbox: &mut O)
+    where
+        O: Outbox,
     {
         if self.status != Status::Recovering || self.nonce != message.nonce {
             return;
@@ -390,12 +384,9 @@ where
         }
     }
 
-    pub fn handle_new_state<O>(
-        &mut self,
-        message: NewState<S::Request, S::Prediction>,
-        outbox: &mut O,
-    ) where
-        O: Outbox<S>,
+    pub fn handle_new_state<O>(&mut self, message: NewState, outbox: &mut O)
+    where
+        O: Outbox,
     {
         if message.view < self.view
             || self.status != Status::Normal
@@ -412,7 +403,7 @@ where
 
     pub fn handle_start_view_change<O>(&mut self, message: StartViewChange, outbox: &mut O)
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
         if self.need_view_change(message.view) {
             self.start_view_change(message.view, outbox);
@@ -437,12 +428,9 @@ where
         }
     }
 
-    pub fn handle_do_view_change<O>(
-        &mut self,
-        message: DoViewChange<S::Request, S::Prediction>,
-        outbox: &mut O,
-    ) where
-        O: Outbox<S>,
+    pub fn handle_do_view_change<O>(&mut self, message: DoViewChange, outbox: &mut O)
+    where
+        O: Outbox,
     {
         if self.need_view_change(message.view) {
             self.start_view_change(message.view, outbox);
@@ -485,12 +473,9 @@ where
         }
     }
 
-    pub fn handle_start_view<O>(
-        &mut self,
-        message: StartView<S::Request, S::Prediction>,
-        outbox: &mut O,
-    ) where
-        O: Outbox<S>,
+    pub fn handle_start_view<O>(&mut self, message: StartView, outbox: &mut O)
+    where
+        O: Outbox,
     {
         if message.view < self.view {
             return;
@@ -510,7 +495,7 @@ where
 
     fn start_view_change<O>(&mut self, view: View, outbox: &mut O)
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
         self.view = view;
 
@@ -524,7 +509,7 @@ where
 
     fn state_transfer<O>(&mut self, view: View, outbox: &mut O)
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
         if self.view < view {
             self.log.truncate(self.committed);
@@ -549,7 +534,7 @@ where
 
     fn commit_operations<O>(&mut self, committed: OpNumber, outbox: &mut O)
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
         while self.committed < committed {
             self.committed.increment();
@@ -572,7 +557,7 @@ where
 
     fn prepare_pending<O>(&mut self, outbox: &mut O)
     where
-        O: Outbox<S>,
+        O: Outbox,
     {
         let mut current = self.committed.next();
 
@@ -658,6 +643,7 @@ where
 mod tests {
     use super::*;
     use crate::buffer::{BufferedMailbox, ProtocolPayload};
+    use crate::request::CustomPayload;
 
     #[test]
     fn sender_behind_prepare() {
@@ -672,11 +658,11 @@ mod tests {
             view: View::default().next(),
             op_number: OpNumber::default().next(),
             request: Request {
-                payload: 2,
+                payload: 2.to_payload(),
                 client: Default::default(),
                 id: Default::default(),
             },
-            prediction: (),
+            prediction: Default::default(),
             committed: OpNumber::default(),
         };
 
@@ -696,11 +682,11 @@ mod tests {
             view: View::default().next(),
             op_number: OpNumber::default().next(),
             request: Request {
-                payload: 2,
+                payload: 2.to_payload(),
                 client: Default::default(),
                 id: Default::default(),
             },
-            prediction: (),
+            prediction: Default::default(),
             committed: OpNumber::default(),
         };
 
@@ -898,11 +884,11 @@ mod tests {
         replica.log.push(
             replica.view,
             Request {
-                payload: 2,
+                payload: 2.to_payload(),
                 client: Default::default(),
                 id: Default::default(),
             },
-            (),
+            Default::default(),
         );
 
         let message = NewState {

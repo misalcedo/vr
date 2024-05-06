@@ -4,7 +4,6 @@ use crate::protocol::{
     StartView, StartViewChange,
 };
 use crate::request::{ClientIdentifier, Reply};
-use crate::service::Protocol;
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::iter::FusedIterator;
@@ -15,26 +14,20 @@ pub struct Envelope<D, P> {
 }
 
 #[derive(Eq, PartialEq)]
-pub enum ProtocolPayload<P>
-where
-    P: Protocol,
-{
-    Prepare(Prepare<P::Request, P::Prediction>),
+pub enum ProtocolPayload {
+    Prepare(Prepare),
     PrepareOk(PrepareOk),
     Commit(Commit),
     GetState(GetState),
-    NewState(NewState<P::Request, P::Prediction>),
+    NewState(NewState),
     StartViewChange(StartViewChange),
-    DoViewChange(DoViewChange<P::Request, P::Prediction>),
-    StartView(StartView<P::Request, P::Prediction>),
+    DoViewChange(DoViewChange),
+    StartView(StartView),
     Recovery(Recovery),
-    RecoveryResponse(RecoveryResponse<P::Request, P::Prediction>),
+    RecoveryResponse(RecoveryResponse),
 }
 
-impl<P> Clone for ProtocolPayload<P>
-where
-    P: Protocol,
-{
+impl Clone for ProtocolPayload {
     fn clone(&self) -> Self {
         match self {
             ProtocolPayload::Prepare(message) => Self::Prepare(message.clone()),
@@ -51,12 +44,7 @@ where
     }
 }
 
-impl<P, Req, Pre> Debug for ProtocolPayload<P>
-where
-    P: Protocol<Request = Req, Prediction = Pre>,
-    Req: Debug,
-    Pre: Debug,
-{
+impl Debug for ProtocolPayload {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             ProtocolPayload::Prepare(message) => write!(f, "{message:?}"),
@@ -73,11 +61,8 @@ where
     }
 }
 
-impl<P> ProtocolPayload<P>
-where
-    P: Protocol,
-{
-    pub fn unwrap_prepare(self) -> Prepare<P::Request, P::Prediction> {
+impl ProtocolPayload {
+    pub fn unwrap_prepare(self) -> Prepare {
         let Self::Prepare(message) = self else {
             panic!("called `ProtocolPayload::unwrap_prepare` on a unsupported variant",)
         };
@@ -106,20 +91,14 @@ where
     }
 }
 
-pub struct BufferedMailbox<P>
-where
-    P: Protocol,
-{
-    inbound: VecDeque<ProtocolPayload<P>>,
-    replies: VecDeque<Envelope<ClientIdentifier, Reply<P::Reply>>>,
-    send: VecDeque<Envelope<usize, ProtocolPayload<P>>>,
-    broadcast: VecDeque<ProtocolPayload<P>>,
+pub struct BufferedMailbox {
+    inbound: VecDeque<ProtocolPayload>,
+    replies: VecDeque<Envelope<ClientIdentifier, Reply>>,
+    send: VecDeque<Envelope<usize, ProtocolPayload>>,
+    broadcast: VecDeque<ProtocolPayload>,
 }
 
-impl<P> Default for BufferedMailbox<P>
-where
-    P: Protocol,
-{
+impl Default for BufferedMailbox {
     fn default() -> Self {
         Self {
             inbound: Default::default(),
@@ -130,10 +109,7 @@ where
     }
 }
 
-impl<P> BufferedMailbox<P>
-where
-    P: Protocol,
-{
+impl BufferedMailbox {
     pub fn is_empty(&self) -> bool {
         self.inbound.is_empty()
             && self.replies.is_empty()
@@ -141,20 +117,20 @@ where
             && self.broadcast.is_empty()
     }
 
-    pub fn pop_inbound(&mut self) -> Option<ProtocolPayload<P>> {
+    pub fn pop_inbound(&mut self) -> Option<ProtocolPayload> {
         self.inbound.pop_front()
     }
 
     pub fn drain_inbound(
         &mut self,
-    ) -> impl DoubleEndedIterator<Item = ProtocolPayload<P>> + ExactSizeIterator + FusedIterator + '_
+    ) -> impl DoubleEndedIterator<Item = ProtocolPayload> + ExactSizeIterator + FusedIterator + '_
     {
         self.inbound.drain(..)
     }
 
     pub fn drain_replies(
         &mut self,
-    ) -> impl DoubleEndedIterator<Item = Envelope<ClientIdentifier, Reply<P::Reply>>>
+    ) -> impl DoubleEndedIterator<Item = Envelope<ClientIdentifier, Reply>>
            + ExactSizeIterator
            + FusedIterator
            + '_ {
@@ -163,7 +139,7 @@ where
 
     pub fn drain_send(
         &mut self,
-    ) -> impl DoubleEndedIterator<Item = Envelope<usize, ProtocolPayload<P>>>
+    ) -> impl DoubleEndedIterator<Item = Envelope<usize, ProtocolPayload>>
            + ExactSizeIterator
            + FusedIterator
            + '_ {
@@ -172,17 +148,14 @@ where
 
     pub fn drain_broadcast(
         &mut self,
-    ) -> impl DoubleEndedIterator<Item = ProtocolPayload<P>> + ExactSizeIterator + FusedIterator + '_
+    ) -> impl DoubleEndedIterator<Item = ProtocolPayload> + ExactSizeIterator + FusedIterator + '_
     {
         self.broadcast.drain(..)
     }
 }
 
-impl<P> Outbox<P> for BufferedMailbox<P>
-where
-    P: Protocol,
-{
-    fn prepare(&mut self, message: Prepare<P::Request, P::Prediction>) {
+impl Outbox for BufferedMailbox {
+    fn prepare(&mut self, message: Prepare) {
         self.broadcast.push_back(ProtocolPayload::Prepare(message));
     }
 
@@ -204,7 +177,7 @@ where
         });
     }
 
-    fn new_state(&mut self, index: usize, message: NewState<P::Request, P::Prediction>) {
+    fn new_state(&mut self, index: usize, message: NewState) {
         self.send.push_back(Envelope {
             destination: index,
             payload: ProtocolPayload::NewState(message),
@@ -216,14 +189,14 @@ where
             .push_back(ProtocolPayload::StartViewChange(message));
     }
 
-    fn do_view_change(&mut self, index: usize, message: DoViewChange<P::Request, P::Prediction>) {
+    fn do_view_change(&mut self, index: usize, message: DoViewChange) {
         self.send.push_back(Envelope {
             destination: index,
             payload: ProtocolPayload::DoViewChange(message),
         });
     }
 
-    fn start_view(&mut self, message: StartView<P::Request, P::Prediction>) {
+    fn start_view(&mut self, message: StartView) {
         self.broadcast
             .push_back(ProtocolPayload::StartView(message));
     }
@@ -232,18 +205,14 @@ where
         self.broadcast.push_back(ProtocolPayload::Recovery(message));
     }
 
-    fn recovery_response(
-        &mut self,
-        index: usize,
-        message: RecoveryResponse<P::Request, P::Prediction>,
-    ) {
+    fn recovery_response(&mut self, index: usize, message: RecoveryResponse) {
         self.send.push_back(Envelope {
             destination: index,
             payload: ProtocolPayload::RecoveryResponse(message),
         });
     }
 
-    fn reply(&mut self, client: ClientIdentifier, reply: &Reply<P::Reply>) {
+    fn reply(&mut self, client: ClientIdentifier, reply: &Reply) {
         self.replies.push_back(Envelope {
             destination: client,
             payload: reply.clone(),
@@ -251,11 +220,8 @@ where
     }
 }
 
-impl<P> Inbox<P> for BufferedMailbox<P>
-where
-    P: Protocol,
-{
-    fn push_prepare(&mut self, message: Prepare<P::Request, P::Prediction>) {
+impl Inbox for BufferedMailbox {
+    fn push_prepare(&mut self, message: Prepare) {
         self.inbound.push_back(ProtocolPayload::Prepare(message));
     }
 
@@ -271,7 +237,7 @@ where
         self.inbound.push_back(ProtocolPayload::GetState(message));
     }
 
-    fn push_new_state(&mut self, message: NewState<P::Request, P::Prediction>) {
+    fn push_new_state(&mut self, message: NewState) {
         self.inbound.push_back(ProtocolPayload::NewState(message));
     }
 
@@ -280,12 +246,12 @@ where
             .push_back(ProtocolPayload::StartViewChange(message));
     }
 
-    fn push_do_view_change(&mut self, message: DoViewChange<P::Request, P::Prediction>) {
+    fn push_do_view_change(&mut self, message: DoViewChange) {
         self.inbound
             .push_back(ProtocolPayload::DoViewChange(message));
     }
 
-    fn push_start_view(&mut self, message: StartView<P::Request, P::Prediction>) {
+    fn push_start_view(&mut self, message: StartView) {
         self.inbound.push_back(ProtocolPayload::StartView(message));
     }
 
@@ -293,10 +259,10 @@ where
         self.inbound.push_back(ProtocolPayload::Recovery(message));
     }
 
-    fn push_recovery_response(&mut self, message: RecoveryResponse<P::Request, P::Prediction>) {
+    fn push_recovery_response(&mut self, message: RecoveryResponse) {
         self.inbound
             .push_back(ProtocolPayload::RecoveryResponse(message));
     }
 }
 
-impl<P> Mailbox<P> for BufferedMailbox<P> where P: Protocol {}
+impl Mailbox for BufferedMailbox {}

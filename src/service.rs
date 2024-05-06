@@ -1,56 +1,90 @@
-use serde::{Deserialize, Serialize};
+use crate::request::{CustomPayload, Payload};
 
-pub trait Payload: Clone + Serialize + Deserialize<'static> {}
+pub trait Service {
+    fn restore(payload: &Payload) -> Self;
 
-impl<P> Payload for P where P: Clone + Serialize + Deserialize<'static> {}
+    fn predict(&self, request: &Payload) -> Payload;
 
-/// A trait to associate all the necessary types together.
-/// All associated types must be serializable and not borrow data since replicas need to store these values.
-pub trait Protocol {
-    type Request: Payload;
-    type Prediction: Payload;
-    type Reply: Payload;
-    type Checkpoint: Payload;
+    fn checkpoint(&self) -> Payload;
+
+    fn invoke(&mut self, request: &Payload, prediction: &Payload) -> Payload;
 }
 
-pub trait Service: Protocol + From<<Self as Protocol>::Checkpoint> {
-    fn predict(&self, request: &<Self as Protocol>::Request) -> <Self as Protocol>::Prediction;
+pub trait DataService {
+    type Request: CustomPayload;
+    type Prediction: CustomPayload;
+    type Checkpoint: CustomPayload;
+    type Reply: CustomPayload;
 
-    fn checkpoint(&self) -> <Self as Protocol>::Checkpoint;
+    fn restore(checkpoint: Self::Checkpoint) -> Self;
 
-    fn invoke(
-        &mut self,
-        request: &<Self as Protocol>::Request,
-        prediction: &<Self as Protocol>::Prediction,
-    ) -> <Self as Protocol>::Reply;
+    fn predict(&self, request: Self::Request) -> Self::Prediction;
+
+    fn checkpoint(&self) -> Self::Checkpoint;
+
+    fn invoke(&mut self, request: Self::Request, prediction: Self::Prediction) -> Self::Reply;
+}
+
+impl<S> Service for S
+where
+    S: DataService,
+{
+    fn restore(payload: &Payload) -> Self {
+        S::restore(S::Checkpoint::from_payload(payload))
+    }
+
+    fn predict(&self, request: &Payload) -> Payload {
+        self.predict(S::Request::from_payload(request)).to_payload()
+    }
+
+    fn checkpoint(&self) -> Payload {
+        self.checkpoint().to_payload()
+    }
+
+    fn invoke(&mut self, request: &Payload, prediction: &Payload) -> Payload {
+        self.invoke(
+            S::Request::from_payload(request),
+            S::Prediction::from_payload(prediction),
+        )
+        .to_payload()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request::CustomPayload;
 
-    impl Protocol for i32 {
-        type Request = Self;
-        type Prediction = ();
-        type Reply = Self;
-        type Checkpoint = Self;
+    impl CustomPayload for i32 {
+        fn to_payload(&self) -> Payload {
+            Payload::from(self.to_be_bytes())
+        }
+
+        fn from_payload(payload: Payload) -> Self {
+            Self::from_be_bytes(payload.try_into().unwrap_or_default())
+        }
     }
 
-    impl Service for i32 {
-        fn predict(&self, _: &<Self as Protocol>::Request) -> <Self as Protocol>::Prediction {
+    impl DataService for i32 {
+        type Request = Self;
+        type Prediction = ();
+        type Checkpoint = Self;
+        type Reply = Self;
+
+        fn restore(checkpoint: Self::Checkpoint) -> Self {
+            checkpoint
+        }
+
+        fn predict(&self, _: Self::Request) -> Self::Prediction {
             ()
         }
 
-        fn checkpoint(&self) -> <Self as Protocol>::Checkpoint {
+        fn checkpoint(&self) -> Self::Checkpoint {
             *self
         }
 
-        fn invoke(
-            &mut self,
-            request: &<Self as Protocol>::Request,
-            _: &<Self as Protocol>::Prediction,
-        ) -> <Self as Protocol>::Reply {
-            *self += *request;
+        fn invoke(&mut self, request: Self::Request, _: Self::Prediction) -> Self::Reply {
+            *self += request;
             *self
         }
     }

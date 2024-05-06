@@ -1,5 +1,5 @@
 use crate::configuration::Configuration;
-use crate::request::{ClientIdentifier, Reply, Request, RequestIdentifier};
+use crate::request::{ClientIdentifier, Payload, Reply, Request, RequestIdentifier};
 use crate::viewstamp::View;
 
 pub struct Client {
@@ -23,15 +23,18 @@ impl Client {
         self.identifier
     }
 
-    pub fn update_view<P>(&mut self, reply: &Reply<P>) {
+    pub fn update_view(&mut self, reply: &Reply) {
         self.view = self.view.max(reply.view);
     }
 
-    pub fn new_request<P>(&mut self, payload: P) -> Request<P> {
+    pub fn new_request<C>(&mut self, payload: C) -> Request
+    where
+        C: Into<Payload>,
+    {
         self.last_request.increment();
 
         Request {
-            payload,
+            payload: payload.into(),
             client: self.identifier,
             id: self.last_request,
         }

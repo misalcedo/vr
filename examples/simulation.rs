@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{command, Parser};
 use log::{info, trace, warn};
 use rand::{thread_rng, Rng};
 use std::collections::{HashMap, VecDeque};
@@ -10,7 +10,7 @@ use tokio::sync::mpsc::{
 use tokio::task::JoinSet;
 use viewstamped_replication::buffer::{BufferedMailbox, ProtocolPayload};
 use viewstamped_replication::{
-    Client, ClientIdentifier, Configuration, Protocol, Replica, Reply, Request, Service,
+    Client, ClientIdentifier, Configuration, DataService, Replica, Reply, Request, Service,
 };
 
 #[derive(Copy, Clone, Debug, Parser)]
@@ -48,54 +48,38 @@ pub struct Options {
 #[derive(Default)]
 pub struct Adder(i32);
 
-impl Protocol for Adder {
+impl DataService for Adder {
     type Request = i32;
     type Prediction = ();
-    type Reply = i32;
     type Checkpoint = i32;
-}
+    type Reply = i32;
 
-impl From<<Self as Protocol>::Checkpoint> for Adder {
-    fn from(value: <Self as Protocol>::Checkpoint) -> Self {
-        Adder(value)
+    fn restore(checkpoint: Self::Checkpoint) -> Self {
+        Self(checkpoint)
     }
-}
 
-impl Service for Adder {
-    fn predict(&self, _: &<Self as Protocol>::Request) -> <Self as Protocol>::Prediction {
+    fn predict(&self, _: Self::Request) -> Self::Prediction {
         ()
     }
 
-    fn checkpoint(&self) -> <Self as Protocol>::Checkpoint {
+    fn checkpoint(&self) -> Self::Checkpoint {
         self.0
     }
 
-    fn invoke(
-        &mut self,
-        request: &<Self as Protocol>::Request,
-        _: &<Self as Protocol>::Prediction,
-    ) -> <Self as Protocol>::Reply {
+    fn invoke(&mut self, request: Self::Request, _: Self::Prediction) -> Self::Reply {
         self.0 += *request;
         self.0
     }
 }
 
-pub enum Command<P>
-where
-    P: Protocol,
-{
-    Request(Request<P::Request>),
-    Protocol(ProtocolPayload<P>),
+pub enum Command {
+    Request(Request),
+    Protocol(ProtocolPayload),
     Crash,
     Recover,
 }
 
-impl<P, Req, Pre> Debug for Command<P>
-where
-    P: Protocol<Request = Req, Prediction = Pre>,
-    Req: Debug,
-    Pre: Debug,
-{
+impl Debug for Command {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Request(request) => write!(f, "{request:?}"),
@@ -106,20 +90,14 @@ where
     }
 }
 
-pub struct Network<P>
-where
-    P: Protocol,
-{
+pub struct Network {
     configuration: Configuration,
     options: Options,
-    senders: Vec<UnboundedSender<Command<P>>>,
-    clients: HashMap<ClientIdentifier, Sender<Reply<P::Reply>>>,
+    senders: Vec<UnboundedSender<Command>>,
+    clients: HashMap<ClientIdentifier, Sender<Reply>>,
 }
 
-impl<P> Clone for Network<P>
-where
-    P: Protocol,
-{
+impl Clone for Network {
     fn clone(&self) -> Self {
         Self {
             configuration: self.configuration,
@@ -130,13 +108,7 @@ where
     }
 }
 
-impl<P, Req, Pre, Rep> Network<P>
-where
-    P: Protocol<Request = Req, Prediction = Pre, Reply = Rep>,
-    Req: Clone + Debug,
-    Pre: Debug,
-    Rep: Debug,
-{
+impl Network {
     pub fn new(configuration: Configuration, options: Options) -> Self {
         let senders = Vec::with_capacity(configuration.replicas());
 
@@ -148,7 +120,7 @@ where
         }
     }
 
-    pub fn bind(&mut self) -> UnboundedReceiver<Command<P>> {
+    pub fn bind(&mut self) -> UnboundedReceiver<Command> {
         let (sender, receiver) = unbounded_channel();
 
         self.senders.push(sender);
@@ -156,7 +128,7 @@ where
         receiver
     }
 
-    pub fn bind_client(&mut self, identifier: ClientIdentifier) -> Receiver<Reply<P::Reply>> {
+    pub fn bind_client(&mut self, identifier: ClientIdentifier) -> Receiver<Reply> {
         let (sender, receiver) = channel(1);
 
         self.clients.insert(identifier, sender);
@@ -164,7 +136,7 @@ where
         receiver
     }
 
-    pub async fn send(&mut self, index: usize, request: Request<P::Request>) {
+    pub async fn send(&mut self, index: usize, request: Request) {
         if self.should_drop() {
             return;
         }
@@ -176,7 +148,7 @@ where
         }
     }
 
-    pub async fn broadcast(&mut self, request: Request<P::Request>) {
+    pub async fn broadcast(&mut self, request: Request) {
         if self.should_drop() {
             return;
         }
@@ -189,22 +161,22 @@ where
     }
 
     pub async fn crash(&mut self, index: usize) {
+        self.send_to(index, Command::Crash);
+    }
+
+    fn send_to(&mut self, index: usize, command: Command) {
         if let Some(sender) = self.senders.get(index) {
-            if let Err(_) = sender.send(Command::Crash) {
+            if let Err(_) = sender.send(command) {
                 warn!("unable to send message to {index}")
             }
         }
     }
 
     pub async fn recover(&mut self, index: usize) {
-        if let Some(sender) = self.senders.get(index) {
-            if let Err(_) = sender.send(Command::Recover) {
-                warn!("unable to send message to {index}")
-            }
-        }
+        self.send_to(index, Command::Recover);
     }
 
-    pub async fn requeue(&mut self, index: usize, inbox: &mut BufferedMailbox<P>) {
+    pub async fn requeue(&mut self, index: usize, inbox: &mut BufferedMailbox) {
         if let Some(sender) = self.senders.get(index) {
             for message in inbox.drain_inbound() {
                 trace!("Re-queuing {message:?} on replica {index}...");
@@ -216,7 +188,7 @@ where
         }
     }
 
-    pub async fn process_outbound(&mut self, source: usize, outbox: &mut BufferedMailbox<P>) {
+    pub async fn process_outbound(&mut self, source: usize, outbox: &mut BufferedMailbox) {
         for message in outbox.drain_replies() {
             if self.should_drop() {
                 continue;
@@ -283,7 +255,7 @@ async fn main() {
     let start = Instant::now();
     let configuration = Configuration::from(options.f * 2 + 1);
 
-    let mut network = Network::<Adder>::new(configuration, options);
+    let mut network = Network::new(configuration, options);
     let mut receivers = VecDeque::with_capacity(configuration.replicas());
 
     for _ in 0..configuration.replicas() {
@@ -296,8 +268,7 @@ async fn main() {
         options.clients
     );
 
-    let mut clients: Vec<(Client, Receiver<Reply<<Adder as Protocol>::Reply>>)> =
-        Vec::with_capacity(options.clients);
+    let mut clients: Vec<(Client, Receiver<Reply>)> = Vec::with_capacity(options.clients);
     for _ in 0..options.clients {
         let client = Client::new(configuration);
         let receiver = network.bind_client(client.identifier());
@@ -358,8 +329,8 @@ async fn main() {
 async fn run_replica(
     options: Options,
     mut replica: Replica<Adder>,
-    mut receiver: UnboundedReceiver<Command<Adder>>,
-    mut network: Network<Adder>,
+    mut receiver: UnboundedReceiver<Command>,
+    mut network: Network,
 ) {
     let mut mailbox = BufferedMailbox::default();
     let mut checkpoint = replica.checkpoint();
@@ -475,8 +446,8 @@ async fn run_replica(
 async fn run_client(
     options: Options,
     mut client: Client,
-    mut receiver: Receiver<Reply<<Adder as Protocol>::Reply>>,
-    mut network: Network<Adder>,
+    mut receiver: Receiver<Reply>,
+    mut network: Network,
 ) -> usize {
     if options.requests_per_client == 0 {
         return 0;

@@ -19,4 +19,4 @@ pub use configuration::Configuration;
 pub use mail::{Inbox, Mailbox, Outbox};
 pub use replica::Replica;
 pub use request::{ClientIdentifier, Reply, Request};
-pub use service::{Protocol, Service};
+pub use service::{DataService, Service};

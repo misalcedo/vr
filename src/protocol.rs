@@ -1,19 +1,19 @@
 use crate::log::Log;
 use crate::nonce::Nonce;
-use crate::request::Request;
+use crate::request::{Payload, Request};
 use crate::viewstamp::{OpNumber, View};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Prepare<R, P> {
+pub struct Prepare {
     /// The current view of the replica.
     pub view: View,
     /// The op-number assigned to the request.
     pub op_number: OpNumber,
     /// The message received from the client along with a prediction for supporting non-deterministic behavior.
-    pub request: Request<R>,
+    pub request: Request,
     /// The prediction of non-deterministic behavior performed at the primary.
-    pub prediction: P,
+    pub prediction: Payload,
     /// The op-number of the last committed log entry.
     pub committed: OpNumber,
 }
@@ -47,11 +47,11 @@ pub struct GetState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct NewState<R, P> {
+pub struct NewState {
     /// The current view of the replica.
     pub view: View,
     /// An excerpt of the log based on the last known op number.
-    pub log: Log<R, P>,
+    pub log: Log,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,
 }
@@ -65,11 +65,11 @@ pub struct StartViewChange {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DoViewChange<R, P> {
+pub struct DoViewChange {
     /// The current view of the replica.
     pub view: View,
     /// The log of the replica from its last normal view.
-    pub log: Log<R, P>,
+    pub log: Log,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,
     /// The index of the replica that sent the message.
@@ -77,11 +77,11 @@ pub struct DoViewChange<R, P> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StartView<R, P> {
+pub struct StartView {
     /// The current view of the replica.
     pub view: View,
     /// The log to use in the new view.
-    pub log: Log<R, P>,
+    pub log: Log,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,
 }
@@ -97,13 +97,13 @@ pub struct Recovery {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RecoveryResponse<R, P> {
+pub struct RecoveryResponse {
     /// The current view of the replica.
     pub view: View,
     /// A value coined for single use to detect replays of previous recovery requests.
     pub nonce: Nonce,
     /// The log to use in the new view.
-    pub log: Log<R, P>,
+    pub log: Log,
     /// The op-number of the latest committed request known to the replica.
     pub committed: OpNumber,
     /// The index of the sender.
@@ -111,9 +111,9 @@ pub struct RecoveryResponse<R, P> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Checkpoint<C> {
+pub struct Checkpoint {
     /// The last committed operation reflected in the application state.
     pub committed: OpNumber,
     /// The application state when the checkpoint was taken.
-    pub state: C,
+    pub state: Payload,
 }
