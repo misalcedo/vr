@@ -62,11 +62,11 @@ impl Replica {
     /// let mut mailbox = Mailbox::default();
     ///
     /// // pretend to receive a request over the network.
-    /// mailbox.push(Message::Request(Request {
+    /// mailbox.push(Request {
     ///     operation: (),
     ///     client: 1,
     ///     id: 1,
-    /// }));
+    /// });
     /// primary.receive(&mut mailbox);
     ///
     /// // pretend to deliver the message over the network.
@@ -82,12 +82,12 @@ impl Replica {
     /// mailbox.push(message);
     /// primary.receive(&mut mailbox);
     ///
-    /// assert_eq!(mailbox.pop(), Some(Message::Reply(Reply {
+    /// assert_eq!(mailbox.pop(), Some(Reply {
     ///     view: 0,
     ///     result: (),
     ///     client: 1,
     ///     id: 1,
-    /// })));
+    /// }.into()));
     /// ```
     pub fn receive(&mut self, mailbox: &mut Mailbox) {
         match self.status {

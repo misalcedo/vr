@@ -16,12 +16,24 @@ pub struct Request {
     pub id: u128,
 }
 
+impl From<Request> for Message {
+    fn from(value: Request) -> Self {
+        Self::Request(value)
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Reply {
     pub view: View,
     pub result: (),
     pub client: u128,
     pub id: u128,
+}
+
+impl From<Reply> for Message {
+    fn from(value: Reply) -> Self {
+        Self::Reply(value)
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -36,11 +48,11 @@ pub enum ProtocolMessage {
 impl ProtocolMessage {
     pub fn view(&self) -> usize {
         match self {
-            ProtocolMessage::Prepare(m) => m.view,
-            ProtocolMessage::PrepareOk(m) => m.view,
-            ProtocolMessage::Commit(m) => m.view,
-            ProtocolMessage::GetState(m) => m.view,
-            ProtocolMessage::NewState(m) => m.view,
+            Self::Prepare(m) => m.view,
+            Self::PrepareOk(m) => m.view,
+            Self::Commit(m) => m.view,
+            Self::GetState(m) => m.view,
+            Self::NewState(m) => m.view,
         }
     }
 }
@@ -55,7 +67,7 @@ pub struct Prepare {
 
 impl From<Prepare> for ProtocolMessage {
     fn from(value: Prepare) -> Self {
-        ProtocolMessage::Prepare(value)
+        Self::Prepare(value)
     }
 }
 
@@ -68,7 +80,7 @@ pub struct PrepareOk {
 
 impl From<PrepareOk> for ProtocolMessage {
     fn from(value: PrepareOk) -> Self {
-        ProtocolMessage::PrepareOk(value)
+        Self::PrepareOk(value)
     }
 }
 
@@ -89,7 +101,7 @@ impl From<Prepare> for Commit {
 
 impl From<Commit> for ProtocolMessage {
     fn from(value: Commit) -> Self {
-        ProtocolMessage::Commit(value)
+        Self::Commit(value)
     }
 }
 
@@ -102,7 +114,7 @@ pub struct GetState {
 
 impl From<GetState> for ProtocolMessage {
     fn from(value: GetState) -> Self {
-        ProtocolMessage::GetState(value)
+        Self::GetState(value)
     }
 }
 
@@ -116,6 +128,6 @@ pub struct NewState {
 
 impl From<NewState> for ProtocolMessage {
     fn from(value: NewState) -> Self {
-        ProtocolMessage::NewState(value)
+        Self::NewState(value)
     }
 }
