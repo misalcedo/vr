@@ -72,7 +72,9 @@ impl Replica {
                 self.start_state_transfer(mailbox);
                 mailbox.push(Message::Protocol(index, message));
             }
-            Some(Message::Protocol(_, ProtocolMessage::Prepare(message))) => {}
+            Some(Message::Protocol(_, ProtocolMessage::Prepare(message))) if !self.is_primary() => {
+                self.receive_prepare(message, mailbox)
+            }
             Some(_) => {}
         }
     }
@@ -116,6 +118,10 @@ impl Replica {
         }
     }
 
+    fn primary(&self) -> usize {
+        self.view % self.configuration.len()
+    }
+
     fn is_primary(&self) -> bool {
         self.index == (self.view % self.configuration.len())
     }
@@ -149,5 +155,39 @@ impl Replica {
         }
 
         mailbox.send(to, message);
+    }
+
+    /// Backups process PREPARE messages in order:
+    /// a backup won’t prepare a request until it has entries for all earlier requests in its log.
+    ///
+    /// When a backup receives a PREPARE message,
+    /// it waits until it has entries in its log for all earlier requests
+    /// (doing state transfer if necessary to get the missing information).
+    ///
+    /// Then it increments its op-number,
+    /// adds the request to the end of its log,
+    /// updates the client’s information in the client-table,
+    /// and sends a PREPAREOK message to the primary to indicate that this operation and all earlier ones have prepared locally.
+    fn receive_prepare(&mut self, prepare: Prepare, mailbox: &mut Mailbox) {
+        if prepare.op_number < self.op_number {
+            return;
+        }
+
+        if prepare.op_number > self.op_number + 1 {
+            self.start_state_transfer(mailbox);
+            mailbox.push(Message::Protocol(self.index, prepare.into()));
+            return;
+        }
+
+        self.op_number += 1;
+        self.client_table.start(&prepare.request);
+        mailbox.send(
+            self.primary(),
+            PrepareOk {
+                view: self.view,
+                op_number: self.op_number,
+                index: self.index,
+            },
+        );
     }
 }
