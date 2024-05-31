@@ -43,14 +43,14 @@ impl Replica {
         }
     }
 
-    pub fn normal_receive(&mut self, mailbox: &mut Mailbox) {
+    fn normal_receive(&mut self, mailbox: &mut Mailbox) {
         match mailbox.receive() {
             None if self.is_primary() => {
-                /// Normally the primary informs backups about the commit when it sends the next PREPARE message;
-                /// this is the purpose of the commit-number in the PREPARE message.
-                /// However, if the primary does not receive a new client request in a timely way,
-                /// it instead informs the backups of the latest commit by sending them a COMMIT message
-                /// (note that in this case commit-number = op-number).
+                // Normally the primary informs backups about the commit when it sends the next PREPARE message;
+                // this is the purpose of the commit-number in the PREPARE message.
+                // However, if the primary does not receive a new client request in a timely way,
+                // it instead informs the backups of the latest commit by sending them a COMMIT message
+                // (note that in this case commit-number = op-number).
                 self.broadcast(
                     mailbox,
                     Commit {
@@ -84,6 +84,10 @@ impl Replica {
                 if self.is_primary() =>
             {
                 self.receive_prepare_ok(message, mailbox)
+            }
+
+            Some(Message::Protocol(_, ProtocolMessage::Commit(message))) if !self.is_primary() => {
+                self.receive_commit(message, mailbox)
             }
             Some(_) => {}
         }
@@ -202,6 +206,8 @@ impl Replica {
                 index: self.index,
             },
         );
+
+        self.receive_commit(Commit::from(prepare), mailbox);
     }
 
     /// The primary waits for f PREPAREOK messages from different backups;
@@ -219,7 +225,7 @@ impl Replica {
 
         // track prepared backups.
         let offset = (prepare_ok.op_number - self.commit) - 1;
-        let mut prepared = &mut self.prepared[offset];
+        let prepared = &mut self.prepared[offset];
 
         prepared.insert(prepare_ok.index);
 
@@ -242,11 +248,30 @@ impl Replica {
                 id: request.id,
             };
 
-            mailbox.reply(reply);
+            if self.is_primary() {
+                mailbox.reply(reply);
+            }
+
             self.client_table.finish(request, reply);
 
             // disable tracking prepared backups.
             self.prepared.pop_front();
         }
+    }
+
+    /// When a backup learns of a commit, it waits until it has the request in its log
+    /// (which may require state transfer) and until it has executed all earlier operations.
+    /// Then it executes the operation by performing the up-call to the service code,
+    /// increments its commit-number,
+    /// updates the client’s entry in the client-table,
+    /// but does not send the reply to the client.
+    fn receive_commit(&mut self, commit: Commit, mailbox: &mut Mailbox) {
+        if commit.commit > self.op_number {
+            self.start_state_transfer(mailbox);
+            mailbox.push(Message::Protocol(self.index, commit.into()));
+            return;
+        }
+
+        self.commit(commit.commit, mailbox);
     }
 }

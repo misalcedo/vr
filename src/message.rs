@@ -78,6 +78,15 @@ pub struct Commit {
     pub commit: usize,
 }
 
+impl From<Prepare> for Commit {
+    fn from(value: Prepare) -> Self {
+        Self {
+            view: value.view,
+            commit: value.commit,
+        }
+    }
+}
+
 impl From<Commit> for ProtocolMessage {
     fn from(value: Commit) -> Self {
         ProtocolMessage::Commit(value)
