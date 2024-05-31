@@ -18,4 +18,8 @@ impl Configuration {
     pub fn len(&self) -> usize {
         self.addresses.len()
     }
+
+    pub fn threshold(&self) -> usize {
+        (self.addresses.len() - 1) / 2
+    }
 }

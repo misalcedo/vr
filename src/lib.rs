@@ -6,6 +6,7 @@ use crate::message::*;
 use crate::table::ClientTable;
 use rand::Rng;
 use std::cmp::Ordering;
+use std::collections::{HashSet, VecDeque};
 
 mod configuration;
 mod mail;
@@ -30,6 +31,7 @@ pub struct Replica {
     log: Vec<Request>,
     client_table: ClientTable,
     status: Status,
+    prepared: VecDeque<HashSet<usize>>,
 }
 
 impl Replica {
@@ -75,6 +77,11 @@ impl Replica {
             Some(Message::Protocol(_, ProtocolMessage::Prepare(message))) if !self.is_primary() => {
                 self.receive_prepare(message, mailbox)
             }
+            Some(Message::Protocol(_, ProtocolMessage::PrepareOk(message)))
+                if self.is_primary() =>
+            {
+                self.receive_prepare_ok(message, mailbox)
+            }
             Some(_) => {}
         }
     }
@@ -114,6 +121,9 @@ impl Replica {
                         request: *request,
                     },
                 );
+
+                // enable tracking prepared backups.
+                self.prepared.push_back(Default::default());
             }
         }
     }
@@ -189,5 +199,51 @@ impl Replica {
                 index: self.index,
             },
         );
+    }
+
+    /// The primary waits for f PREPAREOK messages from different backups;
+    /// at this point it considers the operation (and all earlier ones) to be committed.
+    /// Then, after it has executed all earlier operations (those assigned smaller op-numbers),
+    /// the primary executes the operation by making an up-call to the service code,
+    /// and increments its commit-number.
+    ///
+    /// Then it sends a REPLY message to the client.
+    /// The primary also updates the client’s entry in the client-table to contain the result.
+    fn receive_prepare_ok(&mut self, prepare_ok: PrepareOk, mailbox: &mut Mailbox) {
+        if prepare_ok.op_number <= self.commit {
+            return;
+        }
+
+        // track prepared backups.
+        let offset = (prepare_ok.op_number - self.commit) - 1;
+        let mut prepared = &mut self.prepared[offset];
+
+        prepared.insert(prepare_ok.index);
+
+        if prepared.len() < self.configuration.threshold() {
+            return;
+        }
+
+        self.commit(prepare_ok.op_number, mailbox);
+    }
+
+    fn commit(&mut self, operation: usize, mailbox: &mut Mailbox) {
+        while self.commit < operation {
+            self.commit += 1;
+
+            let request = &self.log[self.commit];
+            let reply = Reply {
+                view: self.view,
+                result: (),
+                client: request.client,
+                id: request.id,
+            };
+
+            mailbox.reply(reply);
+            self.client_table.finish(request, reply);
+
+            // disable tracking prepared backups.
+            self.prepared.pop_front();
+        }
     }
 }
