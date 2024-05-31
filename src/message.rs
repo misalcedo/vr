@@ -2,21 +2,21 @@ use serde::{Deserialize, Serialize};
 
 pub type View = usize;
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Message {
     Request(Request),
     Reply(Reply),
     Protocol(usize, ProtocolMessage),
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub operation: (),
     pub client: u128,
     pub id: u128,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Reply {
     pub view: View,
     pub result: (),
@@ -24,7 +24,7 @@ pub struct Reply {
     pub id: u128,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ProtocolMessage {
     Prepare(Prepare),
     PrepareOk(PrepareOk),
@@ -45,7 +45,7 @@ impl ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Prepare {
     pub view: View,
     pub op_number: usize,
@@ -59,7 +59,7 @@ impl From<Prepare> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PrepareOk {
     pub view: View,
     pub op_number: usize,
@@ -72,7 +72,7 @@ impl From<PrepareOk> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Commit {
     pub view: View,
     pub commit: usize,
@@ -93,7 +93,7 @@ impl From<Commit> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetState {
     pub view: View,
     pub op_number: usize,
@@ -106,7 +106,7 @@ impl From<GetState> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NewState {
     pub view: View,
     pub log: [Request; 0], // TODO

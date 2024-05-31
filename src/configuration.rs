@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 use std::ops::Range;
 
+#[derive(Clone)]
 pub struct Configuration {
     addresses: Vec<IpAddr>,
 }
@@ -15,6 +16,12 @@ impl IntoIterator for &Configuration {
 }
 
 impl Configuration {
+    pub fn new(addresses: impl Into<Vec<IpAddr>>) -> Self {
+        Self {
+            addresses: addresses.into(),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.addresses.len()
     }
