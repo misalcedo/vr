@@ -57,41 +57,10 @@ impl Replica {
                 }
             }
 
-            // When the primary receives the request,
-            // it compares the request-number in the request with the information in the client table.
-            // If the request-number isn’t bigger than the information in the table it drops the request,
-            // but it will re-send the response if the request is the most recent one from this client,
-            // and it has already been executed.
+            // The client sends a REQUEST message to the primary.
             Some(Message::Request(request)) if self.is_primary() => {
-                match self.client_table.compare(&request) {
-                    Ordering::Greater => {
-                        let offset = self.log.len();
-
-                        self.op_number += 1;
-                        self.log.push(request);
-
-                        let request = &self.log[offset];
-
-                        self.client_table.start(&request);
-                        self.broadcast(
-                            mailbox,
-                            Prepare {
-                                view: self.view,
-                                op_number: self.op_number,
-                                commit: self.commit,
-                                request: *request,
-                            },
-                        );
-                    }
-                    Ordering::Equal => {
-                        if let Some(reply) = self.client_table.reply(&request) {
-                            mailbox.reply(*reply);
-                        }
-                    }
-                    Ordering::Less => {}
-                }
+                self.receive_request(request, mailbox);
             }
-
             // If the sender is behind, the receiver drops the message.
             Some(Message::Protocol(_, message)) if message.view() < self.view => {}
 
@@ -105,6 +74,45 @@ impl Replica {
             }
             Some(Message::Protocol(_, ProtocolMessage::Prepare(message))) => {}
             Some(_) => {}
+        }
+    }
+
+    /// When the primary receives a request,
+    /// it compares the request-number in the request with the information in the client table.
+    /// If the request-number isn’t bigger than the information in the table it drops the request,
+    /// but it will re-send the response if the request is the most recent one from this client,
+    /// and it has already been executed.
+    ///
+    /// The primary advances op-number, adds the request to the end of the log,
+    /// and updates the information for this client in the client-table to contain the new request number.
+    /// Then it sends a PREPARE message to the other replicas.
+    fn receive_request(&mut self, request: Request, mailbox: &mut Mailbox) {
+        match self.client_table.compare(&request) {
+            Ordering::Less => {}
+            Ordering::Equal => {
+                if let Some(reply) = self.client_table.reply(&request) {
+                    mailbox.reply(*reply);
+                }
+            }
+            Ordering::Greater => {
+                let offset = self.log.len();
+
+                self.op_number += 1;
+                self.log.push(request);
+
+                let request = &self.log[offset];
+
+                self.client_table.start(&request);
+                self.broadcast(
+                    mailbox,
+                    Prepare {
+                        view: self.view,
+                        op_number: self.op_number,
+                        commit: self.commit,
+                        request: *request,
+                    },
+                );
+            }
         }
     }
 
