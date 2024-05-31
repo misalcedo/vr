@@ -45,19 +45,22 @@ impl Replica {
 
     pub fn normal_receive(&mut self, mailbox: &mut Mailbox) {
         match mailbox.receive() {
-            None => {
-                if self.is_primary() {
-                    self.broadcast(
-                        mailbox,
-                        Commit {
-                            view: self.view,
-                            commit: self.commit,
-                        },
-                    );
-                } else {
-                    todo!("handle idle backup")
-                }
+            None if self.is_primary() => {
+                /// Normally the primary informs backups about the commit when it sends the next PREPARE message;
+                /// this is the purpose of the commit-number in the PREPARE message.
+                /// However, if the primary does not receive a new client request in a timely way,
+                /// it instead informs the backups of the latest commit by sending them a COMMIT message
+                /// (note that in this case commit-number = op-number).
+                self.broadcast(
+                    mailbox,
+                    Commit {
+                        view: self.view,
+                        commit: self.commit,
+                    },
+                );
             }
+
+            None => {}
 
             // The client sends a REQUEST message to the primary.
             Some(Message::Request(request)) if self.is_primary() => {
