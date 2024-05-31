@@ -1,174 +1,23 @@
 //! A Primary Copy Method to Support Highly-Available Distributed Systems.
 
+use crate::configuration::Configuration;
+use crate::mail::Mailbox;
+use crate::message::*;
+use crate::table::ClientTable;
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
-use std::net::IpAddr;
-use std::ops::Range;
 
-pub struct Mailbox {
-    outbox: VecDeque<Message>,
-    pending: VecDeque<Message>,
-    inbox: VecDeque<Message>,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub enum Message {
-    Request(Request),
-    Protocol(usize, ProtocolMessage),
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub enum ProtocolMessage {
-    Prepare(Prepare),
-    PrepareOk(PrepareOk),
-    Commit(Commit),
-    GetState(GetState),
-    NewState(NewState),
-}
-
-impl ProtocolMessage {
-    pub fn view(&self) -> usize {
-        match self {
-            ProtocolMessage::Prepare(m) => m.view,
-            ProtocolMessage::PrepareOk(m) => m.view,
-            ProtocolMessage::Commit(m) => m.view,
-            ProtocolMessage::GetState(m) => m.view,
-            ProtocolMessage::NewState(m) => m.view,
-        }
-    }
-}
-
-impl Mailbox {
-    /// Send a message from a replica to another replica.
-    fn send(&mut self, to: usize, message: impl Into<ProtocolMessage>) {
-        self.outbox.push_back(Message::Protocol(to, message.into()))
-    }
-
-    /// Receive a message from a replica to another replica.
-    fn receive(&mut self) -> Option<Message> {
-        self.inbox.pop_front()
-    }
-
-    /// Push a protocol message to the back of the queue.
-    fn push(&mut self, protocol: impl Into<Message>) {
-        self.inbox.push_back(protocol.into())
-    }
-
-    /// Get the next outbound message to send to a replica.
-    fn pop(&mut self) -> Option<Message> {
-        let head = self.outbox.pop_front()?;
-        self.pending.push_back(head);
-        Some(head)
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Prepare {
-    view: usize,
-    op_number: usize,
-    commit: usize,
-    request: Request,
-}
-
-impl From<Prepare> for ProtocolMessage {
-    fn from(value: Prepare) -> Self {
-        ProtocolMessage::Prepare(value)
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PrepareOk {
-    view: usize,
-    op_number: usize,
-    index: usize,
-}
-
-impl From<PrepareOk> for ProtocolMessage {
-    fn from(value: PrepareOk) -> Self {
-        ProtocolMessage::PrepareOk(value)
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Commit {
-    view: usize,
-    commit: usize,
-}
-
-impl From<Commit> for ProtocolMessage {
-    fn from(value: Commit) -> Self {
-        ProtocolMessage::Commit(value)
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GetState {
-    view: usize,
-    op_number: usize,
-    index: usize,
-}
-
-impl From<GetState> for ProtocolMessage {
-    fn from(value: GetState) -> Self {
-        ProtocolMessage::GetState(value)
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Request {
-    operation: (),
-    client: u128,
-    id: u128,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct NewState {
-    view: usize,
-    log: [Request; 0], // TODO
-    op_number: usize,
-    commit: usize,
-}
-
-impl From<NewState> for ProtocolMessage {
-    fn from(value: NewState) -> Self {
-        ProtocolMessage::NewState(value)
-    }
-}
-
-pub struct Configuration {
-    addresses: Vec<IpAddr>,
-}
-
-impl IntoIterator for &Configuration {
-    type Item = usize;
-    type IntoIter = Range<usize>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        0..self.addresses.len()
-    }
-}
-
-impl Configuration {
-    pub fn len(&self) -> usize {
-        self.addresses.len()
-    }
-}
-
-pub struct ClientTable {}
-
-impl ClientTable {
-    pub fn compare_to(&self, request: &Request) -> Ordering {
-        Ordering::Less
-    }
-
-    pub fn insert(&mut self, request: &Request) {}
-}
+mod configuration;
+mod mail;
+mod message;
+mod table;
 
 pub enum Status {
+    /// Normal case processing of user requests.
     Normal,
+    /// View changes to select a new primary.
     ViewChange,
+    /// Recovery of a failed replica so that it can rejoin the group.
     Recovery,
 }
 
@@ -179,7 +28,7 @@ pub struct Replica {
     index: usize,
     configuration: Configuration,
     log: Vec<Request>,
-    cache: ClientTable,
+    client_table: ClientTable,
     status: Status,
 }
 
@@ -207,8 +56,14 @@ impl Replica {
                     todo!("handle idle backup")
                 }
             }
+
+            // When the primary receives the request,
+            // it compares the request-number in the request with the information in the client table.
+            // If the request-number isn’t bigger than the information in the table it drops the request,
+            // but it will re-send the response if the request is the most recent one from this client,
+            // and it has already been executed.
             Some(Message::Request(request)) if self.is_primary() => {
-                match self.cache.compare_to(&request).reverse() {
+                match self.client_table.compare(&request) {
                     Ordering::Greater => {
                         let offset = self.log.len();
 
@@ -217,22 +72,32 @@ impl Replica {
 
                         let request = &self.log[offset];
 
-                        self.cache.insert(&request);
+                        self.client_table.start(&request);
                         self.broadcast(
                             mailbox,
                             Prepare {
                                 view: self.view,
                                 op_number: self.op_number,
                                 commit: self.commit,
-                                request: request.clone(), // TODO: turn this into a borrowed request type.
+                                request: *request,
                             },
                         );
                     }
-                    Ordering::Equal => todo!("resend reply if complete"),
+                    Ordering::Equal => {
+                        if let Some(reply) = self.client_table.reply(&request) {
+                            mailbox.reply(*reply);
+                        }
+                    }
                     Ordering::Less => {}
                 }
             }
+
+            // If the sender is behind, the receiver drops the message.
             Some(Message::Protocol(_, message)) if message.view() < self.view => {}
+
+            // If the sender is ahead, the replica performs a state transfer:
+            // it requests information it is missing from the other replicas and uses this information
+            // to bring itself up to date before processing the message.
             Some(Message::Protocol(index, message)) if message.view() > self.view => {
                 self.trim_log();
                 self.start_state_transfer(mailbox);
