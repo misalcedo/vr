@@ -46,6 +46,10 @@ impl Replica {
         }
     }
 
+    /// Implements the various sub-protocols of VR.
+    /// Assumes that messages from a single sender arrive in order as they would when using a protocol such as TCP.
+    /// The assumption can be seen in the decision to trigger a state transfer immediately when data is missing.
+    ///
     /// ## Examples
     /// ### Single Request
     /// ```rust
