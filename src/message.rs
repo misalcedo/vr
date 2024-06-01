@@ -43,6 +43,8 @@ pub enum ProtocolMessage {
     Commit(Commit),
     GetState(GetState),
     NewState(NewState),
+    StartViewChange(StartViewChange),
+    DoViewChange(DoViewChange),
 }
 
 impl ProtocolMessage {
@@ -53,6 +55,8 @@ impl ProtocolMessage {
             Self::Commit(m) => m.view,
             Self::GetState(m) => m.view,
             Self::NewState(m) => m.view,
+            Self::StartViewChange(m) => m.view,
+            Self::DoViewChange(m) => m.view,
         }
     }
 }
@@ -121,7 +125,7 @@ impl From<GetState> for ProtocolMessage {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NewState {
     pub view: View,
-    pub log: [Request; 0], // TODO
+    pub log: [Request; 0],
     pub op_number: usize,
     pub commit: usize,
 }
@@ -129,5 +133,33 @@ pub struct NewState {
 impl From<NewState> for ProtocolMessage {
     fn from(value: NewState) -> Self {
         Self::NewState(value)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StartViewChange {
+    pub view: View,
+    pub index: usize,
+}
+
+impl From<StartViewChange> for ProtocolMessage {
+    fn from(value: StartViewChange) -> Self {
+        Self::StartViewChange(value)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DoViewChange {
+    pub view: View,
+    pub log: [Request; 0],
+    pub last_normal_view: usize,
+    pub op_number: usize,
+    pub commit: usize,
+    pub index: usize,
+}
+
+impl From<DoViewChange> for ProtocolMessage {
+    fn from(value: DoViewChange) -> Self {
+        Self::DoViewChange(value)
     }
 }

@@ -6,7 +6,7 @@ use rand::Rng;
 use crate::configuration::Configuration;
 use crate::mail::Mailbox;
 use crate::message::{
-    Commit, GetState, Message, Prepare, PrepareOk, ProtocolMessage, Reply, Request,
+    Commit, GetState, Message, Prepare, PrepareOk, ProtocolMessage, Reply, Request, StartViewChange,
 };
 use crate::table::ClientTable;
 
@@ -49,6 +49,10 @@ impl Replica {
     /// Implements the various sub-protocols of VR.
     /// Assumes that messages from a single sender arrive in order as they would when using a protocol such as TCP.
     /// The assumption can be seen in the decision to trigger a state transfer immediately when data is missing.
+    ///
+    /// Calling receive without a message in the mailbox triggers idle behavior.
+    /// An idle primary sends COMMIT messages to all backups.
+    /// An idle backup starts a view change.
     ///
     /// ## Examples
     /// ### Single Request
@@ -118,7 +122,9 @@ impl Replica {
                 );
             }
 
-            None => {}
+            None => {
+                self.start_view_change(mailbox);
+            }
 
             // The client sends a REQUEST message to the primary.
             Some(Message::Request(request)) if self.is_primary() => {
@@ -126,6 +132,20 @@ impl Replica {
             }
             // If the sender is behind, the receiver drops the message.
             Some(Message::Protocol(_, message)) if message.view() < self.view => {}
+
+            Some(Message::Protocol(index, ProtocolMessage::StartViewChange(message)))
+                if message.view() > self.view =>
+            {
+                self.start_view_change(mailbox);
+                mailbox.push(Message::Protocol(index, message.into()));
+            }
+
+            Some(Message::Protocol(index, ProtocolMessage::DoViewChange(message)))
+                if message.view() > self.view =>
+            {
+                self.start_view_change(mailbox);
+                mailbox.push(Message::Protocol(index, message.into()));
+            }
 
             // If the sender is ahead, the replica performs a state transfer:
             // it requests information it is missing from the other replicas and uses this information
@@ -331,5 +351,23 @@ impl Replica {
         }
 
         self.commit(commit.commit, mailbox);
+    }
+
+    /// A replica that notices the need for a view change advances its view-number,
+    /// sets its status to viewchange,
+    /// and sends a STARTVIEWCHANGE message to the all other replicas.
+    /// A replica notices the need for a view change either based on its own timer,
+    /// or because it receives a STARTVIEWCHANGE or DOVIEWCHANGE message for a view with a larger
+    /// number than its own view-number.
+    fn start_view_change(&mut self, mailbox: &mut Mailbox) {
+        self.view += 1;
+        self.status = Status::ViewChange;
+        self.broadcast(
+            mailbox,
+            StartViewChange {
+                view: self.view,
+                index: self.index,
+            },
+        );
     }
 }
