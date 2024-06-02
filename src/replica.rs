@@ -29,6 +29,7 @@ pub struct Replica {
     client_table: ClientTable,
     status: Status,
     prepared: VecDeque<HashSet<usize>>,
+    start_view_change: HashSet<usize>,
 }
 
 impl Replica {
@@ -43,6 +44,7 @@ impl Replica {
             client_table: Default::default(),
             status: Status::Normal,
             prepared: Default::default(),
+            start_view_change: Default::default(),
         }
     }
 
@@ -369,5 +371,8 @@ impl Replica {
                 index: self.index,
             },
         );
+
+        // Reset tracker on successful view change.
+        self.start_view_change.clear();
     }
 }
