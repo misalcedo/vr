@@ -33,6 +33,10 @@ impl Default for ClientTable {
 }
 
 impl ClientTable {
+    pub fn remove_pending(&mut self) {
+        self.cache.retain(|_, v| v.reply.is_some());
+    }
+
     pub fn compare(&self, request: &Request) -> Ordering {
         match self.cache.get(&request.client) {
             None => Ordering::Greater,

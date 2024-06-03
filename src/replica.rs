@@ -1,13 +1,13 @@
 use std::cmp::Ordering;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rand::Rng;
 
 use crate::configuration::Configuration;
 use crate::mail::Mailbox;
 use crate::message::{
-    Commit, DoViewChange, GetState, Message, Prepare, PrepareOk, ProtocolMessage, Reply, Request,
-    StartViewChange,
+    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, ProtocolMessage, Reply,
+    Request, StartView, StartViewChange,
 };
 use crate::table::ClientTable;
 
@@ -20,11 +20,13 @@ pub enum Status {
     Recovery,
 }
 
+/// A replica implements all the sub-protocols of the Viewstamped Replication protocol.
+/// The replica does not track operation execution separately from committed operations.
 pub struct Replica {
     view: usize,
     last_normal_view: usize,
     op_number: usize,
-    commit: usize,
+    committed: usize,
     index: usize,
     configuration: Configuration,
     log: Vec<Request>,
@@ -32,6 +34,7 @@ pub struct Replica {
     status: Status,
     prepared: VecDeque<HashSet<usize>>,
     view_change_votes: HashSet<usize>,
+    view_change_state: HashMap<usize, DoViewChange>,
 }
 
 impl Replica {
@@ -40,7 +43,7 @@ impl Replica {
             view: 0,
             last_normal_view: 0,
             op_number: 0,
-            commit: 0,
+            committed: 0,
             index,
             configuration,
             log: vec![],
@@ -48,6 +51,7 @@ impl Replica {
             status: Status::Normal,
             prepared: Default::default(),
             view_change_votes: Default::default(),
+            view_change_state: Default::default(),
         }
     }
 
@@ -100,56 +104,56 @@ impl Replica {
     /// }.into()));
     /// ```
     pub fn receive(&mut self, mailbox: &mut Mailbox) {
+        let message = mailbox.receive();
         match self.status {
-            Status::Normal => self.normal_receive(mailbox),
-            Status::ViewChange => self.view_change_receive(mailbox),
+            Status::Normal => self.normal_receive(message, mailbox),
+            Status::ViewChange => self.view_change_receive(message, mailbox),
             Status::Recovery => {}
         }
     }
 
-    fn normal_receive(&mut self, mailbox: &mut Mailbox) {
-        match mailbox.receive() {
+    fn normal_receive(&mut self, message: Option<Message>, mailbox: &mut Mailbox) {
+        match message {
+            // Normally the primary informs backups about the commit when it sends the next PREPARE message;
+            // this is the purpose of the commit-number in the PREPARE message.
+            // However, if the primary does not receive a new client request in a timely way,
+            // it instead informs the backups of the latest commit by sending them a COMMIT message
+            // (note that in this case commit-number = op-number).
             None if self.is_primary() => {
-                // Normally the primary informs backups about the commit when it sends the next PREPARE message;
-                // this is the purpose of the commit-number in the PREPARE message.
-                // However, if the primary does not receive a new client request in a timely way,
-                // it instead informs the backups of the latest commit by sending them a COMMIT message
-                // (note that in this case commit-number = op-number).
                 self.broadcast(
                     mailbox,
                     Commit {
                         view: self.view,
-                        commit: self.commit,
+                        commit: self.committed,
                     },
                 );
             }
-
             None => {
                 self.start_view_change(self.view + 1, mailbox);
             }
-
             // The client sends a REQUEST message to the primary.
             Some(Message::Request(request)) if self.is_primary() => {
                 self.receive_request(request, mailbox);
             }
-
             // If the sender is behind, the receiver drops the message.
             Some(Message::Protocol(_, message)) if message.view() < self.view => {}
-
             Some(Message::Protocol(index, ProtocolMessage::StartViewChange(message)))
                 if message.view > self.view =>
             {
                 self.start_view_change(message.view, mailbox);
-                mailbox.push(Message::Protocol(index, message.into()));
+                self.view_change_receive(Some(Message::Protocol(index, message.into())), mailbox);
             }
-
             Some(Message::Protocol(index, ProtocolMessage::DoViewChange(message)))
                 if message.view > self.view =>
             {
                 self.start_view_change(message.view, mailbox);
-                mailbox.push(Message::Protocol(index, message.into()));
+                self.view_change_receive(Some(Message::Protocol(index, message.into())), mailbox);
             }
-
+            Some(Message::Protocol(_, ProtocolMessage::NewState(message)))
+                if message.view >= self.view =>
+            {
+                self.receive_new_state(message, mailbox)
+            }
             // If the sender is ahead, the replica performs a state transfer:
             // it requests information it is missing from the other replicas and uses this information
             // to bring itself up to date before processing the message.
@@ -158,21 +162,20 @@ impl Replica {
                 self.start_state_transfer(mailbox);
                 mailbox.push(Message::Protocol(index, message));
             }
-
             Some(Message::Protocol(_, ProtocolMessage::Prepare(message))) if !self.is_primary() => {
                 self.receive_prepare(message, mailbox)
             }
-
             Some(Message::Protocol(_, ProtocolMessage::PrepareOk(message)))
                 if self.is_primary() =>
             {
                 self.receive_prepare_ok(message, mailbox)
             }
-
             Some(Message::Protocol(_, ProtocolMessage::Commit(message))) if !self.is_primary() => {
                 self.receive_commit(message, mailbox)
             }
-
+            Some(Message::Protocol(_, ProtocolMessage::GetState(message))) => {
+                self.receive_get_state(message, mailbox)
+            }
             Some(_) => {}
         }
     }
@@ -208,12 +211,12 @@ impl Replica {
                     Prepare {
                         view: self.view,
                         op_number: self.op_number,
-                        commit: self.commit,
+                        commit: self.committed,
                         request: *request,
                     },
                 );
 
-                // enable tracking prepared backups.
+                // start tracking prepared backups.
                 self.prepared.push_back(Default::default());
             }
         }
@@ -240,8 +243,8 @@ impl Replica {
     }
 
     fn trim_log(&mut self) {
-        self.log.truncate(self.commit);
-        self.op_number = self.commit;
+        self.log.truncate(self.committed);
+        self.op_number = self.committed;
     }
 
     fn start_state_transfer(&self, mailbox: &mut Mailbox) {
@@ -269,19 +272,20 @@ impl Replica {
     /// adds the request to the end of its log,
     /// updates the client’s information in the client-table,
     /// and sends a PREPAREOK message to the primary to indicate that this operation and all earlier ones have prepared locally.
-    fn receive_prepare(&mut self, prepare: Prepare, mailbox: &mut Mailbox) {
-        if prepare.op_number < self.op_number {
+    fn receive_prepare(&mut self, message: Prepare, mailbox: &mut Mailbox) {
+        // NOTE: ignore operations we have already prepared.
+        if message.op_number <= self.op_number {
             return;
         }
 
-        if prepare.op_number > self.op_number + 1 {
+        if message.op_number > self.op_number + 1 {
             self.start_state_transfer(mailbox);
-            mailbox.push(Message::Protocol(self.index, prepare.into()));
+            mailbox.push(Message::Protocol(self.index, message.into()));
             return;
         }
 
         self.op_number += 1;
-        self.client_table.start(&prepare.request);
+        self.client_table.start(&message.request);
         mailbox.send(
             self.primary(),
             PrepareOk {
@@ -291,7 +295,7 @@ impl Replica {
             },
         );
 
-        self.receive_commit(Commit::from(prepare), mailbox);
+        self.receive_commit(Commit::from(message), mailbox);
     }
 
     /// The primary waits for f PREPAREOK messages from different backups;
@@ -302,29 +306,29 @@ impl Replica {
     ///
     /// Then it sends a REPLY message to the client.
     /// The primary also updates the client’s entry in the client-table to contain the result.
-    fn receive_prepare_ok(&mut self, prepare_ok: PrepareOk, mailbox: &mut Mailbox) {
-        if prepare_ok.op_number <= self.commit {
+    fn receive_prepare_ok(&mut self, message: PrepareOk, mailbox: &mut Mailbox) {
+        // NOTE: ignore operations we have already committed.
+        if message.op_number <= self.committed {
             return;
         }
 
         // track prepared backups.
-        let offset = (prepare_ok.op_number - self.commit) - 1;
+        let offset = (message.op_number - self.committed) - 1;
         let prepared = &mut self.prepared[offset];
 
-        prepared.insert(prepare_ok.index);
+        prepared.insert(message.index);
 
+        // SAFETY: wait until we have at least f PREPAREOK messages.
         if prepared.len() < self.configuration.threshold() {
             return;
         }
 
-        self.commit(prepare_ok.op_number, mailbox);
+        self.execute(message.op_number, mailbox);
     }
 
-    fn commit(&mut self, operation: usize, mailbox: &mut Mailbox) {
-        while self.commit < operation {
-            self.commit += 1;
-
-            let request = &self.log[self.commit - 1];
+    fn execute(&mut self, committed: usize, mailbox: &mut Mailbox) {
+        while self.committed < committed {
+            let request = &self.log[self.committed];
             let reply = Reply {
                 view: self.view,
                 result: (),
@@ -332,14 +336,16 @@ impl Replica {
                 id: request.id,
             };
 
+            self.committed += 1;
+
             if self.is_primary() {
                 mailbox.reply(reply);
+
+                // stop tracking prepared backups.
+                self.prepared.pop_front();
             }
 
             self.client_table.finish(request, reply);
-
-            // disable tracking prepared backups.
-            self.prepared.pop_front();
         }
     }
 
@@ -349,14 +355,54 @@ impl Replica {
     /// increments its commit-number,
     /// updates the client’s entry in the client-table,
     /// but does not send the reply to the client.
-    fn receive_commit(&mut self, commit: Commit, mailbox: &mut Mailbox) {
-        if commit.commit > self.op_number {
+    fn receive_commit(&mut self, message: Commit, mailbox: &mut Mailbox) {
+        if message.commit > self.op_number {
             self.start_state_transfer(mailbox);
-            mailbox.push(Message::Protocol(self.index, commit.into()));
+            mailbox.push(Message::Protocol(self.index, message.into()));
             return;
         }
 
-        self.commit(commit.commit, mailbox);
+        self.execute(message.commit, mailbox);
+    }
+
+    /// A replica responds to a GETSTATE message only if its status is normal, and it is currently in view v.
+    /// In this case it sends a NEWSTATE message.
+    fn receive_get_state(&mut self, message: GetState, mailbox: &mut Mailbox) {
+        mailbox.send(
+            message.index,
+            NewState {
+                view: self.view,
+                log: [], // log after message.op_number
+                op_number: self.op_number,
+                commit: self.committed,
+            },
+        );
+    }
+
+    /// When a replica receives the NEWSTATE message,
+    /// it appends the log in the message to its log and updates its state using the other information in the message.
+    fn receive_new_state(&mut self, message: NewState, mailbox: &mut Mailbox) {
+        // SAFETY: Only use new state that matches what we requested.
+        if (self.op_number + message.log.len()) != message.op_number {
+            return;
+        }
+
+        self.log.extend_from_slice(&message.log);
+        self.op_number = message.op_number;
+        self.view = self.view;
+
+        // SAFETY: We have not updated the replica's commit-number to be the message's.
+        // We do this in order to re-use the method from the normal protocol to execute committed operations.
+        self.execute(message.commit, mailbox);
+        self.client_table.remove_pending();
+
+        let mut current = self.committed;
+        while let Some(request) = self.log.get(current) {
+            self.client_table.start(request);
+
+            // SAFETY: The op-number of the current operation is 1 more than its index into the log.
+            current += 1;
+        }
     }
 
     /// A replica that notices the need for a view change advances its view-number,
@@ -377,12 +423,14 @@ impl Replica {
             },
         );
 
-        // Reset tracker on view change confirmations.
+        // Reset tracker of STARTVIEWCHANGE messages.
         self.view_change_votes.clear();
+        // Reset tracker on DOVIEWCHANGE messages.
+        self.view_change_state.clear();
     }
 
-    fn view_change_receive(&mut self, mailbox: &mut Mailbox) {
-        match mailbox.receive() {
+    fn view_change_receive(&mut self, message: Option<Message>, mailbox: &mut Mailbox) {
+        match message {
             None => {
                 // A view change may not succeed, e.g., because the new primary fails.
                 // In this case the replicas will start a further view change, with yet another primary.
@@ -394,6 +442,20 @@ impl Replica {
                 if message.view == self.view =>
             {
                 self.receive_start_view_change(message, mailbox);
+            }
+            // SAFETY: We skip view change messages for higher view numbers.
+            // Messages from a higher view could be from a minority partition.
+            Some(Message::Protocol(_, ProtocolMessage::DoViewChange(message)))
+                if message.view == self.view && self.is_primary() =>
+            {
+                self.receive_do_view_change(message, mailbox);
+            }
+            // SAFETY: We skip view change messages for higher view numbers.
+            // Messages from a higher view could be from a minority partition.
+            Some(Message::Protocol(_, ProtocolMessage::StartView(message)))
+                if message.view == self.view && !self.is_primary() =>
+            {
+                self.receive_start_view(message, mailbox);
             }
             Some(_) => {}
         }
@@ -411,7 +473,107 @@ impl Replica {
                     log: [],
                     last_normal_view: self.last_normal_view,
                     op_number: self.op_number,
-                    commit: self.commit,
+                    commit: self.committed,
+                    index: self.index,
+                },
+            );
+        }
+    }
+
+    /// When the new primary receives f + 1 DOVIEWCHANGE messages from different replicas (including itself),
+    /// it sets its view-number to that in the messages and selects as the new log the one contained in the message with the largest v';
+    /// if several messages have the same v' it selects the one among them with the largest n.
+    /// It sets its op-number to that of the topmost entry in the new log,
+    /// sets its commit-number to the largest such number it received in the DOVIEWCHANGE messages,
+    /// changes its status to normal,
+    /// and informs the other replicas of the completion of the view change by sending STARTVIEW messages to the other replicas.
+    fn receive_do_view_change(&mut self, message: DoViewChange, mailbox: &mut Mailbox) {
+        self.view_change_state.insert(message.index, message);
+        if self.view_change_state.len() > self.configuration.threshold() {
+            if let Some(mut message) = self.view_change_state.get(&self.index) {
+                let mut commit = message.commit;
+
+                // find the log with the most recent information.
+                for m in self.view_change_state.values() {
+                    commit = commit.max(m.commit);
+
+                    if (m.last_normal_view, m.op_number)
+                        > (message.last_normal_view, message.op_number)
+                    {
+                        message = m;
+                    }
+                }
+
+                self.view = message.view;
+                self.op_number = message.op_number;
+                self.status = Status::Normal;
+                self.broadcast(
+                    mailbox,
+                    StartView {
+                        view: self.view,
+                        log: [],
+                        op_number: self.op_number,
+                        // SAFETY: We use the message's commit-number since the replica's has not been updated yet.
+                        // We do this in order to re-use the method from the normal protocol to execute committed operations.
+                        commit,
+                    },
+                );
+
+                // The new primary starts accepting client requests.
+                // It also executes (in order) any committed operations that it hadn’t executed previously,
+                // updates its client table,
+                // and sends the replies to the clients.
+                self.execute(commit, mailbox);
+                self.client_table.remove_pending();
+
+                let mut current = self.committed;
+                while let Some(request) = self.log.get(current) {
+                    self.client_table.start(request);
+                    // start tracking prepared backups.
+                    self.prepared.push_back(Default::default());
+
+                    current += 1;
+                }
+            }
+        }
+    }
+
+    /// When other replicas receive the STARTVIEW message,
+    /// they replace their log with the one in the message,
+    /// set their op-number to that of the latest entry in the log,
+    /// set their view-number to the view number in the message,
+    /// change their status to normal,
+    /// and update the information in their client-table.
+    /// If there are non-committed operations in the log,
+    /// they send a PREPAREOK message to the primary; here n is the op-number.
+    /// Then they execute all operations known to be committed that they haven’t executed previously,
+    /// advance their commit-number,
+    /// and update the information in their client-table.
+    fn receive_start_view(&mut self, message: StartView, mailbox: &mut Mailbox) {
+        // TODO: self.log = message.log;
+        self.op_number = message.op_number;
+        self.view = message.view;
+        self.status = Status::Normal;
+
+        // SAFETY: We have not updated the replica's commit-number to be the message's.
+        // We do this in order to re-use the method from the normal protocol to execute committed operations.
+        self.execute(message.commit, mailbox);
+        self.client_table.remove_pending();
+
+        let primary = self.primary();
+        let mut current = self.committed;
+
+        while let Some(request) = self.log.get(current) {
+            self.client_table.start(request);
+
+            // SAFETY: The op-number of the current operation is 1 more than its index into the log.
+            current += 1;
+
+            mailbox.send(
+                primary,
+                PrepareOk {
+                    view: self.view,
+                    op_number: current,
                     index: self.index,
                 },
             );
