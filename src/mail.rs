@@ -32,6 +32,7 @@ impl Mailbox {
     }
 
     /// Get the next outbound message to deliver.
+    /// Re-sending messages is the responsibility of the caller.
     pub fn pop(&mut self) -> Option<Message> {
         let head = self.outbox.pop_front()?;
         Some(head)
