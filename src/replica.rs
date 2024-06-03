@@ -387,6 +387,18 @@ impl Replica {
             return;
         }
 
+        // Because of garbage collecting the log,
+        // it’s possible for there to be a gap between the last operation known to the slow replica and what the responder knows.
+        // Should a gap occur,
+        // the slow replica first brings itself almost up to date using application state
+        // (like a recovering node would do) to get to a recent checkpoint,
+        // and then completes the job by obtaining the log forward from the point.
+        // In the process of getting the checkpoint,
+        // it moves to the view in which that checkpoint was taken.
+        if message.log.is_empty() {
+            // TODO: handle garbage collection.
+        }
+
         self.log.extend_from_slice(&message.log);
         self.op_number = message.op_number;
         self.view = self.view;
