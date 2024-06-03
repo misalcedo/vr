@@ -367,7 +367,7 @@ impl Replica {
     /// number than its own view-number.
     fn start_view_change(&mut self, new_view: usize, mailbox: &mut Mailbox) {
         self.last_normal_view = self.view; // TODO: set this at the end of the view change protocol.
-        self.set_view(new_view, mailbox);
+        self.view = new_view;
         self.status = Status::ViewChange;
         self.broadcast(
             mailbox,
@@ -416,10 +416,5 @@ impl Replica {
                 },
             );
         }
-    }
-
-    fn set_view(&mut self, view: usize, mailbox: &mut Mailbox) {
-        self.view = view;
-        mailbox.set_view(view);
     }
 }
