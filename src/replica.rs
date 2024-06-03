@@ -365,7 +365,7 @@ impl Replica {
     /// or because it receives a STARTVIEWCHANGE or DOVIEWCHANGE message for a view with a larger
     /// number than its own view-number.
     fn start_view_change(&mut self, new_view: usize, mailbox: &mut Mailbox) {
-        self.last_normal_view = self.view;
+        self.last_normal_view = self.view; // TODO: set this at the end of the view change protocol.
         self.view = new_view;
         self.status = Status::ViewChange;
         self.broadcast(
@@ -387,19 +387,8 @@ impl Replica {
                 // In this case the replicas will start a further view change, with yet another primary.
                 self.start_view_change(self.view + 1, mailbox);
             }
-            Some(Message::Protocol(index, ProtocolMessage::StartViewChange(message)))
-                if message.view() > self.view =>
-            {
-                self.start_view_change(message.view, mailbox);
-                mailbox.push(Message::Protocol(index, message.into()));
-            }
-
-            Some(Message::Protocol(index, ProtocolMessage::DoViewChange(message)))
-                if message.view() > self.view =>
-            {
-                self.start_view_change(message.view, mailbox);
-                mailbox.push(Message::Protocol(index, message.into()));
-            }
+            // SAFETY: We skip view change messages for higher view numbers.
+            // Messages from a higher view could be from a minority partition.
             Some(Message::Protocol(_, ProtocolMessage::StartViewChange(message)))
                 if message.view == self.view =>
             {
