@@ -31,7 +31,7 @@ pub struct Replica {
     client_table: ClientTable,
     status: Status,
     prepared: VecDeque<HashSet<usize>>,
-    start_view_change: HashSet<usize>,
+    view_change_votes: HashSet<usize>,
 }
 
 impl Replica {
@@ -47,7 +47,7 @@ impl Replica {
             client_table: Default::default(),
             status: Status::Normal,
             prepared: Default::default(),
-            start_view_change: Default::default(),
+            view_change_votes: Default::default(),
         }
     }
 
@@ -376,13 +376,30 @@ impl Replica {
             },
         );
 
-        // Reset tracker on successful view change.
-        self.start_view_change.clear();
+        // Reset tracker on view change confirmations.
+        self.view_change_votes.clear();
     }
 
     fn view_change_receive(&mut self, mailbox: &mut Mailbox) {
         match mailbox.receive() {
-            None => {}
+            None => {
+                // A view change may not succeed, e.g., because the new primary fails.
+                // In this case the replicas will start a further view change, with yet another primary.
+                self.start_view_change(self.view + 1, mailbox);
+            }
+            Some(Message::Protocol(index, ProtocolMessage::StartViewChange(message)))
+                if message.view() > self.view =>
+            {
+                self.start_view_change(message.view, mailbox);
+                mailbox.push(Message::Protocol(index, message.into()));
+            }
+
+            Some(Message::Protocol(index, ProtocolMessage::DoViewChange(message)))
+                if message.view() > self.view =>
+            {
+                self.start_view_change(message.view, mailbox);
+                mailbox.push(Message::Protocol(index, message.into()));
+            }
             Some(Message::Protocol(_, ProtocolMessage::StartViewChange(message)))
                 if message.view == self.view =>
             {
@@ -395,8 +412,8 @@ impl Replica {
     /// When a replica receives STARTVIEWCHANGE messages for its view-number from f other replicas,
     /// it sends a DOVIEWCHANGE message to the node that will be the primary in the new view.
     fn receive_start_view_change(&mut self, message: StartViewChange, mailbox: &mut Mailbox) {
-        self.start_view_change.insert(message.index);
-        if self.start_view_change.len() >= self.configuration.threshold() {
+        self.view_change_votes.insert(message.index);
+        if self.view_change_votes.len() >= self.configuration.threshold() {
             mailbox.send(
                 self.primary(),
                 DoViewChange {
