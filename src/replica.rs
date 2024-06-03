@@ -59,50 +59,6 @@ impl Replica {
     ///
     /// Calling receive without a message in the mailbox triggers idle behavior.
     /// The specific behavior depends on the status of the replica.
-    ///
-    /// ## Examples
-    /// ### Single Request
-    /// ```rust
-    /// use viewstamped_replication::{Configuration, Mailbox, Replica};
-    /// use viewstamped_replication::message::*;
-    ///
-    /// let configuration = Configuration::new([
-    ///     "127.0.0.1".parse().unwrap(),
-    ///     "127.0.0.2".parse().unwrap(),
-    ///     "127.0.0.3".parse().unwrap(),
-    /// ]);
-    /// let mut primary = Replica::new(configuration.clone(), 0);
-    /// let mut backup1 = Replica::new(configuration.clone(), 1);
-    /// let mut mailbox = Mailbox::default();
-    ///
-    /// // pretend to receive a request over the network.
-    /// mailbox.push(Request {
-    ///     operation: (),
-    ///     client: 1,
-    ///     id: 1,
-    /// });
-    /// primary.receive(&mut mailbox);
-    ///
-    /// // pretend to deliver the message over the network.
-    /// let message = mailbox.pop().unwrap();
-    /// mailbox.push(message);
-    /// backup1.receive(&mut mailbox);
-    ///
-    /// // ignore the prepare message for backup2.
-    /// mailbox.pop().unwrap();
-    ///
-    /// // pretend to deliver the message over the network.
-    /// let message = mailbox.pop().unwrap();
-    /// mailbox.push(message);
-    /// primary.receive(&mut mailbox);
-    ///
-    /// assert_eq!(mailbox.pop(), Some(Reply {
-    ///     view: 0,
-    ///     result: (),
-    ///     client: 1,
-    ///     id: 1,
-    /// }.into()));
-    /// ```
     pub fn receive(&mut self, mailbox: &mut Mailbox) {
         let message = mailbox.receive();
         match self.status {
@@ -590,5 +546,56 @@ impl Replica {
                 },
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_request() {
+        let configuration = Configuration::new([
+            "127.0.0.1".parse().unwrap(),
+            "127.0.0.2".parse().unwrap(),
+            "127.0.0.3".parse().unwrap(),
+        ]);
+        let mut primary = Replica::new(configuration.clone(), 0);
+        let mut backup1 = Replica::new(configuration.clone(), 1);
+        let mut mailbox = Mailbox::default();
+
+        // pretend to receive a request over the network.
+        mailbox.push(Request {
+            operation: (),
+            client: 1,
+            id: 1,
+        });
+        primary.receive(&mut mailbox);
+
+        // pretend to deliver the message over the network.
+        let message = mailbox.pop().unwrap();
+        mailbox.push(message);
+        backup1.receive(&mut mailbox);
+
+        // ignore the prepare message for backup2.
+        mailbox.pop().unwrap();
+
+        // pretend to deliver the message over the network.
+        let message = mailbox.pop().unwrap();
+        mailbox.push(message);
+        primary.receive(&mut mailbox);
+
+        assert_eq!(
+            mailbox.pop(),
+            Some(
+                Reply {
+                    view: 0,
+                    result: (),
+                    client: 1,
+                    id: 1,
+                }
+                .into()
+            )
+        );
     }
 }
