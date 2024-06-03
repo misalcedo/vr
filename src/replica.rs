@@ -52,12 +52,9 @@ impl Replica {
     }
 
     /// Implements the various sub-protocols of VR.
-    /// Assumes that messages from a single sender arrive in order as they would when using a protocol such as TCP.
-    /// The assumption can be seen in the decision to trigger a state transfer immediately when data is missing.
     ///
     /// Calling receive without a message in the mailbox triggers idle behavior.
-    /// An idle primary sends COMMIT messages to all backups.
-    /// An idle backup starts a view change.
+    /// The specific behavior depends on the status of the replica.
     ///
     /// ## Examples
     /// ### Single Request
@@ -135,18 +132,19 @@ impl Replica {
             Some(Message::Request(request)) if self.is_primary() => {
                 self.receive_request(request, mailbox);
             }
+
             // If the sender is behind, the receiver drops the message.
             Some(Message::Protocol(_, message)) if message.view() < self.view => {}
 
             Some(Message::Protocol(index, ProtocolMessage::StartViewChange(message)))
-                if message.view() > self.view =>
+                if message.view > self.view =>
             {
                 self.start_view_change(message.view, mailbox);
                 mailbox.push(Message::Protocol(index, message.into()));
             }
 
             Some(Message::Protocol(index, ProtocolMessage::DoViewChange(message)))
-                if message.view() > self.view =>
+                if message.view > self.view =>
             {
                 self.start_view_change(message.view, mailbox);
                 mailbox.push(Message::Protocol(index, message.into()));
@@ -160,9 +158,11 @@ impl Replica {
                 self.start_state_transfer(mailbox);
                 mailbox.push(Message::Protocol(index, message));
             }
+
             Some(Message::Protocol(_, ProtocolMessage::Prepare(message))) if !self.is_primary() => {
                 self.receive_prepare(message, mailbox)
             }
+
             Some(Message::Protocol(_, ProtocolMessage::PrepareOk(message)))
                 if self.is_primary() =>
             {
@@ -172,6 +172,7 @@ impl Replica {
             Some(Message::Protocol(_, ProtocolMessage::Commit(message))) if !self.is_primary() => {
                 self.receive_commit(message, mailbox)
             }
+
             Some(_) => {}
         }
     }
@@ -366,7 +367,7 @@ impl Replica {
     /// number than its own view-number.
     fn start_view_change(&mut self, new_view: usize, mailbox: &mut Mailbox) {
         self.last_normal_view = self.view; // TODO: set this at the end of the view change protocol.
-        self.view = new_view;
+        self.set_view(new_view, mailbox);
         self.status = Status::ViewChange;
         self.broadcast(
             mailbox,
@@ -415,5 +416,10 @@ impl Replica {
                 },
             );
         }
+    }
+
+    fn set_view(&mut self, view: usize, mailbox: &mut Mailbox) {
+        self.view = view;
+        mailbox.set_view(view);
     }
 }
