@@ -45,6 +45,7 @@ pub enum ProtocolMessage {
     NewState(NewState),
     StartViewChange(StartViewChange),
     DoViewChange(DoViewChange),
+    StartView(StartView),
 }
 
 impl ProtocolMessage {
@@ -57,6 +58,7 @@ impl ProtocolMessage {
             Self::NewState(m) => m.view,
             Self::StartViewChange(m) => m.view,
             Self::DoViewChange(m) => m.view,
+            Self::StartView(m) => m.view,
         }
     }
 }
@@ -161,5 +163,19 @@ pub struct DoViewChange {
 impl From<DoViewChange> for ProtocolMessage {
     fn from(value: DoViewChange) -> Self {
         Self::DoViewChange(value)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StartView {
+    pub view: View,
+    pub log: [Request; 0],
+    pub op_number: usize,
+    pub commit: usize,
+}
+
+impl From<StartView> for ProtocolMessage {
+    fn from(value: StartView) -> Self {
+        Self::StartView(value)
     }
 }
