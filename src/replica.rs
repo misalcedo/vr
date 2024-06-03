@@ -6,7 +6,8 @@ use rand::Rng;
 use crate::configuration::Configuration;
 use crate::mail::Mailbox;
 use crate::message::{
-    Commit, GetState, Message, Prepare, PrepareOk, ProtocolMessage, Reply, Request, StartViewChange,
+    Commit, DoViewChange, GetState, Message, Prepare, PrepareOk, ProtocolMessage, Reply, Request,
+    StartViewChange,
 };
 use crate::table::ClientTable;
 
@@ -21,6 +22,7 @@ pub enum Status {
 
 pub struct Replica {
     view: usize,
+    last_normal_view: usize,
     op_number: usize,
     commit: usize,
     index: usize,
@@ -36,6 +38,7 @@ impl Replica {
     pub fn new(configuration: Configuration, index: usize) -> Self {
         Self {
             view: 0,
+            last_normal_view: 0,
             op_number: 0,
             commit: 0,
             index,
@@ -102,7 +105,7 @@ impl Replica {
     pub fn receive(&mut self, mailbox: &mut Mailbox) {
         match self.status {
             Status::Normal => self.normal_receive(mailbox),
-            Status::ViewChange => {}
+            Status::ViewChange => self.view_change_receive(mailbox),
             Status::Recovery => {}
         }
     }
@@ -125,7 +128,7 @@ impl Replica {
             }
 
             None => {
-                self.start_view_change(mailbox);
+                self.start_view_change(self.view + 1, mailbox);
             }
 
             // The client sends a REQUEST message to the primary.
@@ -138,14 +141,14 @@ impl Replica {
             Some(Message::Protocol(index, ProtocolMessage::StartViewChange(message)))
                 if message.view() > self.view =>
             {
-                self.start_view_change(mailbox);
+                self.start_view_change(message.view, mailbox);
                 mailbox.push(Message::Protocol(index, message.into()));
             }
 
             Some(Message::Protocol(index, ProtocolMessage::DoViewChange(message)))
                 if message.view() > self.view =>
             {
-                self.start_view_change(mailbox);
+                self.start_view_change(message.view, mailbox);
                 mailbox.push(Message::Protocol(index, message.into()));
             }
 
@@ -361,8 +364,9 @@ impl Replica {
     /// A replica notices the need for a view change either based on its own timer,
     /// or because it receives a STARTVIEWCHANGE or DOVIEWCHANGE message for a view with a larger
     /// number than its own view-number.
-    fn start_view_change(&mut self, mailbox: &mut Mailbox) {
-        self.view += 1;
+    fn start_view_change(&mut self, new_view: usize, mailbox: &mut Mailbox) {
+        self.last_normal_view = self.view;
+        self.view = new_view;
         self.status = Status::ViewChange;
         self.broadcast(
             mailbox,
@@ -374,5 +378,36 @@ impl Replica {
 
         // Reset tracker on successful view change.
         self.start_view_change.clear();
+    }
+
+    fn view_change_receive(&mut self, mailbox: &mut Mailbox) {
+        match mailbox.receive() {
+            None => {}
+            Some(Message::Protocol(_, ProtocolMessage::StartViewChange(message)))
+                if message.view == self.view =>
+            {
+                self.receive_start_view_change(message, mailbox);
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// When a replica receives STARTVIEWCHANGE messages for its view-number from f other replicas,
+    /// it sends a DOVIEWCHANGE message to the node that will be the primary in the new view.
+    fn receive_start_view_change(&mut self, message: StartViewChange, mailbox: &mut Mailbox) {
+        self.start_view_change.insert(message.index);
+        if self.start_view_change.len() >= self.configuration.threshold() {
+            mailbox.send(
+                self.primary(),
+                DoViewChange {
+                    view: self.view,
+                    log: [],
+                    last_normal_view: self.last_normal_view,
+                    op_number: self.op_number,
+                    commit: self.commit,
+                    index: self.index,
+                },
+            );
+        }
     }
 }
