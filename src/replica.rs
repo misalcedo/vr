@@ -587,7 +587,16 @@ impl Replica {
 
     fn recovery_receive(&mut self, message: Option<Message>, mailbox: &mut Mailbox) {
         match message {
-            None => {}
+            None => {
+                // SAFETY: ensures recovering replicas can handle view changes and dropped messages
+                self.broadcast(
+                    mailbox,
+                    Recover {
+                        index: self.index,
+                        nonce: self.nonce,
+                    },
+                );
+            }
             Some(Message::Protocol(_, ProtocolMessage::RecoveryResponse(message)))
                 if message.nonce == self.nonce =>
             {
