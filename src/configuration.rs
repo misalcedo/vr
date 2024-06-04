@@ -1,9 +1,17 @@
 use std::net::SocketAddr;
-use std::ops::Range;
+use std::ops::{Index, Range};
 
 #[derive(Clone)]
 pub struct Configuration {
     addresses: Vec<SocketAddr>,
+}
+
+impl Index<usize> for Configuration {
+    type Output = SocketAddr;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.addresses.index(index)
+    }
 }
 
 impl IntoIterator for &Configuration {

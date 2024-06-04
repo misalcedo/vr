@@ -3,7 +3,6 @@ use crate::Configuration;
 
 /// Detects whether the current replica crashed or is part of a new deployment.
 pub struct CrashDetector {
-    configuration: Configuration,
     state: Vec<Option<u128>>,
 }
 
@@ -13,10 +12,7 @@ impl CrashDetector {
 
         state[index] = Some(nonce);
 
-        Self {
-            configuration,
-            state,
-        }
+        Self { state }
     }
 
     /// A non-fused crash detector.
@@ -48,9 +44,9 @@ mod tests {
     #[test]
     fn crashed() {
         let configuration = Configuration::new([
-            "127.0.0.1".parse().unwrap(),
-            "127.0.0.2".parse().unwrap(),
-            "127.0.0.3".parse().unwrap(),
+            "127.0.0.1:8378".parse().unwrap(),
+            "127.0.0.2:8378".parse().unwrap(),
+            "127.0.0.3:8378".parse().unwrap(),
         ]);
         let mut detector = CrashDetector::new(configuration, 1, 0);
 
@@ -66,9 +62,9 @@ mod tests {
     #[test]
     fn above_threshold() {
         let configuration = Configuration::new([
-            "127.0.0.1".parse().unwrap(),
-            "127.0.0.2".parse().unwrap(),
-            "127.0.0.3".parse().unwrap(),
+            "127.0.0.1:8378".parse().unwrap(),
+            "127.0.0.2:8378".parse().unwrap(),
+            "127.0.0.3:8378".parse().unwrap(),
         ]);
         let mut detector = CrashDetector::new(configuration, 1, 0);
 
@@ -86,9 +82,9 @@ mod tests {
     #[test]
     fn fresh() {
         let configuration = Configuration::new([
-            "127.0.0.1".parse().unwrap(),
-            "127.0.0.2".parse().unwrap(),
-            "127.0.0.3".parse().unwrap(),
+            "127.0.0.1:8378".parse().unwrap(),
+            "127.0.0.2:8378".parse().unwrap(),
+            "127.0.0.3:8378".parse().unwrap(),
         ]);
         let mut detector = CrashDetector::new(configuration, 1, 1);
 
@@ -102,9 +98,9 @@ mod tests {
     #[test]
     fn duplicate() {
         let configuration = Configuration::new([
-            "127.0.0.1".parse().unwrap(),
-            "127.0.0.2".parse().unwrap(),
-            "127.0.0.3".parse().unwrap(),
+            "127.0.0.1:8378".parse().unwrap(),
+            "127.0.0.2:8378".parse().unwrap(),
+            "127.0.0.3:8378".parse().unwrap(),
         ]);
         let mut detector = CrashDetector::new(configuration, 1, 1);
 
