@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::configuration::Configuration;
 use crate::mail::Mailbox;
 use crate::message::{
-    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, ProtocolMessage,
+    Commit, DoViewChange, GetState, InboundMessage, NewState, Prepare, PrepareOk, ProtocolMessage,
     Recover, RecoveryResponse, Reply, Request, StartView, StartViewChange,
 };
 use crate::table::ClientTable;
@@ -97,7 +97,7 @@ where
         );
     }
 
-    fn normal_receive(&mut self, message: Option<Message>, mailbox: &mut Mailbox) {
+    fn normal_receive(&mut self, message: Option<InboundMessage>, mailbox: &mut Mailbox) {
         match message {
             // Normally the primary informs backups about the commit when it sends the next PREPARE message;
             // this is the purpose of the commit-number in the PREPARE message.
@@ -117,27 +117,27 @@ where
                 self.start_view_change(self.view + 1, mailbox);
             }
             // The client sends a REQUEST message to the primary.
-            Some(Message::Request(request)) if self.is_primary() => {
+            Some(InboundMessage::Request(request)) if self.is_primary() => {
                 self.receive_request(request, mailbox);
             }
-            Some(Message::Protocol(_, ProtocolMessage::Recover(message))) => {
+            Some(InboundMessage::Protocol(ProtocolMessage::Recover(message))) => {
                 self.receive_recover(message, mailbox)
             }
             // If the sender is behind, the receiver drops the message.
-            Some(Message::Protocol(_, message)) if message.view() < self.view => {}
-            Some(Message::Protocol(index, ProtocolMessage::StartViewChange(message)))
+            Some(InboundMessage::Protocol(message)) if message.view() < self.view => {}
+            Some(InboundMessage::Protocol(ProtocolMessage::StartViewChange(message)))
                 if message.view > self.view =>
             {
                 self.start_view_change(message.view, mailbox);
-                self.view_change_receive(Some(Message::Protocol(index, message.into())), mailbox);
+                self.view_change_receive(Some(InboundMessage::Protocol(message.into())), mailbox);
             }
-            Some(Message::Protocol(index, ProtocolMessage::DoViewChange(message)))
+            Some(InboundMessage::Protocol(ProtocolMessage::DoViewChange(message)))
                 if message.view > self.view =>
             {
                 self.start_view_change(message.view, mailbox);
-                self.view_change_receive(Some(Message::Protocol(index, message.into())), mailbox);
+                self.view_change_receive(Some(InboundMessage::Protocol(message.into())), mailbox);
             }
-            Some(Message::Protocol(_, ProtocolMessage::NewState(message)))
+            Some(InboundMessage::Protocol(ProtocolMessage::NewState(message)))
                 if message.view >= self.view =>
             {
                 self.receive_new_state(message, mailbox)
@@ -145,23 +145,27 @@ where
             // If the sender is ahead, the replica performs a state transfer:
             // it requests information it is missing from the other replicas and uses this information
             // to bring itself up to date before processing the message.
-            Some(Message::Protocol(index, message)) if message.view() > self.view => {
+            Some(InboundMessage::Protocol(message)) if message.view() > self.view => {
                 self.trim_log();
                 self.start_state_transfer(mailbox);
-                mailbox.push(Message::Protocol(index, message));
+                mailbox.push(message);
             }
-            Some(Message::Protocol(_, ProtocolMessage::Prepare(message))) if !self.is_primary() => {
+            Some(InboundMessage::Protocol(ProtocolMessage::Prepare(message)))
+                if !self.is_primary() =>
+            {
                 self.receive_prepare(message, mailbox)
             }
-            Some(Message::Protocol(_, ProtocolMessage::PrepareOk(message)))
+            Some(InboundMessage::Protocol(ProtocolMessage::PrepareOk(message)))
                 if self.is_primary() =>
             {
                 self.receive_prepare_ok(message, mailbox)
             }
-            Some(Message::Protocol(_, ProtocolMessage::Commit(message))) if !self.is_primary() => {
+            Some(InboundMessage::Protocol(ProtocolMessage::Commit(message)))
+                if !self.is_primary() =>
+            {
                 self.receive_commit(message, mailbox)
             }
-            Some(Message::Protocol(_, ProtocolMessage::GetState(message))) => {
+            Some(InboundMessage::Protocol(ProtocolMessage::GetState(message))) => {
                 self.receive_get_state(message, mailbox)
             }
             Some(_) => {}
@@ -268,7 +272,7 @@ where
 
         if message.op_number > self.op_number + 1 {
             self.start_state_transfer(mailbox);
-            mailbox.push(Message::Protocol(self.index, message.into()));
+            mailbox.push(ProtocolMessage::Prepare(message));
             return;
         }
 
@@ -347,7 +351,7 @@ where
     fn receive_commit(&mut self, message: Commit, mailbox: &mut Mailbox) {
         if message.commit > self.op_number {
             self.start_state_transfer(mailbox);
-            mailbox.push(Message::Protocol(self.index, message.into()));
+            mailbox.push(ProtocolMessage::Commit(message));
             return;
         }
 
@@ -435,7 +439,7 @@ where
         self.view_change_state.clear();
     }
 
-    fn view_change_receive(&mut self, message: Option<Message>, mailbox: &mut Mailbox) {
+    fn view_change_receive(&mut self, message: Option<InboundMessage>, mailbox: &mut Mailbox) {
         match message {
             None => {
                 // A view change may not succeed, e.g., because the new primary fails.
@@ -444,21 +448,21 @@ where
             }
             // SAFETY: We skip view change messages for higher view numbers.
             // Messages from a higher view could be from a minority partition.
-            Some(Message::Protocol(_, ProtocolMessage::StartViewChange(message)))
+            Some(InboundMessage::Protocol(ProtocolMessage::StartViewChange(message)))
                 if message.view == self.view =>
             {
                 self.receive_start_view_change(message, mailbox);
             }
             // SAFETY: We skip view change messages for higher view numbers.
             // Messages from a higher view could be from a minority partition.
-            Some(Message::Protocol(_, ProtocolMessage::DoViewChange(message)))
+            Some(InboundMessage::Protocol(ProtocolMessage::DoViewChange(message)))
                 if message.view == self.view && self.is_primary() =>
             {
                 self.receive_do_view_change(message, mailbox);
             }
             // SAFETY: We skip view change messages for higher view numbers.
             // Messages from a higher view could be from a minority partition.
-            Some(Message::Protocol(_, ProtocolMessage::StartView(message)))
+            Some(InboundMessage::Protocol(ProtocolMessage::StartView(message)))
                 if message.view == self.view && !self.is_primary() =>
             {
                 self.receive_start_view(message, mailbox);
@@ -609,7 +613,7 @@ where
         );
     }
 
-    fn recovery_receive(&mut self, message: Option<Message>, mailbox: &mut Mailbox) {
+    fn recovery_receive(&mut self, message: Option<InboundMessage>, mailbox: &mut Mailbox) {
         match message {
             None => {
                 // SAFETY: ensures recovering replicas can handle view changes and dropped messages
@@ -621,7 +625,7 @@ where
                     },
                 );
             }
-            Some(Message::Protocol(_, ProtocolMessage::RecoveryResponse(message)))
+            Some(InboundMessage::Protocol(ProtocolMessage::RecoveryResponse(message)))
                 if message.nonce == self.nonce =>
             {
                 self.receive_recovery_response(message, mailbox)
@@ -665,6 +669,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::OutboundMessage;
     use bytes::Bytes;
 
     #[derive(Debug, Default)]
@@ -697,7 +702,7 @@ mod tests {
 
         // pretend to deliver the message over the network.
         let message = mailbox.pop().unwrap();
-        mailbox.push(message);
+        mailbox.push(message.to_inbound().unwrap());
         backup1.receive(&mut mailbox);
 
         // ignore the prepare message for backup2.
@@ -705,7 +710,7 @@ mod tests {
 
         // pretend to deliver the message over the network.
         let message = mailbox.pop().unwrap();
-        mailbox.push(message);
+        mailbox.push(message.to_inbound().unwrap());
         primary.receive(&mut mailbox);
 
         assert_eq!(
@@ -733,8 +738,7 @@ mod tests {
         let mut mailbox = Mailbox::default();
 
         // pretend to receive a request over the network.
-        mailbox.push(Message::Protocol(
-            1,
+        mailbox.push(InboundMessage::Protocol(
             Prepare {
                 view: 0,
                 op_number: 2,
@@ -749,7 +753,8 @@ mod tests {
         ));
         backup.receive(&mut mailbox);
 
-        let Some(Message::Protocol(0 | 2, ProtocolMessage::GetState(message))) = mailbox.pop()
+        let Some(OutboundMessage::Protocol(0 | 2, ProtocolMessage::GetState(message))) =
+            mailbox.pop()
         else {
             panic!("invalid message type");
         };

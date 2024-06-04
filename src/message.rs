@@ -2,10 +2,24 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum Message {
+pub enum InboundMessage {
     Request(Request),
+    Protocol(ProtocolMessage),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum OutboundMessage {
     Reply(Reply),
     Protocol(usize, ProtocolMessage),
+}
+
+impl OutboundMessage {
+    pub fn to_inbound(self) -> Result<InboundMessage, Reply> {
+        match self {
+            Self::Reply(reply) => Err(reply),
+            Self::Protocol(_, message) => Ok(InboundMessage::Protocol(message)),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -15,7 +29,7 @@ pub struct Request {
     pub id: u128,
 }
 
-impl<'a> From<Request> for Message {
+impl From<Request> for InboundMessage {
     fn from(value: Request) -> Self {
         Self::Request(value)
     }
@@ -29,7 +43,7 @@ pub struct Reply {
     pub id: u128,
 }
 
-impl From<Reply> for Message {
+impl From<Reply> for OutboundMessage {
     fn from(value: Reply) -> Self {
         Self::Reply(value)
     }
@@ -63,6 +77,12 @@ impl ProtocolMessage {
             Self::Recover(_) => 0,
             Self::RecoveryResponse(m) => m.view,
         }
+    }
+}
+
+impl From<ProtocolMessage> for InboundMessage {
+    fn from(value: ProtocolMessage) -> Self {
+        Self::Protocol(value)
     }
 }
 

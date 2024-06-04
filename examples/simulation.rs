@@ -6,7 +6,7 @@ use bytes::Bytes;
 use std::io;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
-use viewstamped_replication::message::{Message, ProtocolMessage, Request};
+use viewstamped_replication::message::{InboundMessage, OutboundMessage, ProtocolMessage, Request};
 use viewstamped_replication::{Configuration, Mailbox, Replica, Service};
 
 #[derive(Default)]
@@ -26,8 +26,7 @@ impl Service for Adder {
 
 #[derive(Clone)]
 pub struct Application {
-    index: usize,
-    sender: Sender<Message>,
+    sender: Sender<InboundMessage>,
 }
 
 #[tokio::main]
@@ -53,7 +52,7 @@ async fn start_replica(configuration: Configuration, index: usize) -> io::Result
     let app = Router::new()
         .route("/request", post(request))
         .route("/protocol", post(protocol))
-        .with_state(Application { index, sender });
+        .with_state(Application { sender });
 
     let mut replica: Replica<Adder> = Replica::new(configuration.clone(), index);
     let mut mailbox = Mailbox::default();
@@ -66,12 +65,10 @@ async fn start_replica(configuration: Configuration, index: usize) -> io::Result
 
             while let Some(message) = mailbox.pop() {
                 match message {
-                    // NOTE: can be ignored as replicas do not generate requests.
-                    Message::Request(_) => {}
-                    Message::Reply(message) => {
+                    OutboundMessage::Reply(message) => {
                         eprintln!("Reply: {message:?}")
                     }
-                    Message::Protocol(to, message) => {
+                    OutboundMessage::Protocol(to, message) => {
                         client
                             .post(format!("http://{}/protocol", configuration[to]))
                             .json(&message)
@@ -111,7 +108,7 @@ async fn protocol(
 ) -> StatusCode {
     match application
         .sender
-        .send(Message::Protocol(application.index, message.into()))
+        .send(InboundMessage::Protocol(message.into()))
         .await
     {
         Ok(_) => StatusCode::OK,
