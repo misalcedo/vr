@@ -2,11 +2,13 @@
 
 mod client;
 mod configuration;
+mod crash;
 mod mail;
 pub mod message;
 mod replica;
 mod table;
 
 pub use configuration::Configuration;
+pub use crash::CrashDetector;
 pub use mail::Mailbox;
 pub use replica::Replica;

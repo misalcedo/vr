@@ -612,7 +612,7 @@ impl Replica {
     /// Then it updates its state using the information from the primary,
     /// changes its status to normal,
     /// and the recovery protocol is complete.
-    fn receive_recovery_response(&mut self, message: RecoveryResponse, mailbox: &mut Mailbox) {
+    fn receive_recovery_response(&mut self, message: RecoveryResponse, _: &mut Mailbox) {
         self.recovery_responses.insert(message.index, message);
         if self.recovery_responses.len() > self.configuration.threshold() {
             let mut view = message.view;
