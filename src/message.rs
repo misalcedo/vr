@@ -130,7 +130,7 @@ impl From<GetState> for ProtocolMessage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NewState {
     pub view: usize,
-    pub log: [Request; 0],
+    pub log: Vec<Request>,
     pub op_number: usize,
     pub commit: usize,
 }
@@ -156,7 +156,7 @@ impl From<StartViewChange> for ProtocolMessage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DoViewChange {
     pub view: usize,
-    pub log: [Request; 0],
+    pub log: Vec<Request>,
     pub last_normal_view: usize,
     pub op_number: usize,
     pub commit: usize,
@@ -172,7 +172,7 @@ impl From<DoViewChange> for ProtocolMessage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StartView {
     pub view: usize,
-    pub log: [Request; 0],
+    pub log: Vec<Request>,
     pub op_number: usize,
     pub commit: usize,
 }
@@ -198,7 +198,7 @@ impl From<Recover> for ProtocolMessage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecoveryResponse {
     pub view: usize,
-    pub log: [Request; 0],
+    pub log: Vec<Request>,
     pub op_number: usize,
     pub commit: usize,
     pub index: usize,

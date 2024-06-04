@@ -360,7 +360,13 @@ where
             message.index,
             NewState {
                 view: self.view,
-                log: [], // log after message.op_number
+                log: self
+                    .log
+                    .get(message.op_number..)
+                    .into_iter()
+                    .flatten()
+                    .map(Request::clone)
+                    .collect(),
                 op_number: self.op_number,
                 commit: self.committed,
             },
@@ -383,7 +389,7 @@ where
         // and then completes the job by obtaining the log forward from the point.
         // In the process of getting the checkpoint,
         // it moves to the view in which that checkpoint was taken.
-        if message.log.is_empty() {
+        if message.log.is_empty() && message.op_number > self.op_number {
             // TODO: handle garbage collection.
         }
 
@@ -469,7 +475,7 @@ where
                 self.primary(),
                 DoViewChange {
                     view: self.view,
-                    log: [],
+                    log: self.log.clone(),
                     last_normal_view: self.last_normal_view,
                     op_number: self.op_number,
                     commit: self.committed,
@@ -509,7 +515,7 @@ where
                     mailbox,
                     StartView {
                         view: self.view,
-                        log: [],
+                        log: self.log.clone(),
                         op_number: self.op_number,
                         // SAFETY: We use the message's commit-number since the replica's has not been updated yet.
                         // We do this in order to re-use the method from the normal protocol to execute committed operations.
@@ -548,7 +554,7 @@ where
     /// advance their commit-number,
     /// and update the information in their client-table.
     fn receive_start_view(&mut self, message: StartView, mailbox: &mut Mailbox) {
-        // TODO: self.log = message.log;
+        self.log = message.log;
         self.op_number = message.op_number;
         self.view = message.view;
         self.status_normal();
@@ -583,11 +589,17 @@ where
     /// If j is the primary of its view, l is its log, n is its op-number, and k is the commit-number;
     /// otherwise these values are nil.
     fn receive_recover(&mut self, message: Recover, mailbox: &mut Mailbox) {
+        let maybe_log = if self.is_primary() {
+            self.log.clone()
+        } else {
+            Vec::new()
+        };
+
         mailbox.send(
             message.index,
             RecoveryResponse {
                 view: self.view,
-                log: [], // TODO: only the primary includes its log.
+                log: maybe_log,
                 op_number: self.op_number,
                 commit: self.committed,
                 index: self.index,
@@ -633,9 +645,9 @@ where
             }
 
             let primary = view % self.configuration.len();
-            if let Some(response) = self.recovery_responses.get(&primary) {
+            if let Some(response) = self.recovery_responses.remove(&primary) {
                 self.view = response.view;
-                // TODO: self.log = response.log;
+                self.log = response.log;
                 self.op_number = response.op_number;
                 self.committed = response.commit;
                 self.status_normal();
