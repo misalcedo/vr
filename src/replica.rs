@@ -2,12 +2,13 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use rand::Rng;
+use uuid::Uuid;
 
 use crate::configuration::Configuration;
 use crate::mail::Mailbox;
 use crate::message::{
-    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, ProtocolMessage, Reply,
-    Request, StartView, StartViewChange,
+    Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, ProtocolMessage,
+    Recover, Reply, Request, StartView, StartViewChange,
 };
 use crate::table::ClientTable;
 
@@ -35,6 +36,7 @@ pub struct Replica {
     prepared: VecDeque<HashSet<usize>>,
     view_change_votes: HashSet<usize>,
     view_change_state: HashMap<usize, DoViewChange>,
+    nonce: u128,
 }
 
 impl Replica {
@@ -52,6 +54,7 @@ impl Replica {
             prepared: Default::default(),
             view_change_votes: Default::default(),
             view_change_state: Default::default(),
+            nonce: Uuid::now_v7().as_u128(),
         }
     }
 
@@ -66,6 +69,17 @@ impl Replica {
             Status::ViewChange => self.view_change_receive(message, mailbox),
             Status::Recovery => {}
         }
+    }
+
+    ///  The recovering replica, i, sends a RECOVERY message to all other replicas, where x is a nonce.
+    pub fn recover(&mut self, mailbox: &mut Mailbox) {
+        self.broadcast(
+            mailbox,
+            Recover {
+                index: self.index,
+                nonce: self.nonce,
+            },
+        );
     }
 
     fn normal_receive(&mut self, message: Option<Message>, mailbox: &mut Mailbox) {
