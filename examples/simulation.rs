@@ -10,7 +10,7 @@ use std::env::args;
 use std::io;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
-use viewstamped_replication::message::{OutboundMessage, ProtocolMessage, Reply, Request};
+use viewstamped_replication::message::{OutboundMessage, ProtocolMessage, Request};
 use viewstamped_replication::{Configuration, Mailbox, Replica, Service};
 
 #[derive(Default)]
@@ -35,7 +35,7 @@ pub struct Application {
 
 #[derive(Debug)]
 pub enum HttpMessage {
-    Request(oneshot::Sender<Reply>, Request),
+    Request(oneshot::Sender<Response<Body>>, Request),
     Protocol(ProtocolMessage),
 }
 
@@ -84,13 +84,14 @@ async fn start_replica(configuration: Configuration, index: usize) -> io::Result
                 }
             };
 
+            // TODO: support idle behavior
             replica.receive(&mut mailbox);
 
             while let Some(message) = mailbox.pop() {
                 match message {
                     OutboundMessage::Reply(message) => {
                         if let Some(sender) = clients.remove(&message.client) {
-                            if let Err(_) = sender.send(message) {
+                            if let Err(_) = sender.send(Json(message).into_response()) {
                                 eprintln!("Unable to inform client of the reply.")
                             }
                         };
@@ -132,7 +133,7 @@ async fn request(
     }
 
     match receiver.await {
-        Ok(reply) => Json(reply).into_response(),
+        Ok(response) => response,
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
