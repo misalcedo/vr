@@ -8,7 +8,7 @@ use crate::configuration::Configuration;
 use crate::mail::Mailbox;
 use crate::message::{
     Commit, DoViewChange, GetState, Message, NewState, Prepare, PrepareOk, ProtocolMessage,
-    Recover, Reply, Request, StartView, StartViewChange,
+    Recover, RecoveryResponse, Reply, Request, StartView, StartViewChange,
 };
 use crate::table::ClientTable;
 
@@ -36,6 +36,7 @@ pub struct Replica {
     prepared: VecDeque<HashSet<usize>>,
     view_change_votes: HashSet<usize>,
     view_change_state: HashMap<usize, DoViewChange>,
+    recovery_responses: HashMap<usize, RecoveryResponse>,
     nonce: u128,
 }
 
@@ -54,6 +55,7 @@ impl Replica {
             prepared: Default::default(),
             view_change_votes: Default::default(),
             view_change_state: Default::default(),
+            recovery_responses: Default::default(),
             nonce: Uuid::now_v7().as_u128(),
         }
     }
@@ -67,12 +69,14 @@ impl Replica {
         match self.status {
             Status::Normal => self.normal_receive(message, mailbox),
             Status::ViewChange => self.view_change_receive(message, mailbox),
-            Status::Recovery => {}
+            Status::Recovery => self.recovery_receive(message, mailbox),
         }
     }
 
     ///  The recovering replica, i, sends a RECOVERY message to all other replicas, where x is a nonce.
     pub fn recover(&mut self, mailbox: &mut Mailbox) {
+        self.status = Status::Recovery;
+        self.recovery_responses.clear();
         self.broadcast(
             mailbox,
             Recover {
@@ -104,6 +108,9 @@ impl Replica {
             // The client sends a REQUEST message to the primary.
             Some(Message::Request(request)) if self.is_primary() => {
                 self.receive_request(request, mailbox);
+            }
+            Some(Message::Protocol(_, ProtocolMessage::Recover(message))) => {
+                self.receive_recover(message, mailbox)
             }
             // If the sender is behind, the receiver drops the message.
             Some(Message::Protocol(_, message)) if message.view() < self.view => {}
@@ -394,7 +401,6 @@ impl Replica {
     /// or because it receives a STARTVIEWCHANGE or DOVIEWCHANGE message for a view with a larger
     /// number than its own view-number.
     fn start_view_change(&mut self, new_view: usize, mailbox: &mut Mailbox) {
-        self.last_normal_view = self.view; // TODO: set this at the end of the view change protocol.
         self.view = new_view;
         self.status = Status::ViewChange;
         self.broadcast(
@@ -472,23 +478,22 @@ impl Replica {
     fn receive_do_view_change(&mut self, message: DoViewChange, mailbox: &mut Mailbox) {
         self.view_change_state.insert(message.index, message);
         if self.view_change_state.len() > self.configuration.threshold() {
-            if let Some(mut message) = self.view_change_state.get(&self.index) {
-                let mut commit = message.commit;
+            if let Some(mut state) = self.view_change_state.get(&self.index) {
+                let mut commit = state.commit;
 
                 // find the log with the most recent information.
-                for m in self.view_change_state.values() {
-                    commit = commit.max(m.commit);
+                for s in self.view_change_state.values() {
+                    commit = commit.max(s.commit);
 
-                    if (m.last_normal_view, m.op_number)
-                        > (message.last_normal_view, message.op_number)
+                    if (s.last_normal_view, s.op_number) > (state.last_normal_view, state.op_number)
                     {
-                        message = m;
+                        state = s;
                     }
                 }
 
-                self.view = message.view;
-                self.op_number = message.op_number;
-                self.status = Status::Normal;
+                self.view = state.view;
+                self.op_number = state.op_number;
+                self.status_normal();
                 self.broadcast(
                     mailbox,
                     StartView {
@@ -535,7 +540,7 @@ impl Replica {
         // TODO: self.log = message.log;
         self.op_number = message.op_number;
         self.view = message.view;
-        self.status = Status::Normal;
+        self.status_normal();
 
         // SAFETY: We have not updated the replica's commit-number to be the message's.
         // We do this in order to re-use the method from the normal protocol to execute committed operations.
@@ -560,6 +565,66 @@ impl Replica {
                 },
             );
         }
+    }
+
+    /// A replica j replies to a RECOVERY message only when its status is normal.
+    /// In this case the replica sends a RECOVERYRESPONSE message to the recovering replica.
+    /// If j is the primary of its view, l is its log, n is its op-number, and k is the commit-number;
+    /// otherwise these values are nil.
+    fn receive_recover(&mut self, message: Recover, mailbox: &mut Mailbox) {
+        mailbox.send(
+            message.index,
+            RecoveryResponse {
+                view: self.view,
+                log: [], // TODO: only the primary includes its log.
+                op_number: self.op_number,
+                commit: self.committed,
+                index: self.index,
+                nonce: message.nonce,
+            },
+        );
+    }
+
+    fn recovery_receive(&mut self, message: Option<Message>, mailbox: &mut Mailbox) {
+        match message {
+            None => {}
+            Some(Message::Protocol(_, ProtocolMessage::RecoveryResponse(message)))
+                if message.nonce == self.nonce =>
+            {
+                self.receive_recovery_response(message, mailbox)
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// The recovering replica waits to receive at least f +1 RECOVERYRESPONSE messages from different replicas,
+    /// all containing the nonce it sent in its RECOVERY message,
+    /// including one from the primary of the latest view it learns of in these messages.
+    /// Then it updates its state using the information from the primary,
+    /// changes its status to normal,
+    /// and the recovery protocol is complete.
+    fn receive_recovery_response(&mut self, message: RecoveryResponse, mailbox: &mut Mailbox) {
+        self.recovery_responses.insert(message.index, message);
+        if self.recovery_responses.len() > self.configuration.threshold() {
+            let mut view = message.view;
+            for response in self.recovery_responses.values() {
+                view = view.max(response.view);
+            }
+
+            let primary = view % self.configuration.len();
+            if let Some(response) = self.recovery_responses.get(&primary) {
+                self.view = response.view;
+                // TODO: self.log = response.log;
+                self.op_number = response.op_number;
+                self.committed = response.commit;
+                self.status_normal();
+            }
+        }
+    }
+
+    fn status_normal(&mut self) {
+        self.status = Status::Normal;
+        self.last_normal_view = self.view;
     }
 }
 

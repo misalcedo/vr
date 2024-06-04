@@ -47,6 +47,7 @@ pub enum ProtocolMessage {
     DoViewChange(DoViewChange),
     StartView(StartView),
     Recover(Recover),
+    RecoveryResponse(RecoveryResponse),
 }
 
 impl ProtocolMessage {
@@ -61,6 +62,7 @@ impl ProtocolMessage {
             Self::DoViewChange(m) => m.view,
             Self::StartView(m) => m.view,
             Self::Recover(_) => 0,
+            Self::RecoveryResponse(m) => m.view,
         }
     }
 }
@@ -191,5 +193,21 @@ pub struct Recover {
 impl From<Recover> for ProtocolMessage {
     fn from(value: Recover) -> Self {
         Self::Recover(value)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryResponse {
+    pub view: usize,
+    pub log: [Request; 0],
+    pub op_number: usize,
+    pub commit: usize,
+    pub index: usize,
+    pub nonce: u128,
+}
+
+impl From<RecoveryResponse> for ProtocolMessage {
+    fn from(value: RecoveryResponse) -> Self {
+        Self::RecoveryResponse(value)
     }
 }
