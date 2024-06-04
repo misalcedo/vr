@@ -34,8 +34,8 @@ pub struct Application {
 async fn main() {
     let configuration = Configuration::new(vec![
         "127.0.0.1:8378".parse().unwrap(),
-        "127.0.0.2:8378".parse().unwrap(),
-        "127.0.0.3:8378".parse().unwrap(),
+        "127.0.0.1:8379".parse().unwrap(),
+        "127.0.0.1:8380".parse().unwrap(),
     ]);
 
     let mut tasks = JoinSet::new();
@@ -55,13 +55,32 @@ async fn start_replica(configuration: Configuration, index: usize) -> io::Result
         .route("/protocol", post(protocol))
         .with_state(Application { index, sender });
 
-    let mut replica: Replica<Adder> = Replica::new(configuration, index);
+    let mut replica: Replica<Adder> = Replica::new(configuration.clone(), index);
     let mut mailbox = Mailbox::default();
+    let client = reqwest::Client::new();
 
     let receive = async move {
         while let Some(message) = receiver.recv().await {
             mailbox.push(message);
             replica.receive(&mut mailbox);
+
+            while let Some(message) = mailbox.pop() {
+                match message {
+                    // NOTE: can be ignored as replicas do not generate requests.
+                    Message::Request(_) => {}
+                    Message::Reply(message) => {
+                        eprintln!("Reply: {message:?}")
+                    }
+                    Message::Protocol(to, message) => {
+                        client
+                            .post(format!("http://{}/protocol", configuration[to]))
+                            .json(&message)
+                            .send()
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -83,7 +102,7 @@ async fn request(
         Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 
-    // TODO: Implement a client.
+    // TODO: Implement a client to receive replies.
 }
 
 async fn protocol(

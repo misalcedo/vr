@@ -273,6 +273,7 @@ where
         }
 
         self.op_number += 1;
+        self.log.push(message.request.clone());
         self.client_table.start(&message.request);
         mailbox.send(
             self.primary(),
