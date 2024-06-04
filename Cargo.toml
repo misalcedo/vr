@@ -23,7 +23,7 @@ env_logger = "0.11.3"
 tokio = { version = "1.36.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [dependencies]
-bytes = "1.5.0"
+bytes = { version = "1.6.0", features = ["serde"] }
 rand = "0.8.5"
-serde = { version = "1.0.196", features = ["derive"] }
-uuid = { version = "1.6.1", features = ["v4", "v7"] }
+serde = { version = "1.0.203", features = ["derive"] }
+uuid = { version = "1.8.0", features = ["v4", "v7"] }

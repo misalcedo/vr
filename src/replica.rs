@@ -11,6 +11,7 @@ use crate::message::{
     Recover, RecoveryResponse, Reply, Request, StartView, StartViewChange,
 };
 use crate::table::ClientTable;
+use crate::Service;
 
 pub enum Status {
     /// Normal case processing of user requests.
@@ -23,7 +24,8 @@ pub enum Status {
 
 /// A replica implements all the sub-protocols of the Viewstamped Replication protocol.
 /// The replica does not track operation execution separately from committed operations.
-pub struct Replica {
+pub struct Replica<S> {
+    service: S,
     view: usize,
     last_normal_view: usize,
     op_number: usize,
@@ -40,9 +42,13 @@ pub struct Replica {
     nonce: u128,
 }
 
-impl Replica {
+impl<S> Replica<S>
+where
+    S: Service + Default,
+{
     pub fn new(configuration: Configuration, index: usize) -> Self {
         Self {
+            service: Default::default(),
             view: 0,
             last_normal_view: 0,
             op_number: 0,
@@ -59,7 +65,12 @@ impl Replica {
             nonce: Uuid::now_v7().as_u128(),
         }
     }
+}
 
+impl<S> Replica<S>
+where
+    S: Service,
+{
     /// Implements the various sub-protocols of VR.
     ///
     /// Calling receive without a message in the mailbox triggers idle behavior.
@@ -171,7 +182,7 @@ impl Replica {
             Ordering::Less => {}
             Ordering::Equal => {
                 if let Some(reply) = self.client_table.reply(&request) {
-                    mailbox.reply(*reply);
+                    mailbox.reply(reply.clone());
                 }
             }
             Ordering::Greater => {
@@ -189,7 +200,7 @@ impl Replica {
                         view: self.view,
                         op_number: self.op_number,
                         commit: self.committed,
-                        request: *request,
+                        request: request.clone(),
                     },
                 );
 
@@ -215,7 +226,7 @@ impl Replica {
                 continue;
             }
 
-            mailbox.send(index, protocol_message)
+            mailbox.send(index, protocol_message.clone())
         }
     }
 
@@ -308,7 +319,7 @@ impl Replica {
             let request = &self.log[self.committed];
             let reply = Reply {
                 view: self.view,
-                result: (),
+                result: self.service.invoke(request.operation.clone()),
                 client: request.client,
                 id: request.id,
             };
@@ -316,7 +327,7 @@ impl Replica {
             self.committed += 1;
 
             if self.is_primary() {
-                mailbox.reply(reply);
+                mailbox.reply(reply.clone());
 
                 // stop tracking prepared backups.
                 self.prepared.pop_front();
@@ -613,9 +624,10 @@ impl Replica {
     /// changes its status to normal,
     /// and the recovery protocol is complete.
     fn receive_recovery_response(&mut self, message: RecoveryResponse, _: &mut Mailbox) {
+        let mut view = message.view;
+
         self.recovery_responses.insert(message.index, message);
         if self.recovery_responses.len() > self.configuration.threshold() {
-            let mut view = message.view;
             for response in self.recovery_responses.values() {
                 view = view.max(response.view);
             }
@@ -640,6 +652,16 @@ impl Replica {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+
+    #[derive(Debug, Default)]
+    struct Echo;
+
+    impl Service for Echo {
+        fn invoke(&mut self, request: Bytes) -> Bytes {
+            request
+        }
+    }
 
     #[test]
     fn single_request() {
@@ -648,13 +670,13 @@ mod tests {
             "127.0.0.2".parse().unwrap(),
             "127.0.0.3".parse().unwrap(),
         ]);
-        let mut primary = Replica::new(configuration.clone(), 0);
-        let mut backup1 = Replica::new(configuration.clone(), 1);
+        let mut primary: Replica<Echo> = Replica::new(configuration.clone(), 0);
+        let mut backup1: Replica<Echo> = Replica::new(configuration.clone(), 1);
         let mut mailbox = Mailbox::default();
 
         // pretend to receive a request over the network.
         mailbox.push(Request {
-            operation: (),
+            operation: Bytes::from("test"),
             client: 1,
             id: 1,
         });
@@ -678,7 +700,7 @@ mod tests {
             Some(
                 Reply {
                     view: 0,
-                    result: (),
+                    result: Bytes::from("test"),
                     client: 1,
                     id: 1,
                 }
@@ -694,7 +716,7 @@ mod tests {
             "127.0.0.2".parse().unwrap(),
             "127.0.0.3".parse().unwrap(),
         ]);
-        let mut backup = Replica::new(configuration.clone(), 1);
+        let mut backup: Replica<Echo> = Replica::new(configuration.clone(), 1);
         let mut mailbox = Mailbox::default();
 
         // pretend to receive a request over the network.
@@ -705,7 +727,7 @@ mod tests {
                 op_number: 2,
                 commit: 0,
                 request: Request {
-                    operation: (),
+                    operation: Bytes::from("test"),
                     client: 1,
                     id: 2,
                 },

@@ -1,31 +1,30 @@
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-pub type View = usize;
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Message {
     Request(Request),
     Reply(Reply),
     Protocol(usize, ProtocolMessage),
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Request {
-    pub operation: (),
+    pub operation: Bytes,
     pub client: u128,
     pub id: u128,
 }
 
-impl From<Request> for Message {
+impl<'a> From<Request> for Message {
     fn from(value: Request) -> Self {
         Self::Request(value)
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Reply {
-    pub view: View,
-    pub result: (),
+    pub view: usize,
+    pub result: Bytes,
     pub client: u128,
     pub id: u128,
 }
@@ -36,7 +35,7 @@ impl From<Reply> for Message {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ProtocolMessage {
     Prepare(Prepare),
     PrepareOk(PrepareOk),
@@ -67,9 +66,9 @@ impl ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Prepare {
-    pub view: View,
+    pub view: usize,
     pub op_number: usize,
     pub commit: usize,
     pub request: Request,
@@ -81,9 +80,9 @@ impl From<Prepare> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PrepareOk {
-    pub view: View,
+    pub view: usize,
     pub op_number: usize,
     pub index: usize,
 }
@@ -94,9 +93,9 @@ impl From<PrepareOk> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Commit {
-    pub view: View,
+    pub view: usize,
     pub commit: usize,
 }
 
@@ -115,9 +114,9 @@ impl From<Commit> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetState {
-    pub view: View,
+    pub view: usize,
     pub op_number: usize,
     pub index: usize,
 }
@@ -128,9 +127,9 @@ impl From<GetState> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NewState {
-    pub view: View,
+    pub view: usize,
     pub log: [Request; 0],
     pub op_number: usize,
     pub commit: usize,
@@ -142,9 +141,9 @@ impl From<NewState> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StartViewChange {
-    pub view: View,
+    pub view: usize,
     pub index: usize,
 }
 
@@ -154,9 +153,9 @@ impl From<StartViewChange> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DoViewChange {
-    pub view: View,
+    pub view: usize,
     pub log: [Request; 0],
     pub last_normal_view: usize,
     pub op_number: usize,
@@ -170,9 +169,9 @@ impl From<DoViewChange> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StartView {
-    pub view: View,
+    pub view: usize,
     pub log: [Request; 0],
     pub op_number: usize,
     pub commit: usize,
@@ -184,7 +183,7 @@ impl From<StartView> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Recover {
     pub index: usize,
     pub nonce: u128,
@@ -196,7 +195,7 @@ impl From<Recover> for ProtocolMessage {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecoveryResponse {
     pub view: usize,
     pub log: [Request; 0],
