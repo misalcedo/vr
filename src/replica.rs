@@ -678,9 +678,9 @@ mod tests {
     #[test]
     fn single_request() {
         let configuration = Configuration::new([
-            "127.0.0.1".parse().unwrap(),
-            "127.0.0.2".parse().unwrap(),
-            "127.0.0.3".parse().unwrap(),
+            "127.0.0.1:8378".parse().unwrap(),
+            "127.0.0.2:8378".parse().unwrap(),
+            "127.0.0.3:8378".parse().unwrap(),
         ]);
         let mut primary: Replica<Echo> = Replica::new(configuration.clone(), 0);
         let mut backup1: Replica<Echo> = Replica::new(configuration.clone(), 1);
@@ -724,9 +724,9 @@ mod tests {
     #[test]
     fn start_state_transfer_prepare() {
         let configuration = Configuration::new([
-            "127.0.0.1".parse().unwrap(),
-            "127.0.0.2".parse().unwrap(),
-            "127.0.0.3".parse().unwrap(),
+            "127.0.0.1:8378".parse().unwrap(),
+            "127.0.0.2:8378".parse().unwrap(),
+            "127.0.0.3:8378".parse().unwrap(),
         ]);
         let mut backup: Replica<Echo> = Replica::new(configuration.clone(), 1);
         let mut mailbox = Mailbox::default();
