@@ -1,12 +1,15 @@
+use axum::body::Body;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{Response, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use bytes::Bytes;
+use std::collections::HashMap;
 use std::io;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
-use viewstamped_replication::message::{InboundMessage, OutboundMessage, ProtocolMessage, Request};
+use viewstamped_replication::message::{OutboundMessage, ProtocolMessage, Reply, Request};
 use viewstamped_replication::{Configuration, Mailbox, Replica, Service};
 
 #[derive(Default)]
@@ -26,7 +29,12 @@ impl Service for Adder {
 
 #[derive(Clone)]
 pub struct Application {
-    sender: Sender<InboundMessage>,
+    sender: mpsc::Sender<HttpMessage>,
+}
+
+pub enum HttpMessage {
+    Request(oneshot::Sender<Reply>, Request),
+    Protocol(ProtocolMessage),
 }
 
 #[tokio::main]
@@ -56,17 +64,29 @@ async fn start_replica(configuration: Configuration, index: usize) -> io::Result
 
     let mut replica: Replica<Adder> = Replica::new(configuration.clone(), index);
     let mut mailbox = Mailbox::default();
+    let mut clients = HashMap::new();
     let client = reqwest::Client::new();
 
     let receive = async move {
         while let Some(message) = receiver.recv().await {
-            mailbox.push(message);
+            match message {
+                HttpMessage::Request(sender, request) => {
+                    clients.insert(request.client, sender);
+                    mailbox.push(request);
+                }
+                HttpMessage::Protocol(protocol) => mailbox.push(protocol),
+            };
+
             replica.receive(&mut mailbox);
 
             while let Some(message) = mailbox.pop() {
                 match message {
                     OutboundMessage::Reply(message) => {
-                        eprintln!("Reply: {message:?}")
+                        if let Some(sender) = clients.remove(&message.client) {
+                            if let Err(_) = sender.send(message) {
+                                eprintln!("Unable to inform client of the reply.")
+                            }
+                        };
                     }
                     OutboundMessage::Protocol(to, message) => {
                         client
@@ -90,16 +110,24 @@ async fn start_replica(configuration: Configuration, index: usize) -> io::Result
     tokio::try_join!(receive, serve).map(|_| ())
 }
 
+// TODO: support detecting multiple requests per client.
 async fn request(
     State(application): State<Application>,
     Json(message): Json<Request>,
-) -> StatusCode {
-    match application.sender.send(message.into()).await {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+) -> Response<Body> {
+    let (sender, receiver) = oneshot::channel();
+    if let Err(_) = application
+        .sender
+        .send(HttpMessage::Request(sender, message))
+        .await
+    {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
 
-    // TODO: Implement a client to receive replies.
+    match receiver.await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
 }
 
 async fn protocol(
@@ -108,7 +136,7 @@ async fn protocol(
 ) -> StatusCode {
     match application
         .sender
-        .send(InboundMessage::Protocol(message.into()))
+        .send(HttpMessage::Protocol(message))
         .await
     {
         Ok(_) => StatusCode::OK,
