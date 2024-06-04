@@ -598,4 +598,46 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn start_state_transfer_prepare() {
+        let configuration = Configuration::new([
+            "127.0.0.1".parse().unwrap(),
+            "127.0.0.2".parse().unwrap(),
+            "127.0.0.3".parse().unwrap(),
+        ]);
+        let mut backup = Replica::new(configuration.clone(), 1);
+        let mut mailbox = Mailbox::default();
+
+        // pretend to receive a request over the network.
+        mailbox.push(Message::Protocol(
+            1,
+            Prepare {
+                view: 0,
+                op_number: 2,
+                commit: 0,
+                request: Request {
+                    operation: (),
+                    client: 1,
+                    id: 2,
+                },
+            }
+            .into(),
+        ));
+        backup.receive(&mut mailbox);
+
+        let Some(Message::Protocol(0 | 2, ProtocolMessage::GetState(message))) = mailbox.pop()
+        else {
+            panic!("invalid message type");
+        };
+
+        assert_eq!(
+            message,
+            GetState {
+                view: 0,
+                op_number: 0,
+                index: 1,
+            }
+        );
+    }
 }
