@@ -6,6 +6,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use bytes::Bytes;
 use std::collections::HashMap;
+use std::env::args;
 use std::io;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -32,6 +33,7 @@ pub struct Application {
     sender: mpsc::Sender<HttpMessage>,
 }
 
+#[derive(Debug)]
 pub enum HttpMessage {
     Request(oneshot::Sender<Reply>, Request),
     Protocol(ProtocolMessage),
@@ -45,11 +47,12 @@ async fn main() {
         "127.0.0.1:8380".parse().unwrap(),
     ]);
 
+    let argument = args().skip(1).next().expect("must pass an index");
+    let index = argument.parse().expect("invalid index argument");
+
     let mut tasks = JoinSet::new();
 
-    tasks.spawn(start_replica(configuration.clone(), 0));
-    tasks.spawn(start_replica(configuration.clone(), 1));
-    tasks.spawn(start_replica(configuration.clone(), 2));
+    tasks.spawn(start_replica(configuration.clone(), index));
 
     while let Some(_) = tasks.join_next().await {}
 }
@@ -71,10 +74,14 @@ async fn start_replica(configuration: Configuration, index: usize) -> io::Result
         while let Some(message) = receiver.recv().await {
             match message {
                 HttpMessage::Request(sender, request) => {
+                    eprintln!("{request:?}");
                     clients.insert(request.client, sender);
                     mailbox.push(request);
                 }
-                HttpMessage::Protocol(protocol) => mailbox.push(protocol),
+                HttpMessage::Protocol(protocol) => {
+                    eprintln!("{protocol:?}");
+                    mailbox.push(protocol);
+                }
             };
 
             replica.receive(&mut mailbox);
