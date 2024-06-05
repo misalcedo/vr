@@ -39,6 +39,7 @@ pub enum HttpMessage {
     Protocol(ProtocolMessage),
 }
 
+// TODO: Make the client proxy an HTTP interface that exposes the service, but use a TCP connection to the replicas.
 #[tokio::main]
 async fn main() {
     let configuration = Configuration::new(vec![
