@@ -33,6 +33,13 @@ impl Default for ClientTable {
 }
 
 impl ClientTable {
+    pub fn get(&self, client: &u128) -> Option<u128> {
+        self.cache
+            .get(client)
+            .filter(|c| c.reply.is_none())
+            .map(|c| c.request)
+    }
+
     pub fn remove_pending(&mut self) {
         self.cache.retain(|_, v| v.reply.is_some());
     }

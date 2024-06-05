@@ -71,6 +71,11 @@ impl<S> Replica<S>
 where
     S: Service,
 {
+    /// The request number of the latest in-progress by the given client.
+    pub fn request(&self, client: &u128) -> Option<u128> {
+        self.client_table.get(client)
+    }
+
     /// Implements the various sub-protocols of VR.
     ///
     /// Calling receive without a message in the mailbox triggers idle behavior.
