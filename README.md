@@ -39,6 +39,9 @@ cargo run --example simulation
 - The protocol does not state what to do when a replica receives a `GetState` message for a newer operation than is in
   its log. For now, we drop the message.
 
+## Specification
+- https://jack-vanlightly.com/analyses/2022/12/20/vr-revisited-an-analysis-with-tlaplus
+
 ## TODOs
 
 - Define mechanism for recovering replicas to fetch configuration upon receiving a protocol message.
