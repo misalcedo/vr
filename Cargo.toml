@@ -26,4 +26,4 @@ tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "sync", "
 bytes = "1.6.0"
 rand = "0.8.5"
 serde = { version = "1.0.203", features = ["derive"] }
-uuid = { version = "1.8.0", features = ["v4"] }
+uuid = { version = "1.9.1", features = ["v4"] }
